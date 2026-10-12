@@ -42,6 +42,22 @@ class VllmSamplerTests(unittest.TestCase):
         self.assertEqual(body["presence_penalty"], 1.5)
         self.assertEqual(body["temperature"], 0)
 
+    def test_vllm_gets_dry_in_vllm_xargs(self):
+        extras = backends.request_extras(_vllm("typhoon-ocr-1-5"))
+        self.assertEqual(extras["vllm_xargs"], {
+            "dry_multiplier": settings.DRY_MULTIPLIER, "dry_base": 1.75,
+            "dry_allowed_length": settings.DRY_ALLOWED_LENGTH,
+            "dry_penalty_last_n": settings.DRY_PENALTY_LAST_N or -1})
+        for kind in ("ollama", "llama.cpp", "openai"):
+            extras = backends.request_extras({"kind": kind, "model": "typhoon"})
+            self.assertNotIn("vllm_xargs", extras, kind)
+
+    def test_dry_off_switches(self):
+        with patch.object(settings, "VLLM_DRY", False):
+            self.assertNotIn("vllm_xargs", backends.request_extras(_vllm("typhoon")))
+        with patch.object(settings, "DRY_MULTIPLIER", 0):
+            self.assertNotIn("vllm_xargs", backends.request_extras(_vllm("typhoon")))
+
     def test_off_switch_and_overrides(self):
         with patch.object(settings, "VLLM_MATCH_OLLAMA", False):
             self.assertEqual(settings.vllm_sampler("qwen"), {})

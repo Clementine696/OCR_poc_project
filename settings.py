@@ -488,6 +488,28 @@ def vllm_sampler(model: str = "") -> dict:
     return fields
 
 
+# vLLM has no DRY sampler and drops the `dry_*` fields llama.cpp reads, so the
+# loop defence every llama.cpp figure was measured under never reached it. The
+# server-side processor in ../vllm/dry_logits_processor.py implements it and
+# reads its settings from `vllm_xargs`; these are the same DRY settings
+# llama.cpp is sent. A server without the processor accepts and ignores them.
+# The window is OUTPUT tokens there (-1 = all), never the prompt. VLLM_DRY=0
+# omits them; DRY_MULTIPLIER=0 omits them on every backend.
+VLLM_DRY = config.env_bool("VLLM_DRY", True)
+
+
+def vllm_dry() -> dict:
+    """The `vllm_xargs` that turn on the DRY processor, or {} where DRY is off."""
+    if not VLLM_DRY or DRY_MULTIPLIER <= 0:
+        return {}
+    return {
+        "dry_multiplier": DRY_MULTIPLIER,
+        "dry_base": 1.75,
+        "dry_allowed_length": DRY_ALLOWED_LENGTH,
+        "dry_penalty_last_n": DRY_PENALTY_LAST_N or -1,
+    }
+
+
 # --- Pass-1 (OCR) sampling ----------------------------------------------------
 # Pass 1 was fully greedy (temperature 0, top_k 1, top_p 1) and every baseline in
 # CLAUDE.md was taken that way. Typhoon's own recommended values are temperature
