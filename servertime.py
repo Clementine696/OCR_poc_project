@@ -106,6 +106,35 @@ METRICS_TIMEOUT = (1.5, 3)
 _RETRY_WAITS = (0.0, 0.05, 0.1, 0.2, 0.4, 0.8)
 
 
+# Per-request /metrics snapshots are switched off while a stress test runs
+# (2026-10-14, reported by the user: the app kept firing /metrics at vLLM far
+# more often than the stress test's "sample every N s"). Each request's Clock
+# took one snapshot before and up to six after, so a run at concurrency 8 sent
+# dozens a second -- and under concurrency none of them could be attributed to
+# one request anyway. The stress test's own sampler is then the only thing
+# asking. A count, not a flag, so two overlapping holders cannot release each
+# other; process-wide, because any request sent during a stress run overlaps it.
+_suspend_lock = threading.Lock()
+_suspended = 0
+
+
+def suspend_metrics():
+    """Stop Clock/Batch from reading /metrics until `resume_metrics`."""
+    global _suspended
+    with _suspend_lock:
+        _suspended += 1
+
+
+def resume_metrics():
+    global _suspended
+    with _suspend_lock:
+        _suspended = max(0, _suspended - 1)
+
+
+def metrics_suspended() -> bool:
+    return _suspended > 0
+
+
 def _fetch(url: str):
     """Parsed `/metrics`, or None. Never raises."""
     try:
@@ -283,7 +312,8 @@ class Clock:
         self.metrics = bool(settings.SERVER_TIMING
                             and backends.serves_metrics(self.info)
                             and self.info.get("url")
-                            and self.batch is None)
+                            and self.batch is None
+                            and not metrics_suspended())
         self.base = _fetch(self.info["url"]) if self.metrics else None
         self.server = None
         self.tokens = {}
@@ -369,7 +399,8 @@ class Batch:
         self.info = info or {}
         self.metrics = bool(settings.SERVER_TIMING
                             and backends.serves_metrics(self.info)
-                            and self.info.get("url"))
+                            and self.info.get("url")
+                            and not metrics_suspended())
         self.base = _fetch(self.info["url"]) if self.metrics else None
         self.records = []
         self.usages = []

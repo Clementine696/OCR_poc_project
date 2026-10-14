@@ -6676,12 +6676,16 @@ def stress_stream():
     cancel = begin_sweep(MultiCancel())
 
     def generate():
+        # Only the stress sampler (every `metrics_every` s) may read /metrics
+        # during the run and its drain -- not every request's server timing.
+        servertime.suspend_metrics()
         try:
             yield from _stress_run(cfg, cancel)
         except Exception as err:                    # noqa: BLE001
             yield json.dumps({"event": "error",
                               "error": f"{type(err).__name__}: {err}"[:300]}) + "\n"
         finally:
+            servertime.resume_metrics()
             end_sweep()
 
     return Response(generate(), mimetype="application/x-ndjson")

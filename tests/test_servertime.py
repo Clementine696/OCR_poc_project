@@ -108,6 +108,34 @@ class GateTests(unittest.TestCase):
         fetch.assert_not_called()
         self.assertIsNone(rec["server_seconds"])
 
+    def test_suspended_during_a_stress_run_asks_nothing(self):
+        servertime.suspend_metrics()
+        servertime.suspend_metrics()
+        try:
+            with mock.patch.object(servertime, "_fetch") as fetch:
+                servertime.Clock(VLLM).finish(1.0)
+                servertime.Batch(VLLM)
+                servertime.resume_metrics()         # one holder still has it
+                servertime.Clock(VLLM).finish(1.0)
+            fetch.assert_not_called()
+        finally:
+            servertime.resume_metrics()
+        self.assertFalse(servertime.metrics_suspended())
+
+    def test_stress_stream_suspends_and_releases(self):
+        seen = []
+
+        def fake_run(cfg, cancel):
+            seen.append(servertime.metrics_suspended())
+            yield '{"event": "done"}\n'
+
+        with mock.patch.object(app, "_stress_run", fake_run), \
+                mock.patch.object(app, "_stress_config", lambda body: {}):
+            res = app.app.test_client().post("/api/stress/stream", json={})
+            res.get_data()
+        self.assertEqual(seen, [True])
+        self.assertFalse(servertime.metrics_suspended())
+
     def test_llama_body_is_used_when_not_vllm(self):
         clock = servertime.Clock(LLAMA)
         clock.timings({"prompt_ms": 800, "predicted_ms": 200})
