@@ -452,8 +452,12 @@ REPETITION_PENALTY = config.env_float("REPETITION_PENALTY", 1.1, minimum=1.0)
 # every other backend gets (REPETITION_PENALTY, no presence penalty).
 VLLM_MATCH_OLLAMA = config.env_bool("VLLM_MATCH_OLLAMA", True)
 OLLAMA_DEFAULT_REPEAT_PENALTY = 1.1
+# typhoon is 1.0, NOT the Modelfile's 1.2 (2026-10-14, sol003 on vLLM 0.30): vLLM's
+# repetition_penalty has no window, so it does not stop the blank-table-row loop
+# (57.7%, still looped) and on top of a windowed penalty it cost 87.4% -> 75.8%.
+# The loop is stopped by DRY instead -- see vllm_xargs.
 VLLM_SAMPLER_BY_MODEL = (
-    ("typhoon", {"repetition_penalty": 1.2}),
+    ("typhoon", {"repetition_penalty": 1.0}),
     ("qwen", {"repetition_penalty": OLLAMA_DEFAULT_REPEAT_PENALTY,
               "presence_penalty": 1.5}),
 )
@@ -497,6 +501,17 @@ def vllm_sampler(model: str = "") -> dict:
 # omits them; DRY_MULTIPLIER=0 omits them on every backend.
 VLLM_DRY = config.env_bool("VLLM_DRY", True)
 
+# vLLM's own allowed length, NOT DRY_ALLOWED_LENGTH. The processor matches across
+# everything (no sequence breakers -- llama.cpp's `"` breaker resets the match
+# inside every `colspan="4"` cell, so a table-row loop was never penalised), and
+# without breakers 32 is far too tight. Measured 2026-10-14 over the 57 saved
+# typhoon pages in solution/out with the typhoon tokenizer: tokens a correct read
+# wrote that DRY would penalise at >= 5 logits -- 32: 1967 on 32 pages; 64: 385;
+# 128: 113 (sol004's legitimately repeated "Land and Building Tax ..." rows);
+# 256: 0. At 256 an empty-row loop is still cut ~24 rows in and a repeating real
+# row ~7 rows in, long before the 4096-token cap.
+VLLM_DRY_ALLOWED_LENGTH = config.env_int("VLLM_DRY_ALLOWED_LENGTH", 256, minimum=1)
+
 
 def vllm_dry() -> dict:
     """The `vllm_xargs` that turn on the DRY processor, or {} where DRY is off."""
@@ -505,9 +520,42 @@ def vllm_dry() -> dict:
     return {
         "dry_multiplier": DRY_MULTIPLIER,
         "dry_base": 1.75,
-        "dry_allowed_length": DRY_ALLOWED_LENGTH,
+        "dry_allowed_length": VLLM_DRY_ALLOWED_LENGTH,
         "dry_penalty_last_n": DRY_PENALTY_LAST_N or -1,
     }
+
+
+# The server-side windowed repeat penalty (../vllm/repeat_penalty_logits_processor.py),
+# sent on every request so the server's own default (VLLM_REPEAT_PENALTY=1.2 in the
+# compose files) does not apply. 1.0 is off. Measured 2026-10-14, all 23 cases at
+# `low` on vLLM, greedy: windowed 1.2 alone 85.2% char / 83.1% digits / 159 of 217
+# Mandatory values; DRY 256 alone 84.7 / 82.3 / 170 -- DRY keeps more values and the
+# windowed penalty costs digits (sol009 92.2 -> 74.0). A server without the
+# processor ignores the field.
+VLLM_WINDOWED_PENALTY = config.env_float("VLLM_WINDOWED_PENALTY", 1.0, minimum=1.0)
+
+
+def vllm_xargs() -> dict:
+    """Everything a vLLM request carries in `vllm_xargs`: DRY and the windowed penalty."""
+    return {**vllm_dry(), "repeat_penalty": VLLM_WINDOWED_PENALTY}
+
+
+# Page images on vLLM (2026-10-14). Two things the vLLM server does to a page that
+# llama.cpp did not, and both cost accuracy:
+#   * it caps every image at its --mm-processor-kwargs max_pixels (2.62 MP in the
+#     local container), whatever Detail the app prepared. VLLM_MAX_PIXELS is sent
+#     per request as mm_processor_kwargs.max_pixels so the app's Detail is what is
+#     read, up to this. 0 sends nothing and leaves the server's cap.
+#   * it never enlarges a small page. The WHT certificates are 0.6-1.6 MP; read as
+#     they are, sol019 looped (9.6%) and sol017 skipped its income table (46%).
+#     Pages under VLLM_MIN_PIXELS are upscaled to it first. 0 turns that off.
+# Measured, all 23 cases, DRY 256, greedy: `low` with neither 84.7% char / 82.3%
+# digits / 170 of 217 values / 2 looped pages; `medium` with both (4 MP cap, 2 MP
+# floor) 91.6 / 89.9 / 193 / 0 -- and against llama.cpp typhoon-ocr-1.5-2b Q8_0 in
+# the run log, ahead at every Detail it has: low +1.0 char/+1.5 digits (11 cases),
+# medium +1.8/+0.9 (15), original +1.4/+2.3 (16). sol019 9.6 -> 87.7, sol017 46 -> 89.
+VLLM_MIN_PIXELS = config.env_int("VLLM_MIN_PIXELS", 2_000_000, minimum=0)
+VLLM_MAX_PIXELS = config.env_int("VLLM_MAX_PIXELS", 4_194_304, minimum=0)
 
 
 # --- Pass-1 (OCR) sampling ----------------------------------------------------

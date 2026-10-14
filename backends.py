@@ -1557,9 +1557,7 @@ def request_extras(info: dict = None) -> dict:
         # a generic OpenAI server is not assumed to take these fields.
         if info["kind"] == "vllm":
             extras.update(settings.vllm_sampler(info.get("model")))
-            dry = settings.vllm_dry()
-            if dry:
-                extras["vllm_xargs"] = dry
+            extras["vllm_xargs"] = settings.vllm_xargs()
         return extras
     extras = {"n_ctx": chosen} if chosen > 0 else {}
     # llama-server serves thinking models too (qwen3.6-35b-a3b, 2026-09-23) and

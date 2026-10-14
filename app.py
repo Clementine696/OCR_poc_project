@@ -30,6 +30,7 @@ import requests
 from flask import Flask, Response, jsonify, render_template, request
 
 import backends
+import settings
 import blame
 import config
 import fieldscore
@@ -599,6 +600,50 @@ def image_data_uri(image: Image.Image) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+# Qwen3-VL (typhoon-ocr1.5): 16-px patches merged 2x2, so one visual token per
+# 32x32 px. Measured on vLLM: a 1243x1608 page is 2272 prompt tokens, of which
+# ~1950 are the image. Used only to keep max_tokens inside a vLLM window.
+VLLM_PIXELS_PER_TOKEN = 1024
+VLLM_TEXT_MARGIN = 600  # the instruction and the chat template, with room to spare
+
+
+def vllm_page(image: Image.Image) -> Image.Image:
+    """The page as vLLM should get it: enlarged to `VLLM_MIN_PIXELS` if smaller.
+
+    vLLM never enlarges a small page, and the WHT certificates (0.6-1.6 MP) read
+    badly as they are -- sol019 looped. See settings.VLLM_MIN_PIXELS.
+    """
+    floor = settings.VLLM_MIN_PIXELS
+    pixels = image.width * image.height
+    if not floor or pixels >= floor:
+        return image
+    scale = (floor / pixels) ** 0.5
+    return image.resize((round(image.width * scale), round(image.height * scale)),
+                        Image.LANCZOS)
+
+
+def vllm_page_fields(image: Image.Image, status: dict) -> dict:
+    """Request fields that make vLLM read the page the app prepared.
+
+    `mm_processor_kwargs.max_pixels` lifts the server's own image cap to
+    `VLLM_MAX_PIXELS`, and `max_tokens` is kept inside the served window: vLLM
+    refuses a request whose prompt plus max_tokens exceeds --max-model-len, and a
+    4 MP page is ~4,100 prompt tokens against the local container's 8,192.
+    """
+    fields = {}
+    cap = settings.VLLM_MAX_PIXELS
+    if cap:
+        fields["mm_processor_kwargs"] = {"max_pixels": cap}
+    window = backends.model_window(status)
+    if window:
+        pixels = image.width * image.height
+        if cap:
+            pixels = min(pixels, cap)
+        room = window - -(-pixels // VLLM_PIXELS_PER_TOKEN) - VLLM_TEXT_MARGIN
+        fields["max_tokens"] = max(256, min(MAX_NEW_TOKENS, room))
+    return fields
+
+
 def stream_page(image: Image.Image, stats: dict = None,
                 profile: str = None, cancel=None):
     """Stream tokens for one page from llama-server.
@@ -639,6 +684,9 @@ def stream_page(image: Image.Image, stats: dict = None,
     # The page goes to the server as a base64 PNG inside the JSON body. Its size
     # is reported (`image_bytes`): uploading it, and the server decoding and
     # resizing it, are in no server phase -- see servertime.py.
+    vllm = status["kind"] == "vllm"
+    if vllm:
+        image = vllm_page(image)
     image_uri = image_data_uri(image)
     image_part = {"type": "image_url", "image_url": {"url": image_uri}}
     content = [text_part, image_part] if prompt_first else [image_part, text_part]
@@ -665,6 +713,8 @@ def stream_page(image: Image.Image, stats: dict = None,
         "stream_options": {"include_usage": True},
         **backends.request_extras(status),
     }
+    if vllm:
+        payload.update(vllm_page_fields(image, status))
 
     # The server's own clock, beside ours. Built BEFORE `started` so the vLLM
     # before-snapshot of /metrics is not charged to this page's time. See

@@ -16,9 +16,11 @@ class VllmSamplerTests(unittest.TestCase):
         self.assertEqual(extras["presence_penalty"], 1.5)
         self.assertEqual(extras["repetition_penalty"], 1.1)
 
-    def test_typhoon_gets_its_modelfile_repeat_penalty(self):
+    def test_typhoon_gets_no_global_penalty(self):
+        # Measured 2026-10-14: vLLM's unwindowed penalty does not stop the table loop
+        # and costs ~12 points on sol003. DRY in vllm_xargs stops it instead.
         extras = backends.request_extras(_vllm("scb10x/typhoon-ocr1.5-3b"))
-        self.assertEqual(extras["repetition_penalty"], 1.2)
+        self.assertEqual(extras["repetition_penalty"], 1.0)
         self.assertNotIn("presence_penalty", extras)
 
     def test_unlisted_model_gets_ollamas_default(self):
@@ -46,17 +48,19 @@ class VllmSamplerTests(unittest.TestCase):
         extras = backends.request_extras(_vllm("typhoon-ocr-1-5"))
         self.assertEqual(extras["vllm_xargs"], {
             "dry_multiplier": settings.DRY_MULTIPLIER, "dry_base": 1.75,
-            "dry_allowed_length": settings.DRY_ALLOWED_LENGTH,
-            "dry_penalty_last_n": settings.DRY_PENALTY_LAST_N or -1})
+            "dry_allowed_length": settings.VLLM_DRY_ALLOWED_LENGTH,
+            "dry_penalty_last_n": settings.DRY_PENALTY_LAST_N or -1,
+            "repeat_penalty": settings.VLLM_WINDOWED_PENALTY})
         for kind in ("ollama", "llama.cpp", "openai"):
             extras = backends.request_extras({"kind": kind, "model": "typhoon"})
             self.assertNotIn("vllm_xargs", extras, kind)
 
     def test_dry_off_switches(self):
-        with patch.object(settings, "VLLM_DRY", False):
-            self.assertNotIn("vllm_xargs", backends.request_extras(_vllm("typhoon")))
-        with patch.object(settings, "DRY_MULTIPLIER", 0):
-            self.assertNotIn("vllm_xargs", backends.request_extras(_vllm("typhoon")))
+        # DRY goes, the windowed penalty is still sent so the server's default cannot apply.
+        for name, value in (("VLLM_DRY", False), ("DRY_MULTIPLIER", 0)):
+            with patch.object(settings, name, value):
+                xargs = backends.request_extras(_vllm("typhoon"))["vllm_xargs"]
+            self.assertEqual(xargs, {"repeat_penalty": settings.VLLM_WINDOWED_PENALTY}, name)
 
     def test_off_switch_and_overrides(self):
         with patch.object(settings, "VLLM_MATCH_OLLAMA", False):
