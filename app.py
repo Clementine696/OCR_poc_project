@@ -5981,6 +5981,8 @@ def random_test_stream():
         yield json.dumps({"event": "plan", **planned}) + "\n"
         completed = failed = 0
         stopped = ""
+        # The finished rounds' summaries, for the run's pages/s and tokens.
+        finished = []
         continuous = planned.get("continuous", False)
         total = None if continuous else len(planned["rounds"])
         for index, round_ in enumerate(randomtest.iter_rounds(planned), 1):
@@ -5999,6 +6001,7 @@ def random_test_stream():
             try:
                 event["result"] = randomtest.summarise_round(
                     _run_round(round_, cancel))
+                finished.append(event["result"])
                 completed += 1
             except SweepCancelled:
                 # NOT a failed round, and the order of these two clauses is what
@@ -6027,6 +6030,7 @@ def random_test_stream():
                           "continuous": continuous,
                           "stopped": bool(stopped),
                           "seconds": round(time.perf_counter() - started, 1),
+                          "totals": randomtest.run_totals(finished),
                           "seed": planned["seed"]}) + "\n"
 
     return Response(generate(), mimetype="application/x-ndjson")
