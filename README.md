@@ -1680,6 +1680,22 @@ figure that moves with load.
 Where the reading server is not vLLM but a separate extraction server is, the monitor watches the
 extraction server.
 
+### Bypassing the prompt cache
+
+A stress run sends the same few documents and the same prompt over and over, so the server
+answers much of each prompt from its prefix cache and the prefill figures are mostly cache hits.
+Tick **Bypass the server's prompt cache** to make every request of the run uncacheable:
+
+| Server | What is sent |
+|---|---|
+| vLLM | a new random `cache_salt` on every request, so no two requests can share a cached prefix |
+| llama-server | `cache_prompt: false` |
+| Ollama, other OpenAI-compatible servers | nothing; there is no per-request switch, and the plan line says so |
+
+The server's cache stays on; the run's requests just never find anything in it. Agentic
+extraction also skips its step-1 warm-up while the bypass is on, since that only exists to fill
+the cache. vLLM's multimodal (image) cache is separate from the prefix cache and is not affected.
+
 ### Stopping a stress test
 
 **Stop** starts no new job, hangs up every read in flight, and lets an extraction already
@@ -3040,8 +3056,8 @@ can run here, and `keys` is every key in the schema in the order the prompt list
 
 `POST /api/stress/stream` — run a stress test. Body: `mode` (`ocr`, `extract`, `classify`,
 `full`), `concurrency`, `jobs`, `warmup`, `max_seconds`, `detail`, `extract_mode`,
-`pack_pages`, `strategy`, `seed`, `lock_case`, `metrics` (sample vLLM `/metrics`) and
-`metrics_every`. Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
+`pack_pages`, `strategy`, `seed`, `lock_case`, `metrics` (sample vLLM `/metrics`),
+`metrics_every` and `no_cache` (bypass the server's prompt cache). Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
 (jobs in each stage, done, live pages and tokens per second, and `server_metrics` when
 sampling), then `done` with `report`. After a Stop, `draining` events follow until the
 server's last request ends. `409` while a random test or another stress test is running.

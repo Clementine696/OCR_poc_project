@@ -1939,6 +1939,15 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </label>
         </div>
 
+        <!-- Prompt cache: a stress run repeats a few pages and one prompt, so the
+             server answers most of each prompt from cache. Ticked, every request
+             is sent uncacheable: a random cache_salt on vLLM, cache_prompt off on
+             llama-server. Ollama has no per-request switch. -->
+        <label class="st-check" style="margin-top:8px"
+               title="Every request is sent so the server cannot reuse a cached prefix: a random cache_salt per request on vLLM, cache_prompt off on llama-server. Ollama has no per-request switch, so it is unchanged there. Prefill is then measured in full, as it would be for documents the server has never seen.">
+          <input id="stNoCache" type="checkbox"> Bypass the server's prompt cache
+          <span class="muted-inline" style="font-weight:400">&mdash; measure full prefill, not cache hits</span>
+        </label>
         <div class="row">
           <button id="stRun" class="primary">Run stress test</button>
           <button id="stStop" class="ghost-sm" disabled>Stop</button>
@@ -12484,6 +12493,7 @@ function stShowing(on) {
 function stBusy(on) {
   if (on) stStopping = false;
   stRun.disabled = on;
+  stEl('stNoCache').disabled = on;
   stStop.disabled = stStop2.disabled = !on || stStopping;
   if (rtRun) rtRun.disabled = on;
   if (on) runBtn.disabled = true; else paintServer();
@@ -12638,6 +12648,9 @@ function stPaint() {
       + (plan.detail ? ' · ' + esc(plan.detail) : '')
       + (plan.extract_mode ? ' · ' + esc(plan.extract_mode) : '')
       + (plan.metrics ? ' · sampling vLLM /metrics' : '')
+      + (plan.no_cache ? ' · prompt cache bypassed ('
+          + Object.entries(plan.no_cache_effect || {})
+              .map(([k, v]) => esc(k) + ': ' + esc(v)).join('; ') + ')' : '')
       + ' · seed ' + plan.seed + '</p>';
   }
   const p = s.progress;
@@ -12752,6 +12765,7 @@ function stBody() {
     strategy: val('stStrategy'), seed: val('stSeed').trim() || null,
     lock_case: stMode.value === 'classify' ? '' : val('stLock'),
     metrics: stSample.checked && !stSample.disabled,
+    no_cache: stEl('stNoCache').checked,
     metrics_every: Number(val('stEvery')) || 5
   };
 }

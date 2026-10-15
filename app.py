@@ -2799,7 +2799,9 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
                 return pool.submit(batch.run, _run_step, step, prefix,
                                    _step_question(step, framing), status, source)
 
-            if VLLM_PREFIX_WARMUP:
+            # The warm-up only exists to fill the prefix cache; with the cache
+            # bypassed it would just delay the other steps for nothing.
+            if VLLM_PREFIX_WARMUP and not backends.prefix_cache_bypassed():
                 # Step 1 alone first; the rest once its prefill is done, so they
                 # find the shared prefix in vLLM's cache rather than each
                 # prefilling it again in the same scheduler step.
@@ -6328,6 +6330,7 @@ def _stress_config(body: dict) -> dict:
                              stress.MAX_PACK_PAGES),
         "metrics_every": number("metrics_every", 5, 1, 600),
         "metrics": bool(body.get("metrics")),
+        "no_cache": bool(body.get("no_cache")),
         "detail": resolve_detail(body.get("detail") or "medium"),
         "extract_mode": shape,
         "strategy": strategy,
@@ -6597,6 +6600,12 @@ def _stress_run(cfg: dict, cancel):
         "reader": (reader or {}).get("model") or "",
         "extractor": (extractor or {}).get("model") or "",
         "metrics": bool(metrics_url),
+        # Which server kinds took the bypass and how; a server that has no
+        # per-request switch is named rather than counted as uncached.
+        "no_cache": bool(cfg.get("no_cache")),
+        "no_cache_effect": ({s["kind"]: backends.cache_bypass_effect(s["kind"])
+                             for s in (reader, extractor) if s}
+                            if cfg.get("no_cache") else {}),
     }) + "\n"
 
     began = time.perf_counter()
@@ -6685,12 +6694,19 @@ def stress_stream():
         # Only the stress sampler (every `metrics_every` s) may read /metrics
         # during the run and its drain -- not every request's server timing.
         servertime.suspend_metrics()
+        # "Bypass prompt cache": every request of the run and its drain is sent
+        # uncacheable, so prefill is measured rather than a cache lookup.
+        no_cache = bool(cfg.get("no_cache"))
         try:
+            if no_cache:
+                backends.bypass_prefix_cache()
             yield from _stress_run(cfg, cancel)
         except Exception as err:                    # noqa: BLE001
             yield json.dumps({"event": "error",
                               "error": f"{type(err).__name__}: {err}"[:300]}) + "\n"
         finally:
+            if no_cache:
+                backends.restore_prefix_cache()
             servertime.resume_metrics()
             end_sweep()
 

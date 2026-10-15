@@ -22,6 +22,7 @@ would add an HTTP round trip to each of those.
 
 import os
 import re
+import secrets
 import threading
 import time
 
@@ -1517,6 +1518,62 @@ def system_prefix(info: dict = None, enabled: bool = True) -> list:
     return [{"role": "system", "content": settings.OLLAMA_SYSTEM}]
 
 
+# -- Bypassing the server's prompt cache (2026-10-15) ---------------------------
+#
+# A stress test sends the same few pages and the same prompt again and again,
+# so vLLM's prefix cache answers most of every prompt from blocks it already
+# computed (~70% hit rate observed) and the run measures cache lookups rather
+# than prefill. While a holder is in force every request is made uncacheable:
+#
+# * vLLM -- a fresh random `cache_salt` per request. The salt is folded into the
+#   hash of the first block, so no two requests can share a cached prefix. The
+#   cache itself stays on; this request simply never finds anything in it.
+# * llama-server -- `cache_prompt: false`, its own per-request switch.
+# * Ollama and a generic OpenAI server -- nothing per request exists. Said so on
+#   the stress plan rather than pretended.
+#
+# A count, not a flag, and process-wide, like servertime.suspend_metrics: the
+# agentic steps of one job run on threads of their own.
+_bypass_lock = threading.Lock()
+_bypassed = 0
+
+
+def bypass_prefix_cache():
+    """Make every request uncacheable until `restore_prefix_cache`."""
+    global _bypassed
+    with _bypass_lock:
+        _bypassed += 1
+
+
+def restore_prefix_cache():
+    global _bypassed
+    with _bypass_lock:
+        _bypassed = max(0, _bypassed - 1)
+
+
+def prefix_cache_bypassed() -> bool:
+    return _bypassed > 0
+
+
+def cache_bypass_effect(kind: str) -> str:
+    """What the bypass does on a server of this kind, for the stress plan."""
+    if kind == "vllm":
+        return "a random cache_salt per request"
+    if kind == "llama.cpp":
+        return "cache_prompt off per request"
+    return "not possible per request on this server"
+
+
+def _cache_bypass_fields(kind: str) -> dict:
+    if not _bypassed:
+        return {}
+    if kind == "vllm":
+        return {"cache_salt": secrets.token_urlsafe(32)}
+    if kind == "llama.cpp":
+        return {"cache_prompt": False}
+    return {}
+
+
 def request_extras(info: dict = None) -> dict:
     """Fields to merge into a chat request for the active server.
 
@@ -1560,6 +1617,7 @@ def request_extras(info: dict = None) -> dict:
             xargs = settings.vllm_xargs()
             if xargs:
                 extras["vllm_xargs"] = xargs
+            extras.update(_cache_bypass_fields("vllm"))
         return extras
     extras = {"n_ctx": chosen} if chosen > 0 else {}
     # llama-server serves thinking models too (qwen3.6-35b-a3b, 2026-09-23) and
@@ -1570,6 +1628,7 @@ def request_extras(info: dict = None) -> dict:
     # unaffected. Same setting as Ollama's, so one knob turns thinking on for both.
     if settings.OLLAMA_REASONING_EFFORT == "none":
         extras["chat_template_kwargs"] = {"enable_thinking": False}
+    extras.update(_cache_bypass_fields(info["kind"]))
     return extras
 
 
