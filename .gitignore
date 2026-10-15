@@ -10,6 +10,8 @@ __pycache__/
 .venv-easyocr/
 venv/
 env/
+.venv-py314/
+.venv-py312/
 
 # Model caches of the removed PaddleOCR/EasyOCR readers. Machine artefacts,
 # not source.
