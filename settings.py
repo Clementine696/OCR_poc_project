@@ -304,6 +304,15 @@ SERVER_KINDS = config.env_str("SERVER_KINDS", "", allow_empty=True)
 # cannot be attributed, so it is left blank rather than guessed. 0 asks nothing
 # extra of any server.
 SERVER_TIMING = config.env_bool("SERVER_TIMING", True)
+# The vLLM half of the above is OFF unless asked for (2026-10-15, reported by
+# the user: the app kept "spamming /metrics" on vLLM outside a stress test).
+# Each model request took one snapshot before and up to six after, so one read
+# plus an agentic extraction sent dozens of GETs. Off, a vLLM request has no
+# server_* figures (the run log's own `tokens` and clocks are unaffected);
+# llama.cpp and Ollama are unchanged, their timings ride on the reply itself.
+# /metrics is then read only by the stress sampler and the live monitor, each on
+# its own interval.
+SERVER_TIMING_METRICS = config.env_bool("SERVER_TIMING_METRICS", False)
 # How long to wait for vLLM to record a request that has just finished before
 # calling it unattributed. The stream can close a moment before the server's
 # stats logger has run, so the after-snapshot is retried within this budget.

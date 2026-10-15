@@ -308,6 +308,7 @@ The ones that matter for a deployment:
 | `EXTRACT_URL` | *(unset)* | A second server for field extraction (and the other text requests: classification, segmentation, the table agents). Unset, both passes use the reading server — the one-URL setup for local llama-server or Ollama. Set, page images go to the reading server and extraction goes here. Any OpenAI-compatible server works. Changeable in the page's **Extraction server** picker. |
 | `SERVER_KINDS` | *(unset)* | Pin servers to an inference engine: comma-separated `url=kind`, kind one of `llama.cpp`, `ollama`, `vllm`, `openai` — e.g. `http://gpu-box:8000=vllm`. A pinned server is probed with that engine's endpoint only (`/props`, `/api/tags` or `/v1/models`), so it never answers 404 to another engine's probe, and only a `vllm` server is ever asked `/metrics`. Unpinned servers are detected (**Auto**), which remembers what it found; **Re-check** detects again. Also settable per server in the page's **Server type** picker. |
 | `SERVER_TIMING` | `1` | Record the **server's own** time for each model request, split by phase: prefill, decode, queue and end-to-end latency. Nothing is derived from the app's clock. vLLM: `/metrics` read before and after each request (two extra GETs), the change in `vllm:request_prefill_time_seconds`, `request_decode_time_seconds`, `request_queue_time_seconds` and `e2e_request_latency_seconds`. llama.cpp: its `timings` block (no queue figure). Ollama: native `/api/chat` durations; `/v1` sends none, so most Ollama requests have no server time. A `/metrics` change that spans concurrent requests is left blank. `0` asks nothing extra. |
+| `SERVER_TIMING_METRICS` | `0` | The vLLM half of `SERVER_TIMING`. Off by default, because it reads `/metrics` once before and up to six times after **every** model request. Off, a vLLM request has no server figures and `/metrics` is read only by the stress test's sampler and the live monitor, each on its own interval. `1` to get vLLM's per-request phase times; llama.cpp and Ollama do not need it. |
 | `SERVER_TIMING_WAIT` | `1.0` | Seconds to wait for vLLM to record a just-finished request before leaving it blank. |
 | `AUTO_SELECT_SERVER` | `1` | Probe the configured endpoints and the ones the run log has runs against at startup, and select the first that answers. `0` starts on the first in the list whether or not anything is listening there. |
 | `AUTO_SELECT_MAX_CANDIDATES` | `8` | How many endpoints one auto-select will probe. A dead port costs a pair of connect timeouts. |
@@ -2600,7 +2601,8 @@ has no table truth file or no table came back.
 ### Server time, tokens and speed
 
 Every clock in the app is its own and includes the network between the app and the model
-server. Each request is also timed by the server (see `SERVER_TIMING`), and its figures are
+server. Each request is also timed by the server (see `SERVER_TIMING`; on vLLM only with
+`SERVER_TIMING_METRICS=1`), and its figures are
 reported as they came, with nothing derived from the app's clock: the result line and the
 Fields status line read `server prefill Xs (N tok, R tok/s), decode Ys (N tok, R tok/s), queue
 Zs, latency Ws (source) · image sent S`, and the page table has **Image sent**, **Server

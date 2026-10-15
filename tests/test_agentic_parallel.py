@@ -16,6 +16,19 @@ import prompts
 import runlog
 import servertime
 
+
+# Per-request /metrics timing is opt-in (SERVER_TIMING_METRICS, default off since
+# 2026-10-15); these tests exercise it, so it is on for the module.
+_metrics_on = mock.patch.object(servertime.settings, "SERVER_TIMING_METRICS", True)
+
+
+def setUpModule():
+    _metrics_on.start()
+
+
+def tearDownModule():
+    _metrics_on.stop()
+
 VLLM = {"kind": "vllm", "url": "http://gpu:8000", "reachable": True, "model": "m"}
 OLLAMA = {"kind": "ollama", "url": "http://local:11434", "reachable": True, "model": "m"}
 LLAMA = {"kind": "llama.cpp", "url": "http://local:8080", "reachable": True, "model": "m"}

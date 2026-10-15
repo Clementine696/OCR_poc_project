@@ -12,6 +12,19 @@ import app
 import runlog
 import servertime
 
+
+# Per-request /metrics timing is opt-in (SERVER_TIMING_METRICS, default off since
+# 2026-10-15); these tests exercise it, so it is on for the module.
+_metrics_on = mock.patch.object(servertime.settings, "SERVER_TIMING_METRICS", True)
+
+
+def setUpModule():
+    _metrics_on.start()
+
+
+def tearDownModule():
+    _metrics_on.stop()
+
 VLLM = {"kind": "vllm", "url": "http://gpu:8000", "reachable": True, "model": "m"}
 LLAMA = {"kind": "llama.cpp", "url": "http://local:8080", "reachable": True, "model": "m"}
 OLLAMA = {"kind": "ollama", "url": "http://local:11434", "reachable": True, "model": "m"}
@@ -107,6 +120,17 @@ class GateTests(unittest.TestCase):
             rec = servertime.Clock(VLLM).finish(1.0)
         fetch.assert_not_called()
         self.assertIsNone(rec["server_seconds"])
+
+    def test_vllm_metrics_are_opt_in(self):
+        with mock.patch.object(servertime.settings, "SERVER_TIMING_METRICS", False), \
+                mock.patch.object(servertime, "_fetch") as fetch:
+            clock = servertime.Clock(VLLM)
+            clock.usage({"prompt_tokens": 10, "completion_tokens": 5})
+            rec = clock.finish(1.0)
+            servertime.Batch(VLLM).close()
+        fetch.assert_not_called()
+        self.assertIsNone(rec["server_seconds"])
+        self.assertIsNone(rec["server_prompt_tokens"])
 
     def test_suspended_during_a_stress_run_asks_nothing(self):
         servertime.suspend_metrics()

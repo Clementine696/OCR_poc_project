@@ -309,7 +309,7 @@ class Clock:
         # around any one of them covers its neighbours too. The batch takes one
         # snapshot each side of the whole lot instead (see `Batch`).
         self.batch = getattr(_local, "batch", None)
-        self.metrics = bool(settings.SERVER_TIMING
+        self.metrics = bool(settings.SERVER_TIMING and settings.SERVER_TIMING_METRICS
                             and backends.serves_metrics(self.info)
                             and self.info.get("url")
                             and self.batch is None
@@ -397,7 +397,7 @@ class Batch:
 
     def __init__(self, info: dict):
         self.info = info or {}
-        self.metrics = bool(settings.SERVER_TIMING
+        self.metrics = bool(settings.SERVER_TIMING and settings.SERVER_TIMING_METRICS
                             and backends.serves_metrics(self.info)
                             and self.info.get("url")
                             and not metrics_suspended())
