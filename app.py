@@ -6504,14 +6504,48 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
     return rec
 
 
+def _stress_targets(reader: dict, extractor: dict) -> list:
+    """The vLLM servers a stress run uses, each once: `[{role, url}]`.
+
+    A full-pipeline run reads on one server and extracts on another when a
+    separate extraction server is set, and both carry load -- so both are
+    sampled. A server that is not vLLM is never asked (`serves_metrics`), and a
+    URL used for both passes is one target, `reader + extractor`.
+    """
+    out = []
+    for role, info in (("reader", reader), ("extractor", extractor)):
+        if not info or not backends.serves_metrics(info) or not info.get("url"):
+            continue
+        same = next((t for t in out if t["url"] == info["url"]), None)
+        if same:
+            same["role"] += " + " + role
+        else:
+            out.append({"role": role, "url": info["url"]})
+    return out
+
+
+def _stress_sample(targets: list, bases: dict, elapsed: float) -> tuple:
+    """One /metrics read of every target: `(views, snapshots, errors)`."""
+    views, snaps, errors = [], {}, []
+    for t in targets:
+        try:
+            snaps[t["url"]] = now = _vllm_metrics(t["url"])
+        except Exception as err:                    # noqa: BLE001
+            errors.append(f"{t['role']} {t['url']}: {err}"[:200])
+            continue
+        views.append({**t, "view": stress.metrics_view(now, bases.get(t["url"]), elapsed)})
+    return views, snaps, errors
+
+
 def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
-                  metrics_url: str = None, metrics_base: dict = None):
+                  targets: list = (), bases: dict = None):
     """Run one queue of jobs at the configured concurrency, yielding progress.
 
     Every job is queued at once and a pool of `concurrency` workers works
     through it -- which is what makes `queue_wait` a real figure: a job's wait is
     the time it spent behind the jobs ahead of it, on THIS side of the wire.
-    Returns `(records, wall, timeline, last_metrics, draining)`.
+    Returns `(records, wall, timeline, last_metrics, draining)`, where
+    `last_metrics` is the last snapshot of each target, by URL.
 
     **On Stop it returns at once**, with every job that had not finished counted
     as cancelled, and hands back the ones still running as `draining`. A request
@@ -6531,7 +6565,7 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
     futures = [pool.submit(_stress_job, spec, cfg, prepared, cancel, live)
                for spec in specs]
     pending, timeline = set(futures), []
-    last_metrics, sampled_at = None, started
+    last_metrics, sampled_at = {}, started
     try:
         while pending and not cancel.is_set():
             _, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
@@ -6545,14 +6579,15 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
                      "elapsed": round(elapsed, 1), "total": len(specs), **snap,
                      "pages_per_second": round(snap["pages"] / elapsed, 3) if elapsed else 0,
                      "tokens_per_second": round(snap["tokens"] / elapsed, 2) if elapsed else 0}
-            if metrics_url and now - sampled_at >= cfg["metrics_every"]:
+            if targets and now - sampled_at >= cfg["metrics_every"]:
                 sampled_at = now
-                try:
-                    last_metrics = _vllm_metrics(metrics_url)
-                    event["server_metrics"] = stress.metrics_view(
-                        last_metrics, metrics_base, elapsed)
-                except Exception as err:            # noqa: BLE001
-                    event["metrics_error"] = str(err)[:200]
+                views, snaps, errors = _stress_sample(targets, bases or {}, elapsed)
+                last_metrics.update(snaps)
+                if views:
+                    event["servers_metrics"] = views
+                    event["server_metrics"] = views[0]["view"]
+                if errors:
+                    event["metrics_error"] = "; ".join(errors)
             yield json.dumps(event) + "\n"
     finally:
         # Queued jobs are dropped; running ones carry on and are drained by the
@@ -6578,7 +6613,7 @@ def _stress_run(cfg: dict, cancel):
     reader = llama_status() if mode in ("ocr", "full") else None
     extractor = backends.extract_status() if mode != "ocr" else None
     info = reader or extractor
-    metrics_url = info["url"] if cfg["metrics"] and backends.serves_metrics(info) else None
+    targets = _stress_targets(reader, extractor) if cfg["metrics"] else []
 
     specs = [{"index": i} for i in range(total)]
     if mode != "classify":
@@ -6599,7 +6634,8 @@ def _stress_run(cfg: dict, cancel):
         "server": {"url": info["url"], "kind": info["kind"]},
         "reader": (reader or {}).get("model") or "",
         "extractor": (extractor or {}).get("model") or "",
-        "metrics": bool(metrics_url),
+        "metrics": bool(targets),
+        "metrics_servers": targets,
         # Which server kinds took the bypass and how; a server that has no
         # per-request switch is named rather than counted as uncached.
         "no_cache": bool(cfg.get("no_cache")),
@@ -6640,28 +6676,31 @@ def _stress_run(cfg: dict, cancel):
         draining = (yield from _stress_phase(specs[:cfg["warmup"]], cfg, prepared,
                                              cancel, "warmup"))[-1]
 
-    base = None
-    if metrics_url:
+    bases = {}
+    for t in targets:
         try:
-            base = _vllm_metrics(metrics_url)
+            bases[t["url"]] = _vllm_metrics(t["url"])
         except Exception:                           # noqa: BLE001
-            base = None
-    records, wall, timeline, last = [], 0.0, [], None
+            pass
+    records, wall, timeline, last = [], 0.0, [], {}
     if not cancel.is_set():
         records, wall, timeline, last, draining = yield from _stress_phase(
-            specs[cfg["warmup"]:], cfg, prepared, cancel, "run", metrics_url, base)
+            specs[cfg["warmup"]:], cfg, prepared, cancel, "run", targets, bases)
 
     report = stress.report(records, wall, mode, cfg["concurrency"])
     report["timeline"] = stress.thin_timeline(timeline)
     report["timeline_columns"] = ["t", *stress.STAGES, "done"]
     report["prepare_seconds"] = prepare_seconds
-    if metrics_url:
-        try:
-            last = _vllm_metrics(metrics_url)
-        except Exception:                           # noqa: BLE001
-            pass
-        if last is not None:
-            report["server_metrics"] = stress.metrics_view(last, base, wall)
+    if targets:
+        views, snaps, _ = _stress_sample(targets, bases, wall)
+        for t in targets:          # a failed last read falls back to the last sample
+            if t["url"] not in snaps and t["url"] in last:
+                views.append({**t, "view": stress.metrics_view(
+                    last[t["url"]], bases.get(t["url"]), wall)})
+        views.sort(key=lambda v: [t["url"] for t in targets].index(v["url"]))
+        if views:
+            report["servers_metrics"] = views
+            report["server_metrics"] = views[0]["view"]
     yield json.dumps({"event": "done", "seed": seed, "stopped": cancel.is_set(),
                       "draining": len(draining), "report": report}) + "\n"
     # After a Stop: the report is out, and what is left is requests the server

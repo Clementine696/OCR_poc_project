@@ -12465,9 +12465,10 @@ function stPaintServer() {
   if (!btn) return;
   const vllm = server && server.kind === 'vllm';
   const busy = !!document.getElementById('stStop') && !document.getElementById('stStop').disabled;
+  const extractVllm = !!(extractInfo && extractInfo.separate && extractInfo.kind === 'vllm');
   btn.disabled = !vllm || busy;
-  sample.disabled = !vllm || busy;
-  if (!vllm) sample.checked = false;
+  sample.disabled = !(vllm || extractVllm) || busy;
+  if (!(vllm || extractVllm)) sample.checked = false;
   document.getElementById('stMetricsState').textContent = vllm
     ? '— vLLM at ' + server.url
     : '— ' + (server && server.kind ? server.kind : 'no server')
@@ -12479,8 +12480,11 @@ function stPaintServer() {
     monBtn.disabled = !monVllm;
     if (!monVllm && typeof monState !== 'undefined' && monState && monState.on) monSet(false);
     if (monVllm && !vllm) document.getElementById('stMetricsState').textContent =
-      '— the reading server is not vLLM; the live monitor watches the extraction server at '
-      + extractInfo.url;
+      '— the reading server is not vLLM; the live monitor and the stress sampler watch the '
+      + 'extraction server at ' + extractInfo.url;
+    else if (vllm && extractVllm && extractInfo.url !== server.url)
+      document.getElementById('stMetricsState').textContent = '— vLLM at ' + server.url
+        + ' (reading) and ' + extractInfo.url + ' (extraction); a stress run samples both';
   }
 }
 
@@ -12647,7 +12651,8 @@ function stPaint() {
       + (plan.extractor ? ' · extracts with <b>' + esc(csModel(plan.extractor)) + '</b>' : '')
       + (plan.detail ? ' · ' + esc(plan.detail) : '')
       + (plan.extract_mode ? ' · ' + esc(plan.extract_mode) : '')
-      + (plan.metrics ? ' · sampling vLLM /metrics' : '')
+      + (plan.metrics ? ' · sampling vLLM /metrics on '
+          + (plan.metrics_servers || []).map(t => esc(t.role) + ' ' + esc(t.url)).join(' and ') : '')
       + (plan.no_cache ? ' · prompt cache bypassed ('
           + Object.entries(plan.no_cache_effect || {})
               .map(([k, v]) => esc(k) + ': ' + esc(v)).join('; ') + ')' : '')
@@ -12670,14 +12675,17 @@ function stPaint() {
         + stNum(p.tokens_per_second, 0) + ' tok/s' : '')
       + '</div></div>';
     if (s.metricsNow) {
-      // The last sample, kept between ticks: only every Nth progress event
-      // carries one, and drawing only those made the line flicker.
-      const m = s.metricsNow;
-      html += '<p class="note">vLLM now: ' + stNum(m.running, 0) + ' running, '
-        + stNum(m.waiting, 0) + ' waiting'
-        + (m.kv_cache !== null && m.kv_cache !== undefined ? ', KV cache ' + stPct(m.kv_cache) : '')
-        + (m.generation_tokens_per_s ? ', ' + stNum(m.generation_tokens_per_s, 0)
-          + ' gen tok/s since start' : '') + '.</p>';
+      // The last sample of each server, kept between ticks: only every Nth
+      // progress event carries one, and drawing only those made the line flicker.
+      const many = s.metricsNow.length > 1;
+      for (const srv of s.metricsNow) {
+        const m = srv.view;
+        html += '<p class="note">vLLM ' + (many ? esc(srv.role) + ' ' : '') + 'now: '
+          + stNum(m.running, 0) + ' running, ' + stNum(m.waiting, 0) + ' waiting'
+          + (m.kv_cache !== null && m.kv_cache !== undefined ? ', KV cache ' + stPct(m.kv_cache) : '')
+          + (m.generation_tokens_per_s ? ', ' + stNum(m.generation_tokens_per_s, 0)
+            + ' gen tok/s since start' : '') + '.</p>';
+      }
     }
     if (p.metrics_error) html += '<p class="note err">/metrics: ' + esc(p.metrics_error) + '</p>';
   }
@@ -12741,7 +12749,12 @@ function stPaint() {
       html += '<h3 class="st-h">Errors</h3><table class="queue">' + r.errors.map(e =>
         '<tr><td class="n">' + e.count + '×</td><td>' + esc(e.error) + '</td></tr>').join('') + '</table>';
     }
-    if (r.server_metrics) html += stMetricsTable(r.server_metrics, 'vLLM /metrics during the run', ' (this run)');
+    const runServers = r.servers_metrics
+      || (r.server_metrics ? [{ role: '', url: '', view: r.server_metrics }] : []);
+    for (const srv of runServers) {
+      html += stMetricsTable(srv.view, 'vLLM /metrics during the run'
+        + (runServers.length > 1 ? ' · ' + srv.role + ' · ' + srv.url : ''), ' (this run)');
+    }
   }
   if (s.draining) {
     html += '<p class="note err">Stopped. ' + s.draining + ' request(s) are still running '
@@ -12811,7 +12824,7 @@ async function stStart() {
             + (stMode.value === 'classify' ? ' file(s)…' : ' document(s)…');
         } else if (ev.event === 'progress') {
           stState.progress = ev;
-          if (ev.server_metrics) stState.metricsNow = ev.server_metrics;
+          if (ev.servers_metrics) stState.metricsNow = ev.servers_metrics;
           stNote.textContent = (ev.phase === 'warmup' ? 'Warming up — ' : 'Running — ')
             + ev.done + '/' + ev.total;
         } else if (ev.event === 'done') {

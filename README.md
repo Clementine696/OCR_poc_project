@@ -1630,7 +1630,10 @@ server's own Prometheus counters: requests running and waiting, KV-cache usage, 
 generation tokens, preemptions, prefix-cache hit rate and mean time to first token, time per
 output token, queue, prefill, decode and end-to-end time. Tick **sample during the test** to
 read it every few seconds while a run is going; the report then includes the change over the
-run, including generation tokens per second as the server counts them.
+run, including generation tokens per second as the server counts them. A run that reads on one
+vLLM server and extracts on a separate one (see the extraction server picker) samples **both**,
+and the report has one table per server, named reader or extractor; a server that is not vLLM
+is never asked.
 
 On llama-server, Ollama or any other server both controls are disabled and **nothing is
 requested** — the route refuses with `409` as well.
