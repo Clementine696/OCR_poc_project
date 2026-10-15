@@ -741,6 +741,10 @@
              padding: 3px 9px 3px 7px; cursor: pointer; user-select: none; }
   .rt-chip input { margin: 0; }
   .rt-chip.off { opacity: .45; text-decoration: line-through; }
+  .rt-files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+              gap: 6px; max-height: 260px; overflow-y: auto; margin-top: 8px; }
+  .rt-files .rt-chip { border-radius: 6px; overflow-wrap: anywhere; }
+  .rt-files .rt-chip input { flex-shrink: 0; }
   /* The bottom toggle sits in a row of fields, so it has to line up with
      their boxes rather than with their labels. */
   label.check { display: flex; align-items: center; gap: 6px; font-size: .82rem;
@@ -1650,13 +1654,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
            tells the two apart. Every pass-2 measurement in CLAUDE.md was taken
            this way. -->
       <div class="pane" id="paneRandom">
-        <p class="note">A random document, a random model to read it, a random
-          model to extract from it, a random Detail and shape &mdash; run
-          end&nbsp;to&nbsp;end, as many times as you ask for. The
-          <b>document is not random</b>: each round goes to whichever case the
-          run log has read fewest times, so every fixture is covered eventually
-          rather than whenever it is lucky. The number beside each case is how
-          many reads it already had. This is the only
+        <p class="note">Choose Balanced, Random, or Sequential to decide which
+          documents run. Models, Detail and shape are drawn unless locked below.
+          Sequential visits the selected files in order and repeats until Stop.
+          The number beside each case is how many reads it already had. This is the only
           thing here that tests the <b>whole</b> path: the benchmarks feed pass 2
           a ground-truth transcript on purpose, so nothing else automatically
           exercises decoding, resizing, the pass-1 profile, the case match and
@@ -1685,9 +1686,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <select id="rtStrategy">
               <option value="balanced">Balanced &mdash; the least-read document each time</option>
               <option value="uniform">Random &mdash; any document, no scenario twice</option>
+              <option value="sequential">Sequential &mdash; selected files in order, repeat until Stop</option>
             </select>
           </label>
-          <label class="field" style="flex:0 0 110px">
+          <label class="field" style="flex:0 0 110px" id="rtRoundsField">
             Runs
             <input id="rtRounds" type="number" min="1" max="50" value="5">
           </label>
@@ -1696,13 +1698,31 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <input id="rtSeed" type="text" placeholder="e.g. 1787218747">
           </label>
         </div>
+        <div class="rt-ex" id="rtFilesField" style="display:none">
+          <span class="rt-ex-label">Files to test &mdash; untick any files to skip</span>
+          <div class="row">
+            <button type="button" class="ghost-sm" id="rtFilesAll">Select all</button>
+            <button type="button" class="ghost-sm" id="rtFilesNone">Clear selection</button>
+            <span class="note" id="rtFileCount" aria-live="polite"></span>
+          </div>
+          <div class="rt-files" id="rtFiles">
+            {% for c in cases|selectattr('field_truth')|sort(attribute='id') %}
+            <label class="rt-chip"><input type="checkbox" value="{{ c.id }}" checked>
+              <span>{{ c.id }} &middot; {{ c.pdf }}</span></label>
+            {% endfor %}
+          </div>
+          <p class="note">All available benchmark files are selected initially.
+            Runs top to bottom, then starts again at the first selected file until Stop.
+            Other settings repeat with each cycle; use the locks below to fix a model
+            or shape. Shows the latest 200 rounds; every completed run is kept in the run log.</p>
+        </div>
         <!-- Locks: an axis pinned is that axis taken out of the experiment,
              which is what lets a run answer a question about the others.
              Locking the document is how a model comparison stops being a
              document comparison as well. A lock this endpoint cannot honour is
              refused rather than quietly ignored. -->
         <div class="row">
-          <label class="field" style="flex:1;min-width:150px">
+          <label class="field" style="flex:1;min-width:150px" id="rtLockCaseField">
             Lock document
             <select id="rtLockCase">
               <option value="">&mdash; spread over all &mdash;</option>
@@ -8396,6 +8416,8 @@ function paintPresent(t) {
    unreadable during exactly the run it exists to explain. */
 let rtRows = [];
 let rtAbort = null;
+let rtRunning = false;
+let rtContinuous = false;
 /* True between pressing Stop and the stream ending. Stop is a REQUEST to the
    server now, not a hang-up on our own fetch: an abandoned stream is not
    stopped on that server, so the old Stop left every remaining round reading
@@ -8458,7 +8480,22 @@ function rtOption(name, chosen, suffix) {
    on a status refresh would be a control that forgets. A name that stops being
    served stays in the set harmlessly -- the server ignores an exclusion for a
    model it does not have. */
-const rtExcluded = { readers: new Set(), extractors: new Set() };
+const rtExcluded = { readers: new Set(), extractors: new Set(), cases: new Set() };
+function rtPaintSequence() {
+  const sequential = rtStrategy.value === 'sequential';
+  const files = [...rtFiles.querySelectorAll('input')];
+  const selected = files.filter(box => box.checked).length;
+  rtFilesField.style.display = sequential ? 'block' : 'none';
+  rtRoundsField.style.display = sequential ? 'none' : 'flex';
+  rtLockCaseField.style.display = sequential ? 'none' : 'flex';
+  rtFileCount.textContent = selected + ' / ' + files.length + ' files selected'
+    + (selected ? '' : ' — select at least one file');
+  rtRun.textContent = sequential ? 'Run sequential test' : 'Run random test';
+  rtRun.disabled = rtRunning || (sequential && !selected);
+  rtStrategy.disabled = rtRunning;
+  rtFilesAll.disabled = rtFilesNone.disabled = rtRunning;
+  files.forEach(box => { box.disabled = rtRunning; });
+}
 function rtChips(box, names, set) {
   box.innerHTML = names.map(name =>
     '<label class="rt-chip' + (set.has(name) ? ' off' : '') + '" title="'
@@ -8543,6 +8580,10 @@ function rtScopeText(scope) {
    inferred from a plan afterwards. Both are legitimate and they answer opposite
    questions, so neither is described here as the correct one. */
 function rtStrategyText(strategy) {
+  if (strategy === 'sequential') {
+    return ' Selected files run in the order shown, then repeat from the first '
+         + 'file until you press Stop. Runs and Lock document do not apply.';
+  }
   if (strategy === 'uniform') {
     return ' Every document is equally likely, and no two rounds of one plan are '
          + 'the same document, reader, Detail and shape, so a repeat happens only '
@@ -8579,6 +8620,8 @@ function rtPaint() {
     const cls = r.error ? ' class="rt-bad"' : (r.pending ? ' class="rt-now"' : '');
     return '<tr' + cls + '>'
       + '<td><b>' + esc(p.case) + '</b>'
+        + (p.cycle ? '<span class="rt-plan">Round ' + r.index + ' &middot; Cycle '
+          + p.cycle + ' &middot; File ' + p.position + '</span>' : '')
         // How many times the run log had read this document before the round
         // was planned. It is why this case was chosen -- rounds go to whatever
         // is furthest behind -- and without it a plan that reads one fixture
@@ -8590,7 +8633,9 @@ function rtPaint() {
              // `uniform` it is not -- the draw ignores it -- and a tooltip that
              // went on claiming otherwise would describe a rule the run was not
              // planned by.
-             + (p.strategy === 'uniform'
+             + (p.strategy === 'sequential'
+                ? ' — selected files run in order'
+                : p.strategy === 'uniform'
                 ? ' — drawn at random, so this is what the round adds to, '
                   + 'not why it was chosen'
                 : ' — the least-read case is chosen every time') + '">'
@@ -8661,8 +8706,9 @@ function rtPaint() {
    that looks live in the pane while the card's is greyed out is a control that
    lies about what it will do. */
 function rtBusy(on) {
+  rtRunning = on;
   if (on) rtStopping = false;
-  rtRun.disabled = on;
+  rtPaintSequence();
   // A Stop already asked for is not a Stop that can be asked for again: the
   // request is in, and a live-looking button would invite a second one that
   // does nothing.
@@ -8683,6 +8729,7 @@ async function rtStart() {
   const rounds = Math.max(1, Math.min(Number(rtRounds.value) || 5, 50));
   rtRounds.value = rounds;
   rtRows = [];
+  rtContinuous = false;
   rtPaint();
   rtBusy(true);
   // Same reason as the Read button: the rounds below are judged by this floor,
@@ -8703,12 +8750,14 @@ async function rtStart() {
       body: JSON.stringify({
         // Exclusions are a statement about the run: do not draw that model.
         exclude: { readers: [...rtExcluded.readers],
-                   extractors: [...rtExcluded.extractors] },
+                   extractors: [...rtExcluded.extractors],
+                   cases: rtStrategy.value === 'sequential' ? [...rtExcluded.cases] : [] },
         rounds, seed: rtSeed.value.trim() || null, scope: rtScope.value,
         // The same seed under the other draw is a different plan, so this goes
         // with the seed rather than being remembered anywhere.
         strategy: rtStrategy.value,
-        lock: { case: rtLockCase.value, reader: rtLockReader.value,
+        lock: { case: rtStrategy.value === 'sequential' ? '' : rtLockCase.value,
+                reader: rtLockReader.value,
                 extractor: rtLockExtract.value, mode: rtLockMode.value }
       })
     });
@@ -8729,6 +8778,7 @@ async function rtStart() {
         if (!line.trim()) continue;
         const ev = JSON.parse(line);
         if (ev.event === 'plan') {
+          rtContinuous = !!ev.continuous;
           // The seed goes into the box, not just the note: the next thing
           // anyone wants after an interesting run is to run it again.
           rtSeed.value = ev.seed;
@@ -8751,12 +8801,31 @@ async function rtStart() {
           // Only the round actually in flight is `pending`; the rest are
           // planned-but-not-started, which is a different thing to show. Every
           // row read "running…" when this said `pending: true` for all of them.
-          rtRows = ev.rounds.map(p => ({ plan: p }));
-          rtRows[0].pending = true;
+          if (rtContinuous) {
+            rtRows = [];
+            rtNote.textContent = 'Sequential — ' + ev.rounds.length
+              + ' selected files per cycle. Repeats until Stop. Seed ' + ev.seed + '.';
+          } else {
+            rtRows = ev.rounds.map(p => ({ plan: p }));
+            rtRows[0].pending = true;
+            rtPaint();
+          }
+        } else if (ev.event === 'round_start') {
+          rtRows.push({ ...ev, pending: true });
+          if (rtRows.length > 200) rtRows.splice(0, rtRows.length - 200);
+          rtNote.textContent = 'Sequential — cycle ' + ev.plan.cycle + ', file '
+            + ev.plan.position + ': ' + ev.plan.case + ' (round ' + ev.index
+            + '). Repeats until Stop.';
           rtPaint();
         } else if (ev.event === 'round') {
-          rtRows[ev.index - 1] = { ...ev, pending: false };
-          if (rtRows[ev.index]) rtRows[ev.index].pending = true;
+          if (rtContinuous) {
+            const index = rtRows.findIndex(row => row.index === ev.index);
+            if (index >= 0) rtRows[index] = { ...ev, pending: false };
+            else rtRows.push({ ...ev, pending: false });
+          } else {
+            rtRows[ev.index - 1] = { ...ev, pending: false };
+            if (rtRows[ev.index]) rtRows[ev.index].pending = true;
+          }
           rtPaint();
           // The run log is where these rows land, so it is repainted as they
           // arrive rather than only at the end.
@@ -8766,8 +8835,8 @@ async function rtStart() {
           // immediately and writes the one summary line a run gets.
           rtStopping = true;
         } else if (ev.event === 'done') {
-          rtNote.textContent = 'Seed ' + ev.seed + ' — ' + ev.completed + '/'
-            + ev.total + ' round(s) '
+          rtNote.textContent = 'Seed ' + ev.seed + ' — ' + ev.completed
+            + (ev.continuous ? '' : '/' + ev.total) + ' round(s) '
             + (ev.stopped ? 'run before stopping' : 'completed')
             + (ev.failed ? ', ' + ev.failed + ' failed' : '')
             + ' in ' + Math.round(ev.seconds) + 's.'
@@ -8841,9 +8910,27 @@ if (rtRun) {
   // Painted on change and once at load: the caveat belongs beside the choice,
   // not in the results of a run that already made it.
   rtScope.addEventListener('change', () => { rtPaintScope(); rtPaintLocks(); });
-  rtStrategy.addEventListener('change', rtPaintScope);
+  rtStrategy.addEventListener('change', () => { rtPaintScope(); rtPaintSequence(); });
+  const selectFile = box => {
+    if (box.checked) rtExcluded.cases.delete(box.value);
+    else rtExcluded.cases.add(box.value);
+    box.parentElement.classList.toggle('off', !box.checked);
+  };
+  for (const box of rtFiles.querySelectorAll('input')) {
+    box.addEventListener('change', () => { selectFile(box); rtPaintSequence(); });
+  }
+  const selectFiles = checked => {
+    for (const box of rtFiles.querySelectorAll('input')) {
+      box.checked = checked;
+      selectFile(box);
+    }
+    rtPaintSequence();
+  };
+  rtFilesAll.addEventListener('click', () => selectFiles(true));
+  rtFilesNone.addEventListener('click', () => selectFiles(false));
   rtPaintScope();
   rtPaintLocks();
+  rtPaintSequence();
 }
 
 /* ---------- the log view ----------

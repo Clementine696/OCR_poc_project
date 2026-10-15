@@ -42,7 +42,8 @@ Two rules about what may be planned:
   fair in the limit and nobody watches the limit -- over the 24 rows the log held
   when `case_order` was written, sol005 had seven reads and sol006 none -- while
   a rule that always feeds the hungriest document is not a fair sample of
-  anything. See `STRATEGIES`, `case_order` and `_scenarios`.
+  anything. `sequential` visits every included document in case-ID order and
+  repeats the cycle until stopped. See `STRATEGIES`, `case_order` and `_scenarios`.
 - **An extractor is the reading model itself, or a model that is NOT an OCR
   fine-tune.** That is `backends.select_extract`'s rule, mirrored here so a plan
   never contains a round the server would refuse. It is mirrored rather than
@@ -75,7 +76,9 @@ import urllib.request
 
 import backends
 
-# How many rounds one request may ask for. The ceiling is not arithmetic: a
+# How many rounds a finite request may ask for. Sequential stores one complete
+# cycle and streams repeats until stopped, so its document count is not capped.
+# The ceiling for the other strategies is not arithmetic: a
 # round is a real read plus a real extraction, tens of seconds each, and a page
 # that asks for 500 of them has asked for a job it cannot watch and will not
 # cancel cleanly.
@@ -108,13 +111,15 @@ DEFAULT_SCOPE = "full"
 #             a plain uniform draw over five rounds gives one fixture three of
 #             them and four fixtures none, which is the observation `case_order`
 #             was written for and is still true.
+#   sequential all included documents in case-ID order, repeated until Stop.
+#              The plan holds one full cycle, with fixed settings per file.
 #
 # **`uniform` deduplicates the whole round, not the document.** Two rounds on
 # sol003 with different readers are two measurements; two rounds on sol003 with
 # the same reader, Detail and shape are one measurement paid for twice -- greedy
 # decoding on a warm model reproduces a page byte for byte, so the second tells
 # you nothing the first did not. See `_scenarios`.
-STRATEGIES = ("balanced", "uniform")
+STRATEGIES = ("balanced", "uniform", "sequential")
 DEFAULT_STRATEGY = "balanced"
 
 # What makes two rounds "the same scenario". `profile` is derived from `reader`
@@ -443,7 +448,9 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
     scenario twice until every one has been used, which is what makes an
     unbiased sample watchable over the handful of rounds anyone sits through.
     Neither is a better shuffle than the other: the first answers *keep the
-    corpus level*, the second *what does this do on a fair sample*.
+    corpus level*, the second *what does this do on a fair sample*. `sequential`
+    ignores the requested round count and plans one complete cycle in case-ID
+    order. The streaming runner repeats that cycle until stopped.
 
     **A round only draws the settings its scope actually uses**, and the ones it
     does not are `""` rather than absent. A `fields` round has no Detail because
@@ -528,7 +535,15 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
                 for _, values, pinned in axes]
 
     planned, scenarios, repeats = [], None, 0
-    if strategy == "uniform":
+    if strategy == "sequential":
+        # One complete cycle, including pools larger than MAX_ROUNDS. The
+        # streaming runner repeats it until Stop; other axes keep their seeded
+        # choices so each file is measured under the same settings next cycle.
+        for case in sorted(set(case_pool), key=str.casefold):
+            round_ = _round(case, draw(), axes, scope, strategy)
+            round_["seen"] = tally[case]
+            planned.append(round_)
+    elif strategy == "uniform":
         pool = _scenarios(case_pool, axes, scope)
         scenarios = len(pool) or None
         drawn = []
@@ -583,7 +598,26 @@ def plan(rounds: int, cases: list, readers: list, extractors: list,
     # under `balanced`, which does not deduplicate and must not look as if it
     # does.
     return {"seed": seed, "scope": scope, "rounds": planned, "lock": lock,
-            "strategy": strategy, "scenarios": scenarios, "repeats": repeats}
+            "strategy": strategy, "scenarios": scenarios, "repeats": repeats,
+            "continuous": strategy == "sequential"}
+
+
+def iter_rounds(planned: dict):
+    """Finite plans run once; Sequential repeats its complete cycle until stopped.
+
+    Yield copies so cycle/read counters never mutate the saved preview. Only
+    one cycle is stored, regardless of how long the streaming run continues.
+    """
+    batch = planned["rounds"]
+    if not planned.get("continuous"):
+        yield from batch
+        return
+    if not batch:
+        return
+    for cycle in itertools.count(1):
+        for position, original in enumerate(batch, 1):
+            yield {**original, "cycle": cycle, "position": position,
+                   "seen": original.get("seen", 0) + cycle - 1}
 
 
 # What a contest can be about, and where each one gets its ranking. Added
@@ -978,7 +1012,9 @@ def main(argv=None):
                              "document, keeping the corpus level (default). "
                              "uniform: draw from the whole corpus with equal "
                              "odds, never planning the same scenario twice "
-                             "until every one has been used.")
+                             "until every one has been used. "
+                             "sequential: repeat all included documents in "
+                             "case-ID order until stopped; ignores --rounds.")
     parser.add_argument("--contest", action="store_true",
                         help=f"re-run the top {CONTEST_TOP} and bottom "
                              f"{CONTEST_BOTTOM} models from the run log's "
@@ -999,6 +1035,8 @@ def main(argv=None):
     parser.add_argument("--exclude-extractor", action="append", default=[],
                         metavar="MODEL",
                         help="never draw this model to extract; repeatable")
+    parser.add_argument("--exclude-case", action="append", default=[],
+                        metavar="CASE", help="skip this document; repeatable")
     parser.add_argument("--lock-case", default=None,
                         help="run every round on this document instead of "
                              "spreading them")
@@ -1017,7 +1055,7 @@ def main(argv=None):
     # Sent with both shapes, like the page does: an exclusion is a statement
     # about the run, not about which button started it.
     exclude = {"readers": args.exclude_reader,
-               "extractors": args.exclude_extractor}
+               "extractors": args.exclude_extractor, "cases": args.exclude_case}
 
     request_body = ({"contest": True, "documents": args.documents,
                      "seed": args.seed, "subject": args.subject,
@@ -1064,6 +1102,10 @@ def main(argv=None):
             print(f"  {name}" + (f"  [{end}]" if end else ""))
         print()
 
+    if body.get("continuous"):
+        print(f"Sequential: {len(body['rounds'])} document(s) per cycle; "
+              "repeats until Ctrl-C.\n")
+
     request_ = urllib.request.Request(
         args.app + "/api/randomtest/stream",
         data=json.dumps({**request_body, "seed": body["seed"]}).encode(),
@@ -1098,7 +1140,8 @@ def _consume(request_):
             if event.get("event") == "round":
                 plan_, out = event["plan"], event.get("result") or {}
                 seen = plan_.get("seen")
-                print(f"[{event['index']}/{event['total']}] {plan_['case']}"
+                total = event['total'] if event['total'] is not None else 'continuous'
+                print(f"[{event['index']}/{total}] {plan_['case']}"
                       + ("" if seen is None else f" (read {seen}x before)")
                       + " - " + _describe(plan_))
                 if event.get("error"):
@@ -1138,8 +1181,10 @@ def _consume(request_):
             elif event.get("event") == "stopped":
                 print(f"stopped {event['where']}.")
             elif event.get("event") == "done":
+                count = (str(event['completed']) if event.get('continuous')
+                         else f"{event['completed']}/{event['total']}")
                 print(f"{'stopped' if event.get('stopped') else 'done'}: "
-                      f"{event['completed']}/{event['total']} rounds, "
+                      f"{count} rounds, "
                       f"{event['failed']} failed, {event['seconds']:.0f}s")
 
 
