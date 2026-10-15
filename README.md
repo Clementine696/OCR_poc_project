@@ -1413,17 +1413,17 @@ extraction-from-a-real-transcript untested by anything automatic.
 | | |
 |---|---|
 | **What each round runs** | how much of the pipeline to exercise &mdash; the three scopes below |
-| **How rounds are drawn** | **Balanced** or **Random** &mdash; the two draws below |
-| **Runs** | 1 to 50. A round is a real read plus a real extraction, so tens of seconds each |
+| **How rounds are drawn** | **Balanced**, **Random**, or **Sequential** &mdash; described below |
+| **Runs** | 1 to 50 for Balanced/Random. Sequential repeats until Stop and has no round limit |
 | **Seed** | leave blank for a new one; the seed used is put in the box when the run starts. It fixes the models, Details and shapes, and their order. Under **Balanced** the documents are chosen from the run log as it stands, so a seed replays that plan exactly only while the log has not moved; under **Random** the log is not consulted and a seed replays the plan whatever the log does. A seed under the other draw is a different plan |
 
-**Two ways to draw the rounds.** One picker, and the two answer opposite questions
-rather than one being a better shuffle:
+**Three ways to choose documents:**
 
 | | |
 |---|---|
 | **Balanced** (default) | each round goes to whichever document the run log has read fewest times, counting the log plus the rounds planned above it. The corpus stays level and a fixture nobody has run is picked up by the next test. **Not a fair sample:** a document that is ahead is not drawn at all until the others catch up |
 | **Random** | every document is equally likely, drawn from the whole set &mdash; and **no two rounds of one run are the same scenario**: the same document, reader, extraction model, Detail and shape never come up twice until every combination has been used. A fair sample, which also means a document the log is already full of can be drawn again while one that has never run is missed |
+| **Sequential** | shows all available benchmark files, selected initially. Untick files to skip, or use Select all / Clear selection. Runs the selected files in case-ID order, then starts again from the first until **Stop**. Includes every selected file even when there are more than 50. The seeded settings for each file repeat on every cycle; model/shape locks still apply. Runs and Lock document are hidden in this mode. The result card shows the latest 200 rounds with cycle/file progress, and completed runs are recorded in the run log as usual |
 
 Under **Random** the note beside the seed says how many distinct scenarios there were to
 choose from, and &mdash; when more runs were asked for than there are different runs to
@@ -1433,7 +1433,9 @@ round means different things under the two draws, and its tooltip says which: un
 **Balanced** it is *why* that document was chosen, under **Random** it is only what the
 round adds to.
 
-On the CLI: `--strategy balanced` (default) or `--strategy uniform`.
+On the CLI: `--strategy balanced` (default), `--strategy uniform`, or
+`--strategy sequential`. Use `--exclude-case sol003` (repeatable) to skip files.
+Sequential ignores `--rounds` and repeats until Ctrl-C asks the server to stop.
 
 **Exclusions.** Every served vision model appears as a chip under **Readers that may read**;
 every eligible server model appears under **Models that may extract**. Unticking one takes it

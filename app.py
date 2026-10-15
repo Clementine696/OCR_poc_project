@@ -5965,7 +5965,9 @@ def random_test_stream():
         yield json.dumps({"event": "plan", **planned}) + "\n"
         completed = failed = 0
         stopped = ""
-        for index, round_ in enumerate(planned["rounds"], 1):
+        continuous = planned.get("continuous", False)
+        total = None if continuous else len(planned["rounds"])
+        for index, round_ in enumerate(randomtest.iter_rounds(planned), 1):
             # Checked before the round as well as inside it, so a stop during a
             # `fields` round -- which has no page to interrupt -- still costs one
             # round rather than the rest of the plan.
@@ -5974,7 +5976,10 @@ def random_test_stream():
                 break
             began = time.perf_counter()
             event = {"event": "round", "index": index,
-                     "total": len(planned["rounds"]), "plan": round_}
+                     "total": total, "plan": round_}
+            if continuous:
+                yield json.dumps({**event, "event": "round_start"},
+                                 ensure_ascii=False) + "\n"
             try:
                 event["result"] = randomtest.summarise_round(
                     _run_round(round_, cancel))
@@ -5998,11 +6003,12 @@ def random_test_stream():
         if stopped:
             yield json.dumps({"event": "stopped", "where": stopped,
                               "completed": completed,
-                              "total": len(planned["rounds"])}) + "\n"
+                              "total": total}) + "\n"
         # `done` is emitted on a stop too, so the page has one event that ends a
         # run however it ended and writes its summary line once.
         yield json.dumps({"event": "done", "completed": completed,
-                          "failed": failed, "total": len(planned["rounds"]),
+                          "failed": failed, "total": total,
+                          "continuous": continuous,
                           "stopped": bool(stopped),
                           "seconds": round(time.perf_counter() - started, 1),
                           "seed": planned["seed"]}) + "\n"
@@ -6292,7 +6298,7 @@ def _stress_config(body: dict) -> dict:
     if shape not in ("single", "agentic"):
         raise ValueError("extract_mode must be 'single' or 'agentic'.")
     strategy = (body.get("strategy") or randomtest.DEFAULT_STRATEGY).strip().lower()
-    if strategy not in randomtest.STRATEGIES:
+    if strategy not in ("balanced", "uniform"):
         raise ValueError("strategy must be 'balanced' or 'uniform'.")
     cases = _stress_cases(mode)
     lock = (body.get("lock_case") or "").strip()
