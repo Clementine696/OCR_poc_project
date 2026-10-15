@@ -8651,14 +8651,14 @@ function rtPaint() {
              + p.seen + '</span>')
         + rtPlanLines(p) + '</td>'
       + (r.pending
-          ? '<td colspan="4"><span class="cs-none">running&hellip;</span></td>'
+          ? '<td colspan="6"><span class="cs-none">running&hellip;</span></td>'
           : !r.result && !r.error
           // Planned but not reached yet. Shown rather than hidden so the whole
           // plan is visible from the start -- that is what makes a long run
           // watchable, and what a seed reproduces.
-          ? '<td colspan="4"><span class="cs-none">queued</span></td>'
+          ? '<td colspan="6"><span class="cs-none">queued</span></td>'
           : r.error
-            ? '<td colspan="4"><span style="color:var(--danger)">' + esc(r.error) + '</span></td>'
+            ? '<td colspan="6"><span style="color:var(--danger)">' + esc(r.error) + '</span></td>'
             // A pass the scope did not run is `not run`, never a zero: an
             // empty field count under a read-only round reads as an extraction
             // that returned nothing, which is a result and not what happened.
@@ -8697,6 +8697,7 @@ function rtPaint() {
                   + (out.partial_reply
                      ? '<span class="rt-plan" style="color:var(--danger)">salvaged</span>' : '')
                   + '</td>')
+            + rtThroughputCells(out)
             + '<td class="n">' + Number(r.seconds || 0).toFixed(0) + 's</td>')
       + '</tr>';
   }).join('');
@@ -8708,7 +8709,39 @@ function rtPaint() {
       + 'scored over the base field set instead and reads &quot;base&quot;'
       + '">Fields</th>'
     + '<th title="entries returned under other_fields">Extra</th>'
+    + '<th title="pages read over the read and extract time, not the round&#39;s '
+      + 'wall time: model switching between rounds is left out">Pages/s</th>'
+    + '<th title="tokens sent plus tokens generated, both passes; per page under it">'
+      + 'Tokens</th>'
     + '<th>Time</th></tr>' + body + '</table>';
+}
+
+/* Pages, pages/s and tokens, a round's or the whole run's -- `randomtest.
+   summarise_round` and `run_totals` hold the same names so one painter fits both. */
+function rtThroughputText(t) {
+  const parts = [];
+  if (t.pages) parts.push(t.pages + ' page(s)');
+  if (t.pages_per_second != null) parts.push(t.pages_per_second.toFixed(2) + ' pages/s');
+  if (t.tokens != null) {
+    parts.push(t.tokens.toLocaleString() + ' tokens (in '
+      + (t.in_tokens || 0).toLocaleString() + ' / out '
+      + (t.out_tokens || 0).toLocaleString() + ')');
+  }
+  if (t.tokens_per_page != null) parts.push(Math.round(t.tokens_per_page).toLocaleString() + ' tokens/page');
+  return parts.join(', ');
+}
+function rtThroughputCells(out) {
+  const none = '<span class="cs-none">&mdash;</span>';
+  return '<td class="n">' + (out.pages_per_second == null ? none
+      : out.pages_per_second.toFixed(2)
+        + '<span class="rt-plan">' + out.pages + ' page(s)</span>') + '</td>'
+    + '<td class="n">' + (out.tokens == null ? none
+      : '<span title="in ' + (out.in_tokens || 0).toLocaleString() + ' / out '
+        + (out.out_tokens || 0).toLocaleString() + '">'
+        + out.tokens.toLocaleString() + '</span>'
+        + (out.tokens_per_page == null ? ''
+           : '<span class="rt-plan">' + Math.round(out.tokens_per_page).toLocaleString()
+             + '/page</span>')) + '</td>';
 }
 
 /* Both Stop buttons move with the Run button: the run is one thing, and a Stop
@@ -8849,6 +8882,12 @@ async function rtStart() {
             + (ev.stopped ? 'run before stopping' : 'completed')
             + (ev.failed ? ', ' + ev.failed + ' failed' : '')
             + ' in ' + Math.round(ev.seconds) + 's.'
+            + (ev.totals && ev.totals.rounds
+               ? ' Total: ' + rtThroughputText(ev.totals)
+                 + (ev.totals.token_rounds < ev.totals.rounds
+                    ? ' (tokens from ' + ev.totals.token_rounds + '/'
+                      + ev.totals.rounds + ' rounds)' : '') + '.'
+               : '')
             // The guard is released by the time this arrives, so this is also
             // the page saying another test may be started now.
             + (ev.stopped ? ' Stopped — the rounds above are in the run log, '

@@ -914,7 +914,27 @@ def summarise_round(result: dict) -> dict:
                if isinstance(documents, list) and documents else [extracted])
     entries = [entry for holder in holders
                for entry in ((holder.get("fields") or {}).get("other_fields") or [])]
+    # Throughput and tokens, both passes together. A `fields` round read no page,
+    # so it has tokens and no pages; an `ocr` round has no pass-2 half.
+    pages = result.get("page_count") or 0
+    served = extracted.get("server_time") or {}
+    tokens_in = _add_known(result.get("in_tokens") if pages else 0,
+                           served.get("in_tokens") if extracted else 0)
+    tokens_out = _add_known(result.get("out_tokens") if pages else 0,
+                            served.get("out_tokens") if extracted else 0)
+    tokens = _add_known(tokens_in, tokens_out)
+    busy = (result.get("seconds") or 0) + (extracted.get("seconds") or 0)
     return {
+        "pages": pages,
+        # Read plus extract, not the round's wall time: a round also unloads and
+        # loads models, and that is the random test's doing, not the pipeline's.
+        "busy_seconds": round(busy, 2),
+        "pages_per_second": round(pages / busy, 3) if pages and busy else None,
+        "in_tokens": tokens_in,
+        "out_tokens": tokens_out,
+        "tokens": tokens,
+        "tokens_per_page": (round(tokens / pages, 1)
+                            if pages and tokens is not None else None),
         "read_by": result.get("model") or "",
         "extract_by": extracted.get("model") or "",
         "char_accuracy": truth.get("char_accuracy"),
@@ -951,6 +971,43 @@ def summarise_round(result: dict) -> dict:
         # Carried as the reason rather than a flag: "not scored" without a
         # because reads as a defect in the harness.
         "unscored": unscored,
+    }
+
+
+def _add_known(*values):
+    """The sum, or None where any part is unknown -- a total missing a part reads
+    as smaller than it is."""
+    if any(v is None for v in values):
+        return None
+    return sum(values)
+
+
+def run_totals(results: list) -> dict:
+    """Pages, pages/s and tokens over a run's finished rounds.
+
+    Pages/s is over the rounds' busy time (read plus extract), for the reason
+    `summarise_round` gives. Tokens are summed over the rounds that reported
+    them, and `token_rounds` says how many that is; tokens/page is taken over the
+    rounds that both read pages and reported tokens, so a `fields` round's tokens
+    are in the total and not divided by pages it never read.
+    """
+    results = [r for r in results if r]
+    pages = sum(r.get("pages") or 0 for r in results)
+    busy = sum(r.get("busy_seconds") or 0 for r in results)
+    counted = [r for r in results if r.get("tokens") is not None]
+    paged = [r for r in counted if r.get("pages")]
+    paged_pages = sum(r["pages"] for r in paged)
+    return {
+        "pages": pages,
+        "busy_seconds": round(busy, 1),
+        "pages_per_second": round(pages / busy, 3) if pages and busy else None,
+        "in_tokens": sum(r.get("in_tokens") or 0 for r in counted),
+        "out_tokens": sum(r.get("out_tokens") or 0 for r in counted),
+        "tokens": sum(r["tokens"] for r in counted),
+        "token_rounds": len(counted),
+        "rounds": len(results),
+        "tokens_per_page": (round(sum(r["tokens"] for r in paged) / paged_pages, 1)
+                            if paged_pages else None),
     }
 
 
@@ -1177,6 +1234,7 @@ def _consume(request_):
                               + ("  PARTIAL" if out.get("partial_reply") else "")
                               + (f"  {event.get('seconds', 0):.0f}s"
                                  if scope == "fields" else ""))
+                    print("     " + _throughput(out))
                 print(flush=True)
             elif event.get("event") == "stopped":
                 print(f"stopped {event['where']}.")
@@ -1186,6 +1244,26 @@ def _consume(request_):
                 print(f"{'stopped' if event.get('stopped') else 'done'}: "
                       f"{count} rounds, "
                       f"{event['failed']} failed, {event['seconds']:.0f}s")
+                totals = event.get("totals") or {}
+                if totals.get("rounds"):
+                    print("total: " + _throughput(totals)
+                          + (f"  (tokens from {totals['token_rounds']}"
+                             f"/{totals['rounds']} rounds)"
+                             if totals["token_rounds"] < totals["rounds"] else ""))
+
+
+def _throughput(figures: dict) -> str:
+    """Pages, pages/s and tokens on one line -- a round's or the whole run's."""
+    pages = figures.get("pages") or 0
+    pps = figures.get("pages_per_second")
+    tokens = figures.get("tokens")
+    per_page = figures.get("tokens_per_page")
+    return (f"pages {pages}"
+            + (f"  {pps:.2f} pages/s" if pps is not None else "")
+            + ("  tokens n/a" if tokens is None else
+               f"  tokens {tokens:,} (in {figures.get('in_tokens') or 0:,}"
+               f" / out {figures.get('out_tokens') or 0:,})")
+            + (f"  {per_page:,.0f} tokens/page" if per_page is not None else ""))
 
 
 if __name__ == "__main__":
