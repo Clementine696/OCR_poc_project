@@ -1948,6 +1948,15 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <input id="stNoCache" type="checkbox"> Bypass the server's prompt cache
           <span class="muted-inline" style="font-weight:400">&mdash; measure full prefill, not cache hits</span>
         </label>
+        <!-- Off by default: a stress job's timings were taken under the load of
+             the others. On, each measured job is one ordinary run-log row tagged
+             with the run and its concurrency, so the "Run kind" chips can keep
+             or drop them. -->
+        <label class="st-check" id="stSaveLogRow"
+               title="Write one run-log row per measured job, the same row a normal run writes, tagged with this stress run and its concurrency. The rows then feed every table on the run-log card; the Run kind chips keep or drop them. Warm-up, cancelled and skipped jobs are not written. Classification is never written: a glued file is no benchmark case.">
+          <input id="stSaveLog" type="checkbox"> Save each job to the run log
+          <span class="muted-inline" style="font-weight:400" id="stSaveLogNote">&mdash; rows are tagged as stress runs</span>
+        </label>
         <div class="row">
           <button id="stRun" class="primary">Run stress test</button>
           <button id="stStop" class="ghost-sm" disabled>Stop</button>
@@ -9075,6 +9084,12 @@ const LV_FIELDS = [
   // expressible through the API and not from the page. It is last because it is
   // the one group that changes what a figure MEANS rather than which runs it is
   // over -- see the caveat under the chips.
+  // A stress-test job saved to the log, or an ordinary run. Its timings were
+  // taken under the load of the other jobs in flight, so this is the chip to
+  // drop them with when a table is about one run at a time.
+  {field: 'stress', label: 'Run kind',
+   hint: 'stress: a job of a stress test saved to the log, timed under the load '
+       + 'of the other jobs in flight. normal: every other run'},
   {field: 'status', label: 'Outcome',
    hint: 'how the run ended. Dropping the failures does not clean the data: a '
        + 'failure is already counted and never scored, so what a failure chip '
@@ -9089,6 +9104,7 @@ function lvChipLabel(field, value) {
   if (field === 'hardware' || field === 'start') return anMarkLabel(field, value);
   if (field === 'ocr_engine') return engineLabel(value);
   if (field === 'status') return LV_STATUS[value] || value || 'not recorded';
+  if (field === 'stress') return value === 'stress' ? 'stress test' : 'normal run';
   // As stored: `csModel` would cut a version at its last `/`.
   if (/quant$|inference_engine$/.test(field)) return value;
   return csModel(value);
@@ -12567,6 +12583,12 @@ function stPaintMode() {
   stEl('stPagesField').style.display = m === 'classify' ? '' : 'none';
   stEl('stLockRow').style.display = m === 'classify' ? 'none' : '';
   stEl('stStrategyField').style.display = m === 'classify' ? 'none' : '';
+  // Classification writes no row, so the box is not offered there.
+  const busy = !stStop.disabled;
+  stEl('stSaveLog').disabled = m === 'classify' || busy;
+  stEl('stSaveLogNote').textContent = m === 'classify'
+    ? '— not for classification: a glued file is no benchmark case'
+    : '— rows are tagged as stress runs';
   stEl('stModeNote').textContent = ST_MODE_TEXT[m] || '';
 }
 
@@ -12614,6 +12636,7 @@ function stBusy(on) {
   if (on) stStopping = false;
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
+  stEl('stSaveLog').disabled = on || stMode.value === 'classify';
   stStop.disabled = stStop2.disabled = !on || stStopping;
   if (rtRun) rtRun.disabled = on;
   if (on) runBtn.disabled = true; else paintServer();
@@ -12772,6 +12795,8 @@ function stPaint() {
       + (plan.no_cache ? ' · prompt cache bypassed ('
           + Object.entries(plan.no_cache_effect || {})
               .map(([k, v]) => esc(k) + ': ' + esc(v)).join('; ') + ')' : '')
+      + (plan.save_log ? ' · saving each job to the run log as stress run <b>'
+          + esc(plan.run_id) + '</b>' : '')
       + ' · seed ' + plan.seed + '</p>';
   }
   const p = s.progress;
@@ -12915,6 +12940,7 @@ function stBody() {
     lock_case: stMode.value === 'classify' ? '' : val('stLock'),
     metrics: stSample.checked && !stSample.disabled,
     no_cache: stEl('stNoCache').checked,
+    save_log: stEl('stSaveLog').checked && stMode.value !== 'classify',
     metrics_every: Number(val('stEvery')) || 5
   };
 }

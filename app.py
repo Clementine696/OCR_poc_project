@@ -4818,7 +4818,8 @@ def log_run(summary: dict, source: dict, status: str = None, error=None,
         pass
 
 
-def log_extract(result: dict, job_id: str = None, context: dict = None):
+def log_extract(result: dict, job_id: str = None, context: dict = None,
+                extra: dict = None):
     """Append a row for a pass-2-only run -- the Re-extract button, or a script.
 
     Extraction can be re-run any number of times against one transcript, and each
@@ -4865,6 +4866,9 @@ def log_extract(result: dict, job_id: str = None, context: dict = None):
         # Enough for the `case` column to name the document; the accuracy scores
         # belong to the read that produced the transcript, not to this row.
         "truth": {"case": context.get("case", "")},
+        # Cells the caller knows and this function does not -- a stress job's
+        # run id and concurrency.
+        **(extra or {}),
     }
     status = ("error" if error
               else "partial" if result.get("partial")
@@ -6222,11 +6226,14 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
 #
 # **What it deliberately does NOT share with the random test:**
 #
-# * **Nothing is logged.** No run-log row, no `solution/out/` transcript, no
-#   page job in the compare-view cache. The user's rule -- *only show the final
-#   metric and score* -- and the right one: every figure here was taken under
-#   contention no other run was, and averaging it into the setting tables would
-#   put two different questions under one column.
+# * **Nothing is logged by default.** No run-log row, no `solution/out/`
+#   transcript, no page job in the compare-view cache: every figure here was
+#   taken under contention no other run was. **`save_log`** (2026-10-15, at the
+#   user's request -- the stress test is where the volume of data is) writes one
+#   ordinary row per measured job, tagged `stress_run` / `stress_concurrency`
+#   so the `stress` filter can keep or drop them. Warm-up, cancelled and skipped
+#   jobs are never written; classification has no row shape and is never
+#   written. Still no transcript and no page job.
 # * **No model is switched.** The whole run uses the reader and the extraction
 #   model selected now. A stress test compares LOAD, and a model change between
 #   jobs would be a second variable nobody could separate from the first.
@@ -6349,6 +6356,9 @@ def _stress_config(body: dict) -> dict:
         "metrics_every": number("metrics_every", 5, 1, 600),
         "metrics": bool(body.get("metrics")),
         "no_cache": bool(body.get("no_cache")),
+        # Classification has no row shape: a glued pack is no benchmark case and
+        # its score is a grouping, so nothing is written for it.
+        "save_log": bool(body.get("save_log")) and mode != "classify",
         "detail": resolve_detail(body.get("detail") or "medium"),
         "extract_mode": shape,
         "strategy": strategy,
@@ -6358,25 +6368,32 @@ def _stress_config(body: dict) -> dict:
     }
 
 
-def _stress_pages(case_id: str, detail: str) -> list:
+def _stress_pages(case_id: str, detail: str) -> tuple:
     """A case's pages, prepared exactly as `prepare_input` does it, encoded once.
 
     Not `prepare_input` itself, because that registers a page job -- and a
     stress run's pages in the compare-view cache would evict the reads somebody
-    is looking at, `MAX_JOBS` being a RAM ceiling.
+    is looking at, `MAX_JOBS` being a RAM ceiling. Returns `(pages, source)`,
+    the source being what a saved row names the input as.
     """
-    data, _ = case_bytes(case_id)
+    data, case = case_bytes(case_id)
     pages, _ = load_pages(data)
     budget = DETAIL_PRESETS[detail]
     prepared = [fit_pixels(trim_margins(page) if TRIM_MARGINS else page, budget)
                 for page in pages]
     for page in prepared:
         page._data_uri = image_data_uri(page)
-    return prepared
+    return prepared, describe_source(case["pdf"], data, "case")
 
 
-def _stress_read(pages, cancel, rec: dict, live: _StressLive) -> tuple:
-    """Pass 1 over prepared pages. `(page_texts, looped, truncated)`."""
+def _stress_read(pages, cancel, rec: dict, live: _StressLive,
+                 stats_out: list = None) -> tuple:
+    """Pass 1 over prepared pages. `(page_texts, looped, truncated)`.
+
+    `stats_out` collects each page's stats as it starts, for a job that is
+    saved to the run log -- a list the caller owns, so the pages that finished
+    before an error are still there to write.
+    """
     started = time.perf_counter()
     texts, looped, truncated = [], False, False
     ttft, page_s, page_tps, tokens = [], [], [], 0
@@ -6385,6 +6402,8 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive) -> tuple:
         if cancel.is_set():
             raise SweepCancelled("stopped")
         stats = {}
+        if stats_out is not None:
+            stats_out.append(stats)
         try:
             texts.append(read_page(page, stats, cancel=cancel))
         except Exception:
@@ -6481,6 +6500,15 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
              "classify": "segment"}[mode]
     live.move("queued", stage)
     began = time.perf_counter()
+    # Saving to the run log (`save_log`, measured jobs only): one ordinary row
+    # per job, written the way the route writes it -- `summarise` right after the
+    # read, then `log_run` with the extraction on it -- and tagged with the run
+    # and its concurrency, because its timings were taken under that load.
+    log = bool(spec.get("log"))
+    tag = {"stress_run": cfg.get("run_id", ""),
+           "stress_concurrency": cfg["concurrency"]} if log else {}
+    all_stats, row, logged = [], None, False
+    read_began = began
     try:
         if mode == "classify":
             _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel)
@@ -6489,14 +6517,19 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
             case = scoring.cases_index()[case_id]
             texts, looped, truncated, truth = None, False, False, None
             if mode in ("ocr", "full"):
-                texts, looped, truncated = _stress_read(prepared["pages"][case_id],
-                                                        cancel, rec, live)
+                read_began = time.perf_counter()
+                texts, looped, truncated = _stress_read(
+                    prepared["pages"][case_id], cancel, rec, live,
+                    stats_out=all_stats if log else None)
                 text = join_page_texts(texts) if len(texts) > 1 else texts[0]
                 try:
                     truth = scoring.evaluate(case, text)
                 except Exception:                   # noqa: BLE001
                     truth = None
                 rec["char_accuracy"] = (truth or {}).get("char_accuracy")
+                if log:
+                    row = {**summarise(all_stats, cfg["detail"], read_began),
+                           "truth": truth, **tag}
             if mode in ("extract", "full"):
                 if mode == "full":
                     live.move("ocr", "extract")
@@ -6513,6 +6546,15 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 served = result.get("server_time") or {}
                 rec["extract_in"] = served.get("in_tokens")
                 rec["extract_out"] = served.get("out_tokens")
+                if log:
+                    logged = True
+                    if row is not None:
+                        row["extracted"] = result
+                        log_run(row, prepared["sources"][case_id])
+                    else:
+                        log_extract(result, None, {
+                            "case": case_id,
+                            "source": prepared["sources"][case_id]}, extra=tag)
                 if result.get("error"):
                     raise ValueError(result["error"])
                 payload = {"truth": truth, "looped": looped,
@@ -6527,6 +6569,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                            field_expected=summary["expected"],
                            unscored=bool(summary["unscored"]),
                            partial_reply=summary["partial_reply"])
+            if row is not None and not logged:      # read only
+                logged = True
+                log_run(row, prepared["sources"][case_id])
             rec["status"] = ("looped" if looped else
                              "truncated" if truncated else "ok")
     except SweepCancelled:
@@ -6537,12 +6582,33 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
         else:
             rec["status"] = "error"
             rec["error"] = f"{type(err).__name__}: {err}"[:300]
+            # A job that failed is saved as the failure it was. A cancelled or
+            # skipped one is not: nobody let it finish, so it measured nothing.
+            if log and not logged and mode != "classify":
+                _stress_log_error(mode, spec, prepared, all_stats, read_began,
+                                  cfg, tag, err)
     finally:
         live.move("classify" if mode == "classify" and "segment_s" in rec
                   else stage, None)
     rec["total_s"] = round(time.perf_counter() - began, 3)
     live.finish(rec["status"] == "error")
     return rec
+
+
+def _stress_log_error(mode, spec, prepared, all_stats, read_began, cfg, tag,
+                      err) -> None:
+    """The run-log row of a saved stress job that raised. Never raises."""
+    try:
+        case_id = spec["case"]
+        if mode in ("ocr", "full"):
+            row = {**summarise(all_stats, cfg["detail"], read_began), **tag}
+            log_run(row, prepared["sources"][case_id], error=err)
+        else:
+            log_extract({"error": f"{type(err).__name__}: {err}"}, None,
+                        {"case": case_id, "source": prepared["sources"][case_id]},
+                        extra=tag)
+    except Exception:                               # noqa: BLE001
+        pass
 
 
 def _stress_targets(reader: dict, extractor: dict) -> list:
@@ -6603,6 +6669,8 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
     deadline = started + cfg["max_seconds"] if cfg["max_seconds"] and phase == "run" else None
     for spec in specs:
         spec["submitted"], spec["deadline"] = started, deadline
+        # Warm-up jobs are thrown away from the report, and from the log too.
+        spec["log"] = bool(cfg.get("save_log")) and phase == "run"
     futures = [pool.submit(_stress_job, spec, cfg, prepared, cancel, live)
                for spec in specs]
     pending, timeline = set(futures), []
@@ -6650,6 +6718,7 @@ def _stress_run(cfg: dict, cancel):
     """The whole run: plan, prepare, warm up, measure, report."""
     rng, seed = stress.seeded_rng(cfg["seed"])
     mode = cfg["mode"]
+    cfg["run_id"] = f"{time.strftime('%Y-%m-%dT%H:%M:%S')}-{seed}"
     total = cfg["warmup"] + cfg["jobs"]
     reader = llama_status() if mode in ("ocr", "full") else None
     extractor = backends.extract_status() if mode != "ocr" else None
@@ -6679,6 +6748,8 @@ def _stress_run(cfg: dict, cancel):
         "metrics_servers": targets,
         # Which server kinds took the bypass and how; a server that has no
         # per-request switch is named rather than counted as uncached.
+        "save_log": bool(cfg.get("save_log")),
+        "run_id": cfg["run_id"] if cfg.get("save_log") else "",
         "no_cache": bool(cfg.get("no_cache")),
         "no_cache_effect": ({s["kind"]: backends.cache_bypass_effect(s["kind"])
                              for s in (reader, extractor) if s}
@@ -6686,7 +6757,7 @@ def _stress_run(cfg: dict, cancel):
     }) + "\n"
 
     began = time.perf_counter()
-    prepared = {"pages": {}, "truths": {}, "packs": []}
+    prepared = {"pages": {}, "truths": {}, "packs": [], "sources": {}}
     index = scoring.cases_index()
     if mode == "classify":
         truths = {cid: index[cid]["ground_truth"].read_text("utf-8")
@@ -6705,9 +6776,14 @@ def _stress_run(cfg: dict, cancel):
             if cancel.is_set():
                 break
             if mode in ("ocr", "full"):
-                prepared["pages"][case_id] = _stress_pages(case_id, cfg["detail"])
+                prepared["pages"][case_id], prepared["sources"][case_id] = \
+                    _stress_pages(case_id, cfg["detail"])
             else:
-                prepared["truths"][case_id] = index[case_id]["ground_truth"].read_text("utf-8")
+                path = index[case_id]["ground_truth"]
+                prepared["truths"][case_id] = path.read_text("utf-8")
+                # Named as the file fed in, the way a fields-only run names it.
+                prepared["sources"][case_id] = describe_source(
+                    path.name, prepared["truths"][case_id].encode("utf-8"), "truth")
             yield json.dumps({"event": "preparing", "done": i,
                               "total": len(wanted)}) + "\n"
     prepare_seconds = round(time.perf_counter() - began, 2)
@@ -6757,8 +6833,9 @@ def _stress_run(cfg: dict, cancel):
 def stress_stream():
     """Run a stress test, one NDJSON progress event a second and one report.
 
-    No per-job event is sent and nothing is written anywhere: the report is the
-    whole output. See the section comment above.
+    No per-job event is sent. Nothing is written anywhere unless `save_log` is
+    set, and then only a run-log row per measured job. See the section comment
+    above.
     """
     body = request.get_json(silent=True) or {}
     try:

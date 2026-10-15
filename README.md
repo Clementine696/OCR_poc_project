@@ -1603,8 +1603,17 @@ models selected in the Workspace and never switches them.
 | **Detail** / **Extraction shape** / **Pages per file** | shown for the modes that use them |
 | **How documents are drawn**, **Seed**, **Lock document** | the same rules as the random test; the seed goes into the box so a run can be repeated |
 
-**Nothing is written anywhere.** No run-log row, no `solution/out/` transcript, no page image
-in the Compare cache. Only the report is shown — no per-document values.
+**By default nothing is written anywhere.** No run-log row, no `solution/out/` transcript,
+no page image in the Compare cache. Only the report is shown — no per-document values.
+
+Tick **Save each job to the run log** to keep the data: every measured job is then one
+ordinary row in `logs/runs.csv` — the same row a normal read or extraction writes — with two
+extra columns, `stress_run` (the run's start time and seed) and `stress_concurrency` (how many
+jobs were in flight). Its timings were taken under that load, so the **Run kind** chips on the
+run-log card (*stress test* / *normal run*) keep or drop these rows in every table. Warm-up,
+cancelled and skipped jobs are not written, and **Classify 100+ pages** never writes (a glued
+file is not a benchmark document). Still no transcript is saved and no page enters the Compare
+cache.
 
 **What is timed is the server.** Pages are decoded, resized and encoded once before the clock
 starts; the time that took is shown as *prepare, not timed*.
@@ -3069,7 +3078,8 @@ can run here, and `keys` is every key in the schema in the order the prompt list
 `POST /api/stress/stream` — run a stress test. Body: `mode` (`ocr`, `extract`, `classify`,
 `full`), `concurrency`, `jobs`, `warmup`, `max_seconds`, `detail`, `extract_mode`,
 `pack_pages`, `strategy`, `seed`, `lock_case`, `metrics` (sample vLLM `/metrics`),
-`metrics_every` and `no_cache` (bypass the server's prompt cache). Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
+`metrics_every`, `no_cache` (bypass the server's prompt cache) and `save_log` (one run-log
+row per measured job; ignored for `classify`). Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
 (jobs in each stage, done, live pages and tokens per second, and `server_metrics` when
 sampling), then `done` with `report`. After a Stop, `draining` events follow until the
 server's last request ends. `409` while a random test or another stress test is running.

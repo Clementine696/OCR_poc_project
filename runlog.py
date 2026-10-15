@@ -609,6 +609,14 @@ COLUMNS = [
     "out_tokens",
     "extract_in_tokens",
     "extract_out_tokens",
+    # A stress-test job saved to the log (2026-10-15, at the user's request:
+    # the stress test is where the volume is). `stress_run` names the run it
+    # came from (`<start time>-<seed>`), `stress_concurrency` how many jobs were
+    # in flight -- which is what its timings were taken under, so they are not
+    # the same figure as an ordinary run's. Blank on every other row, which is
+    # how the `stress` filter tells them apart.
+    "stress_run",
+    "stress_concurrency",
 ]
 
 # servertime.FIELDS, spelled out: this module cannot import servertime (it
@@ -1423,6 +1431,8 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "ocr_engine": summary.get("ocr_engine")
                       or ("" if not summary else engine_of_backend(summary.get("backend"))),
         "dry": _DRY,
+        "stress_run": summary.get("stress_run") or "",
+        "stress_concurrency": _blank_none(summary.get("stress_concurrency")),
     }
 
     try:
@@ -1763,6 +1773,9 @@ FILTER_FIELDS = {
     "status": lambda r: r.get("status") or "",
     "run_type": lambda r: r.get("run_type") or "ocr",
     "source": lambda r: r.get("source") or "",
+    # A stress-test job or an ordinary run. Never blank, so both are offered as
+    # chips and "drop the stress runs" is one click.
+    "stress": lambda r: "stress" if r.get("stress_run") else "normal",
     # Inferred, not recorded -- see `run_hardware` / `run_start`. Filterable like
     # any other field, so "GPU cold reads only" is one pair of chips, and blank
     # (no rate / no prefill) drops out of the facets rather than offering an

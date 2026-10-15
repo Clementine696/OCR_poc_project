@@ -207,7 +207,8 @@ class RunLogTests(unittest.TestCase):
                           "extract_server_decode_tps",
                           "model_quant", "inference_engine",
                           "extract_quant", "extract_inference_engine",
-                          "in_tokens", "out_tokens", "extract_in_tokens", "extract_out_tokens"])
+                          "in_tokens", "out_tokens", "extract_in_tokens", "extract_out_tokens",
+                          "stress_run", "stress_concurrency"])
 
     def test_a_failed_status_still_wins(self):
         self.assertTrue(runlog._incomplete(
