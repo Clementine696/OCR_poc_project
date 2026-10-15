@@ -1,4 +1,4 @@
-"""vLLM is sent the penalties Ollama actually applies to the same model."""
+"""vLLM is sent no repetition penalty (DRY is its only loop defence), plus qwen's presence penalty."""
 import unittest
 from unittest.mock import patch
 
@@ -14,7 +14,7 @@ class VllmSamplerTests(unittest.TestCase):
     def test_qwen_gets_the_modelfile_presence_penalty(self):
         extras = backends.request_extras(_vllm("Qwen/Qwen3.5-9B"))
         self.assertEqual(extras["presence_penalty"], 1.5)
-        self.assertEqual(extras["repetition_penalty"], 1.1)
+        self.assertEqual(extras["repetition_penalty"], 1.0)
 
     def test_typhoon_gets_no_global_penalty(self):
         # Measured 2026-10-14: vLLM's unwindowed penalty does not stop the table loop
@@ -23,9 +23,9 @@ class VllmSamplerTests(unittest.TestCase):
         self.assertEqual(extras["repetition_penalty"], 1.0)
         self.assertNotIn("presence_penalty", extras)
 
-    def test_unlisted_model_gets_ollamas_default(self):
+    def test_unlisted_model_gets_no_penalty(self):
         extras = backends.request_extras(_vllm("google/gemma-4-e4b-it"))
-        self.assertEqual(extras["repetition_penalty"], 1.1)
+        self.assertEqual(extras["repetition_penalty"], 1.0)
         self.assertNotIn("presence_penalty", extras)
 
     def test_other_backends_are_untouched(self):
@@ -40,7 +40,7 @@ class VllmSamplerTests(unittest.TestCase):
             url, body = backends.structured_request(
                 [{"role": "user", "content": "x"}], None, 64, _vllm("qwen3.5-9b"))
         self.assertTrue(url.endswith("/v1/chat/completions"))
-        self.assertEqual(body["repetition_penalty"], 1.1)
+        self.assertEqual(body["repetition_penalty"], 1.0)
         self.assertEqual(body["presence_penalty"], 1.5)
         self.assertEqual(body["temperature"], 0)
 
@@ -49,18 +49,17 @@ class VllmSamplerTests(unittest.TestCase):
         self.assertEqual(extras["vllm_xargs"], {
             "dry_multiplier": settings.DRY_MULTIPLIER, "dry_base": 1.75,
             "dry_allowed_length": settings.VLLM_DRY_ALLOWED_LENGTH,
-            "dry_penalty_last_n": settings.DRY_PENALTY_LAST_N or -1,
-            "repeat_penalty": settings.VLLM_WINDOWED_PENALTY})
+            "dry_penalty_last_n": settings.DRY_PENALTY_LAST_N or -1})
         for kind in ("ollama", "llama.cpp", "openai"):
             extras = backends.request_extras({"kind": kind, "model": "typhoon"})
             self.assertNotIn("vllm_xargs", extras, kind)
 
     def test_dry_off_switches(self):
-        # DRY goes, the windowed penalty is still sent so the server's default cannot apply.
+        # With DRY off nothing is left for vllm_xargs to carry, so it is not sent.
         for name, value in (("VLLM_DRY", False), ("DRY_MULTIPLIER", 0)):
             with patch.object(settings, name, value):
-                xargs = backends.request_extras(_vllm("typhoon"))["vllm_xargs"]
-            self.assertEqual(xargs, {"repeat_penalty": settings.VLLM_WINDOWED_PENALTY}, name)
+                extras = backends.request_extras(_vllm("typhoon"))
+            self.assertNotIn("vllm_xargs", extras, name)
 
     def test_off_switch_and_overrides(self):
         with patch.object(settings, "VLLM_MATCH_OLLAMA", False):
@@ -70,7 +69,7 @@ class VllmSamplerTests(unittest.TestCase):
             fields = settings.vllm_sampler("gemma")
         self.assertEqual(fields["presence_penalty"], 0.5)
         self.assertEqual(fields["frequency_penalty"], 0.2)
-        self.assertEqual(fields["repetition_penalty"], 1.1)
+        self.assertEqual(fields["repetition_penalty"], 1.0)
 
 
 if __name__ == "__main__":

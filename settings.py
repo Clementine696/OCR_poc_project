@@ -88,7 +88,13 @@ DETAIL_PRESETS = {
 # 4 MP (1758x2275) finished clean in 303 s. Past ~4 MP the extra visual tokens
 # degrade this model rather than helping, so accuracy-first means `medium`, not
 # `original`.
-DEFAULT_DETAIL = "medium"
+#
+# `original` since 2026-10-15, at the user's request, for the vLLM server. There
+# `original` is not uncapped: VLLM_MAX_PIXELS still holds a page to ~4.2 MP. All 23
+# cases at each Detail on vLLM, DRY only: low 90.4% char / 88.8 digits (1 loop),
+# medium 91.6 / 89.9, original 92.5 / 91.2, no loops. The loop measured above was
+# llama.cpp at a true 8.4 MP, and still applies to a backend without that cap.
+DEFAULT_DETAIL = "original"
 
 # **Three presets, and the old four-name vocabulary is gone** (renamed
 # 2026-08-21, the old names dropped 2026-08-24, both at the user's request:
@@ -446,20 +452,19 @@ REPETITION_PENALTY = config.env_float("REPETITION_PENALTY", 1.1, minimum=1.0)
 # not. What cannot be mirrored: Ollama's repeat window (64 tokens) -- vLLM's
 # repetition_penalty has no window and counts the prompt as well as the reply.
 #
-# Matched on a substring of the served model name, lower-cased, first hit wins;
-# anything unmatched gets Ollama's default. A VLLM_* override below replaces the
-# table's value for every model. VLLM_MATCH_OLLAMA=0 sends vLLM exactly what
-# every other backend gets (REPETITION_PENALTY, no presence penalty).
+# Matched on a substring of the served model name, lower-cased, first hit wins.
+# A VLLM_* override below replaces the table's value for every model.
+# VLLM_MATCH_OLLAMA=0 sends vLLM exactly what every other backend gets
+# (REPETITION_PENALTY, no presence penalty).
+#
+# repetition_penalty is 1.0 for EVERY model, not the Modelfile's (2026-10-15, at the
+# user's request: DRY is vLLM's only loop defence). Measured on typhoon-ocr1.5-2b,
+# vLLM 0.30, greedy, sol003 x3 details + 8 loop-prone pages: 1.1 alone still looped
+# on sol003 at every detail, and added to DRY it cost 89.8% -> 88.4% char and
+# 93.4% -> 89.8% digits. Sent explicitly so REPETITION_PENALTY cannot apply.
 VLLM_MATCH_OLLAMA = config.env_bool("VLLM_MATCH_OLLAMA", True)
-OLLAMA_DEFAULT_REPEAT_PENALTY = 1.1
-# typhoon is 1.0, NOT the Modelfile's 1.2 (2026-10-14, sol003 on vLLM 0.30): vLLM's
-# repetition_penalty has no window, so it does not stop the blank-table-row loop
-# (57.7%, still looped) and on top of a windowed penalty it cost 87.4% -> 75.8%.
-# The loop is stopped by DRY instead -- see vllm_xargs.
 VLLM_SAMPLER_BY_MODEL = (
-    ("typhoon", {"repetition_penalty": 1.0}),
-    ("qwen", {"repetition_penalty": OLLAMA_DEFAULT_REPEAT_PENALTY,
-              "presence_penalty": 1.5}),
+    ("qwen", {"presence_penalty": 1.5}),
 )
 # Blank = use the table. presence/frequency follow OpenAI's -2..2.
 VLLM_REPETITION_PENALTY = config.env_float("VLLM_REPETITION_PENALTY", None,
@@ -479,10 +484,10 @@ def vllm_sampler(model: str = "") -> dict:
     fields = {}
     if VLLM_MATCH_OLLAMA:
         name = (model or "").lower()
-        fields = {"repetition_penalty": OLLAMA_DEFAULT_REPEAT_PENALTY}
+        fields = {"repetition_penalty": 1.0}
         for needle, values in VLLM_SAMPLER_BY_MODEL:
             if needle in name:
-                fields = dict(values)
+                fields.update(values)
                 break
     for key, value in (("repetition_penalty", VLLM_REPETITION_PENALTY),
                        ("presence_penalty", VLLM_PRESENCE_PENALTY),
@@ -525,19 +530,16 @@ def vllm_dry() -> dict:
     }
 
 
-# The server-side windowed repeat penalty (../vllm/repeat_penalty_logits_processor.py),
-# sent on every request so the server's own default (VLLM_REPEAT_PENALTY=1.2 in the
-# compose files) does not apply. 1.0 is off. Measured 2026-10-14, all 23 cases at
-# `low` on vLLM, greedy: windowed 1.2 alone 85.2% char / 83.1% digits / 159 of 217
-# Mandatory values; DRY 256 alone 84.7 / 82.3 / 170 -- DRY keeps more values and the
-# windowed penalty costs digits (sol009 92.2 -> 74.0). A server without the
-# processor ignores the field.
-VLLM_WINDOWED_PENALTY = config.env_float("VLLM_WINDOWED_PENALTY", 1.0, minimum=1.0)
-
-
+# DRY is the ONLY loop defence on vLLM (2026-10-15, at the user's request). The
+# windowed repeat penalty (../vllm/repeat_penalty_logits_processor.py) and the
+# server's --override-generation-config are gone from both compose files. Measured
+# on typhoon-ocr1.5-2b, greedy, sol003 x3 details + 8 loop-prone pages, against
+# llama.cpp Q8_0 with this app's own llama.cpp settings (86.5% char, 88.4% digits,
+# no loops): DRY 256 alone 89.8 / 93.4, one loop (sol021 `low` p1, caught by the
+# loop guard); windowed 1.2 alone 85.4 / 85.0, no loops but sol009 96.2 -> 77.2.
 def vllm_xargs() -> dict:
-    """Everything a vLLM request carries in `vllm_xargs`: DRY and the windowed penalty."""
-    return {**vllm_dry(), "repeat_penalty": VLLM_WINDOWED_PENALTY}
+    """Everything a vLLM request carries in `vllm_xargs`: the DRY settings."""
+    return vllm_dry()
 
 
 # Page images on vLLM (2026-10-14). Two things the vLLM server does to a page that
