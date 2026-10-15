@@ -5316,6 +5316,118 @@ def conditions(rows: list = None) -> dict:
     }
 
 
+def _token_value(row: dict, *names):
+    """The first of `names` the row carries as a positive number, or None."""
+    for name in names:
+        value = _num(row.get(name), -1.0)
+        if value > 0:
+            return value
+    return None
+
+
+def _token_spread(values: list) -> dict:
+    values = [v for v in values if v is not None]
+    if not values:
+        return None
+    return {"min": int(min(values)), "mean": int(round(sum(values) / len(values))),
+            "max": int(max(values)), "n": len(values)}
+
+
+def token_usage(rows: list = None) -> dict:
+    """Tokens in (prompt) and out (generated) per document, per pass, per model.
+
+    Built 2026-10-15 at the user's request (*how many in/out tokens in each sol
+    each process, mapped by model -- and make it update when I run a new
+    model*). Compiled from the log on every refresh, so a model run anywhere
+    appears as soon as its row is written, grouped under its own name.
+
+    * **Reading**: one group per (document, model, Detail) -- the input is the
+      page image, so it depends on the model and the Detail far more than on
+      the document. A document's figure is its whole read, all pages;
+      `per_page` divides by the pages. In: `in_tokens`, else the older
+      `server_prompt_tokens`, else `server_prefill_tokens` (the computed part
+      only, where a prefix cache served the rest). Out: `out_tokens`, else
+      `tokens`.
+    * **Extraction**: one group per (document, extracting model, shape). In:
+      `extract_in_tokens` -- every pass-2 request of the file, classify,
+      segment and table agents included; **blank on every row before
+      2026-10-15**. Out: `extract_out_tokens` (same scope), else
+      `extract_tokens` (the extraction requests only).
+
+    Finished runs only (`_incomplete` / `_extract_incomplete`): a looped read
+    ran to its cap and would report the cap, not what the page costs. Windowed
+    per group like every table on the card.
+    """
+    rows = _for_summary(read(limit=10 ** 6) if rows is None else rows)
+
+    reads = [r for r in rows
+             if (r.get("run_type") or "ocr") != "extract" and r.get("case")
+             and (r.get("detail") or "") not in RETIRED_DETAILS
+             and not _incomplete(r) and _token_value(r, "out_tokens", "tokens")]
+    extracts = [{**r, "extract_on": r.get("extract_model") or r.get("model") or ""}
+                for r in rows
+                if r.get("case") and (r.get("extract_mode") or "")
+                and not _extract_incomplete(r)
+                and _token_value(r, "extract_out_tokens", "extract_tokens")]
+
+    def ocr_key(r):
+        return (r["case"], r.get("model") or "", r.get("detail") or "")
+
+    def ext_key(r):
+        return (r["case"], r["extract_on"], r.get("extract_mode") or "")
+
+    groups = {}
+    for r in recent_by(reads, ocr_key):
+        groups.setdefault(ocr_key(r), []).append(r)
+    ocr = []
+    for (case, model, detail), runs in groups.items():
+        pages = [max(int(_num(r.get("pages"), 1.0)), 1) for r in runs]
+        sent = [_token_value(r, "in_tokens", "server_prompt_tokens",
+                             "server_prefill_tokens") for r in runs]
+        back = [_token_value(r, "out_tokens", "tokens") for r in runs]
+        ocr.append({
+            "case": case, "model": model, "setting": detail, "runs": len(runs),
+            "pages": max(pages),
+            "in": _token_spread(sent), "out": _token_spread(back),
+            "in_per_page": _token_spread([v / p for v, p in zip(sent, pages)
+                                          if v is not None]),
+            "out_per_page": _token_spread([v / p for v, p in zip(back, pages)
+                                           if v is not None]),
+        })
+
+    groups = {}
+    for r in recent_by(extracts, ext_key):
+        groups.setdefault(ext_key(r), []).append(r)
+    extract = []
+    for (case, model, mode), runs in groups.items():
+        extract.append({
+            "case": case, "model": model, "setting": mode, "runs": len(runs),
+            "in": _token_spread([_token_value(r, "extract_in_tokens") for r in runs]),
+            "out": _token_spread([_token_value(r, "extract_out_tokens", "extract_tokens")
+                                  for r in runs]),
+        })
+
+    def by_model(entries, per):
+        """One line per (model, setting): the mean over its DOCUMENTS, each once."""
+        pooled = {}
+        for e in entries:
+            pooled.setdefault((e["model"], e["setting"]), []).append(e)
+        out = []
+        for (model, setting), items in pooled.items():
+            line = {"model": model, "setting": setting, "documents": len(items),
+                    "runs": sum(e["runs"] for e in items)}
+            for side in ("in", "out"):
+                means = [e[f"{side}{per}"]["mean"] for e in items if e.get(f"{side}{per}")]
+                line[side] = _token_spread(means)
+            out.append(line)
+        return sorted(out, key=lambda x: (x["model"], x["setting"]))
+
+    key = lambda e: (e["case"], e["model"], e["setting"])
+    return {"ocr": sorted(ocr, key=key), "extract": sorted(extract, key=key),
+            "ocr_models": by_model(ocr, "_per_page"),
+            "extract_models": by_model(extract, "")}
+
+
 def trend(rows: list = None) -> dict:
     """Error rate and accuracy over TIME, per model and per document, per pass.
 
@@ -5515,6 +5627,10 @@ def totals(rows: list = None, logged: int = None) -> dict:
         # Accuracy and error rate over time, per model and per document,
         # over every row the filters matched rather than a window. See `trend`.
         "trend": trend(everything),
+        # Tokens in and out per document, per pass, per model -- compiled from
+        # the log, so a model run anywhere appears on the next refresh. See
+        # `token_usage`.
+        "token_usage": token_usage(everything),
         "seconds": round(seconds, 1),
         "tokens": tokens,
         # What this is a summary OF. `logged` is the file; `window` is how many

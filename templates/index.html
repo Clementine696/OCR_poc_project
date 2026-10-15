@@ -2306,6 +2306,7 @@ highlighted. Dominated by a pairing, not itself hard.">
       <button data-panel="analysis">Time × Doc × Accuracy</button>
       <button data-panel="error">Errors</button>
       <button data-panel="trend" title="accuracy and error rate over TIME, one small chart per model or per document, over every run the filters match (not the recent-runs window). The code, config and server changed under the same model names, so this shows whether a model or a document got better or worse.">Trend</button>
+      <button data-panel="tokens" title="tokens sent (in) and generated (out) per document, per pass, per model. Compiled from the log on every refresh, so a new model appears as soon as it has run.">Tokens</button>
       <button data-panel="raw">Raw data</button>
     </div>
 
@@ -2373,6 +2374,21 @@ matched.">
          document. Over every row the filters match, deliberately NOT the
          recent-runs window -- a trend with its history cut off has nothing to
          trend. From `runlog.trend`. -->
+    <!-- Tokens in and out, per document, per pass, per model. From
+         `runlog.token_usage`, recompiled on every refresh like every tab. -->
+    <div class="lv-panel" id="panelTokens" hidden>
+      <div class="lv-bar">
+        <div class="seg tk-seg" data-tk="pass">
+          <button data-v="ocr" class="on">Reading</button>
+          <button data-v="extract">Extraction</button>
+        </div>
+        <div class="seg tk-seg" data-tk="by">
+          <button data-v="models" class="on">By model</button>
+          <button data-v="cases">By document</button>
+        </div>
+      </div>
+      <div id="tokenSum"></div>
+    </div>
     <div class="lv-panel" id="panelTrend" hidden>
       <div class="lv-bar tr-bar">
         <div class="seg tr-seg" data-tr="pass">
@@ -10054,6 +10070,66 @@ function tmPass(key, pass, labels, unit, noun, title, hint, t) {
   return html;
 }
 
+// The Tokens tab: what each model costs in tokens, per pass. Two views of one
+// compilation -- by model (each document counted once) and by document.
+const tkView = { pass: 'ocr', by: 'models' };
+function tkCell(d) {
+  if (!d) return '<td class="n muted-inline">—</td>';
+  return '<td class="n" title="min ' + d.min.toLocaleString() + ' · max '
+    + d.max.toLocaleString() + ' · over ' + d.n + '">' + d.mean.toLocaleString()
+    + ' <small class="muted-inline">' + d.min.toLocaleString() + '–'
+    + d.max.toLocaleString() + '</small></td>';
+}
+function paintTokens(t) {
+  const el = document.getElementById('tokenSum');
+  const tu = t && t.token_usage;
+  if (!el) return;
+  if (!tu) { el.innerHTML = ''; return; }
+  document.querySelectorAll('#panelTokens .tk-seg').forEach(seg =>
+    seg.querySelectorAll('button').forEach(b =>
+      b.classList.toggle('on', b.dataset.v === tkView[seg.dataset.tk])));
+  const ocr = tkView.pass === 'ocr';
+  const unit = ocr ? 'per page' : 'per file';
+  let html = '';
+  if (tkView.by === 'models') {
+    const list = ocr ? tu.ocr_models : tu.extract_models;
+    html += '<table class="queue"><tr><th>Model</th><th>' + (ocr ? 'Detail' : 'Shape')
+      + '</th><th class="n">Docs</th><th class="n">Runs</th>'
+      + '<th class="n" title="the mean over documents of each document\u2019s own mean; min\u2013max across documents">In, ' + unit + '</th>'
+      + '<th class="n" title="the mean over documents of each document\u2019s own mean; min\u2013max across documents">Out, ' + unit + '</th></tr>'
+      + list.map(m => '<tr><td>' + esc(csModel(m.model)) + '</td><td>' + esc(m.setting)
+        + '</td><td class="n">' + m.documents + '</td><td class="n">' + m.runs + '</td>'
+        + tkCell(m.in) + tkCell(m.out) + '</tr>').join('') + '</table>';
+  } else {
+    const list = ocr ? tu.ocr : tu.extract;
+    html += '<table class="queue"><tr><th>Document</th><th>Model</th><th>'
+      + (ocr ? 'Detail' : 'Shape') + '</th>' + (ocr ? '<th class="n">Pages</th>' : '')
+      + '<th class="n">Runs</th><th class="n">In, whole document</th>'
+      + '<th class="n">Out, whole document</th>'
+      + (ocr ? '<th class="n">Out per page</th>' : '') + '</tr>'
+      + list.map(e => '<tr><td>' + esc(e.case) + '</td><td>' + esc(csModel(e.model))
+        + '</td><td>' + esc(e.setting) + '</td>' + (ocr ? '<td class="n">' + e.pages + '</td>' : '')
+        + '<td class="n">' + e.runs + '</td>' + tkCell(e.in) + tkCell(e.out)
+        + (ocr ? tkCell(e.out_per_page) : '') + '</tr>').join('') + '</table>';
+  }
+  html += '<p class="note">' + (ocr
+    ? 'In is the prompt the server counted, page image included; it depends on the model and '
+      + 'the Detail far more than on the document. Older rows only have it where the server timed '
+      + 'the request, and an Ollama row whose prefix was cached shows only the computed part.'
+    : 'In and out count every pass-2 request of the file &mdash; classify, segmentation, the '
+      + 'steps or the single request, and the table agents. <b>In exists only for runs from '
+      + '2026-10-15 on</b>; older rows have out only, and there it counts the extraction '
+      + 'requests alone.')
+    + ' Finished runs only, the last runs of each group. Mean, then min&ndash;max.</p>';
+  el.innerHTML = html;
+}
+document.getElementById('panelTokens').addEventListener('click', ev => {
+  const b = ev.target.closest('.tk-seg button');
+  if (!b) return;
+  tkView[b.closest('.tk-seg').dataset.tk] = b.dataset.v;
+  paintTokens(logData && logData.totals);
+});
+
 function paintTypes(t) {
   const tm = t.type_models;
   if (!tm) { typeSum.innerHTML = ''; return; }
@@ -10343,6 +10419,7 @@ function paintLog() {
   paintExtractSummary(t);
   paintWeak(t);
   paintTypes(t);
+  paintTokens(t);
   paintPresent(t);
   paintRunRows();
   paintFilters();
