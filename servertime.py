@@ -293,6 +293,30 @@ def _record(server: dict, usage: dict = None, requests: int = 1) -> dict:
     return out
 
 
+def io_tokens(record: dict, usage: dict = None) -> tuple:
+    """`(in, out)` tokens of one request: what was sent, what came back.
+
+    Added 2026-10-15 for the stress test's per-page and per-file token figures.
+    Unlike the `server_*` fields these do NOT need a server time: a vLLM request
+    with per-request /metrics off, or an Ollama /v1 request, still counts its
+    tokens in `usage`. The server's own count wins where it gave one (llama.cpp
+    `timings`, Ollama native), the reply's `usage` otherwise. `in` is the whole
+    prompt, cached part included -- a llama.cpp reply without `cache_n` gives
+    only the computed part, and that is what is returned for it.
+    """
+    usage = usage or {}
+    record = record or {}
+    sent = record.get("server_prompt_tokens")
+    if sent is None:
+        sent = usage.get("prompt_tokens")
+    if sent is None:
+        sent = record.get("server_prefill_tokens")
+    back = record.get("server_generated_tokens")
+    if back is None:
+        back = usage.get("generated_tokens")
+    return sent, back
+
+
 class Clock:
     """One request, timed by the server.
 
@@ -368,6 +392,7 @@ class Clock:
             return self.done
         server = self._from_metrics() if self.metrics else (self.server or {})
         out = _record(server, self.tokens)
+        out["in_tokens"], out["out_tokens"] = io_tokens(out, self.tokens)
         self.done = out
         if self.batch is not None:
             self.batch.record(out, self.tokens)
@@ -436,6 +461,9 @@ class Batch:
             if all(v is not None for v in values):
                 usage[key] = sum(values)
         out = _record(self._from_metrics(n), usage, requests=n)
+        for key in ("in_tokens", "out_tokens"):
+            values = [r.get(key) for r in records]
+            out[key] = sum(values) if all(v is not None for v in values) else None
         _add(out, n)
         return {"requests": n, **out}
 
@@ -503,6 +531,8 @@ def open_tally():
     """Start counting this thread's requests. Returns the previous tally."""
     previous = getattr(_local, "tally", None)
     _local.tally = {"requests": 0, "attributed": 0, "sources": [], "why": "",
+                    "io": {"in_tokens": 0, "out_tokens": 0},
+                    "io_have": {"in_tokens": 0, "out_tokens": 0},
                     "sums": {name: 0.0 for name in SUMMED},
                     "have": {name: 0 for name in SUMMED}}
     return previous
@@ -520,6 +550,11 @@ def _add(record: dict, requests: int = 1):
     if tally is None:
         return
     tally["requests"] += requests
+    # In/out tokens are counted whether or not the server gave a time.
+    for key in ("in_tokens", "out_tokens"):
+        if record.get(key) is not None:
+            tally["io"][key] += record[key]
+            tally["io_have"][key] += requests
     if record.get("server_seconds") is None:
         if record.get("why") and not tally["why"]:
             tally["why"] = record["why"]
@@ -549,6 +584,10 @@ def summary(tally: dict) -> dict:
         whole = tally["attributed"] and tally["have"][name] == tally["attributed"]
         out[name] = round(tally["sums"][name], 3) if whole else None
     _finish_totals(out)
+    # Summed only where every request reported it, like every figure here.
+    for key in ("in_tokens", "out_tokens"):
+        have = tally.get("io_have", {}).get(key, 0)
+        out[key] = int(tally["io"][key]) if have and have == tally["requests"] else None
     if tally.get("why"):
         out["why"] = tally["why"]
     return out

@@ -12745,6 +12745,26 @@ function stPaint() {
                         ['Classifying the documents', r.classify.latency_classify, 'one type per document found']] : []),
     ]);
     if (latency) html += '<h3 class="st-h">Latency</h3>' + latency;
+    // Tokens sent (in) and generated (out): per OCR page, and per file for
+    // pass 2 -- every request of it, classify included. In classify mode the
+    // file is the glued pack and its requests are the walk and classify questions.
+    const shape = (s.plan && s.plan.extract_mode) || '';
+    const tokenRows = [];
+    if (r.ocr && r.ocr.tokens_per_page) tokenRows.push(['OCR, per page', r.ocr.tokens_per_page]);
+    if (r.extract_tokens_per_file) tokenRows.push([
+      r.mode === 'classify' ? 'Extraction, per file (split + classify)'
+        : 'Extraction, per file' + (shape ? ' (' + shape + ', classify included)' : ''),
+      r.extract_tokens_per_file]);
+    const tokCell = (d, k) => d && d[k] ? stNum(d[k].min, 0) + ' / ' + stNum(d[k].mean, 0)
+      + ' / ' + stNum(d[k].max, 0) + ' <small>(' + d[k].n + ')</small>' : '—';
+    if (tokenRows.length) {
+      html += '<h3 class="st-h">Tokens</h3><table class="queue"><tr><th></th>'
+        + '<th title="prompt tokens sent, cached part included">In: min / mean / max</th>'
+        + '<th title="tokens generated">Out: min / mean / max</th></tr>'
+        + tokenRows.map(([label, d]) => '<tr><td>' + esc(label) + '</td><td class="n">'
+          + tokCell(d, 'in') + '</td><td class="n">' + tokCell(d, 'out') + '</td></tr>').join('')
+        + '</table>';
+    }
     if (r.errors && r.errors.length) {
       html += '<h3 class="st-h">Errors</h3><table class="queue">' + r.errors.map(e =>
         '<tr><td class="n">' + e.count + '×</td><td>' + esc(e.error) + '</td></tr>').join('') + '</table>';

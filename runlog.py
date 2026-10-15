@@ -594,6 +594,21 @@ COLUMNS = [
     "inference_engine",
     "extract_quant",
     "extract_inference_engine",
+    # Tokens sent and generated (2026-10-15, at the user's request: *how many
+    # in/out tokens in each sol, each process*). The server_*_tokens columns
+    # above exist only where the SERVER timed a request, which on vLLM with
+    # per-request /metrics off and on Ollama /v1 is never -- so the in side of
+    # pass 2 had no value on any row. These are counted whether or not there is
+    # a server time (servertime.io_tokens): the server's own count where it gave
+    # one, the reply's `usage` otherwise. `in_tokens`/`out_tokens` sum a read's
+    # pages; the extract pair sums every pass-2 request of the file, the
+    # classify, segment and table-agent questions included. Blank where any one
+    # request reported none -- a sum over part of the requests reads as smaller
+    # than it is.
+    "in_tokens",
+    "out_tokens",
+    "extract_in_tokens",
+    "extract_out_tokens",
 ]
 
 # servertime.FIELDS, spelled out: this module cannot import servertime (it
@@ -765,7 +780,8 @@ EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
                    "extract_server_generated_tokens",
                    "extract_server_decode_tokens", "extract_server_prefill_tps",
                    "extract_server_decode_tps",
-                   "extract_quant", "extract_inference_engine") + FIX_COLUMNS
+                   "extract_quant", "extract_inference_engine",
+                   "extract_in_tokens", "extract_out_tokens") + FIX_COLUMNS
 
 _TIERS = ("p1_present", "p1_absent", "p2_present", "p2_absent",
           "p3_present", "p3_absent")
@@ -877,6 +893,8 @@ def _server_time_cells(served) -> dict:
            for name in _SERVER_FIELDS},
         "extract_network_seconds": "",      # retired 2026-10-07
         "extract_server_timing": served.get("source", "") if seconds is not None else "",
+        "extract_in_tokens": _blank_none(served.get("in_tokens")),
+        "extract_out_tokens": _blank_none(served.get("out_tokens")),
     }
 
 
@@ -1361,6 +1379,8 @@ def record(summary: dict, source: dict = None, extras: dict = None) -> dict:
         "tokens_per_second": summary.get("tokens_per_second", ""),
         **{name: _blank_none(summary.get(name)) for name in _SERVER_FIELDS},
         "image_bytes": _blank_none(summary.get("image_bytes")),
+        "in_tokens": _blank_none(summary.get("in_tokens")),
+        "out_tokens": _blank_none(summary.get("out_tokens")),
         "network_seconds": "",              # retired 2026-10-07
         "server_timing": summary.get("server_timing") or "",
         **_extract_cells(summary),

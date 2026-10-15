@@ -1614,7 +1614,11 @@ tokens per second across all requests together, and a latency table — mean, p5
 p99 and max — for time waiting in this app's queue, end to end, and each stage: OCR per job
 and per page, time to first token (measured here, so it includes time spent waiting in the
 server's own queue), one request's decode rate, extraction per job, and for the classification
-mode the page walk and the per-document classification separately. The chart shows how many
+mode the page walk and the per-document classification separately. A **Tokens** table gives
+the input (prompt, image tokens included) and output tokens -- min, mean and max -- per OCR page
+and per extracted file; a file's figure counts every pass-2 request it made, the classify,
+segment and table-agent questions included, and in the classification mode the file is the
+glued pack. The chart shows how many
 jobs were in each stage at every moment, against the concurrency limit. Scores — transcript
 accuracy, field accuracy (mean per job and pooled over all values), grouping and type
 accuracy — are over the jobs that finished cleanly; a read that looped or hit the token cap
@@ -2628,6 +2632,8 @@ prefill**, **Prefill tok/s**, **Server decode**, **Decode tok/s**, **Server queu
 | `image_bytes` | the read's base64 PNG payload, summed over its pages |
 | `server_timing` | the source: `vllm /metrics`, `llama.cpp timings`, `ollama` |
 | `extract_server_*` | the same, summed over **every** model request pass 2 made -- classify, segment, the steps or the single request, and the table agents. So it can exceed `extract_seconds`, which counts the extraction requests only |
+| `in_tokens`, `out_tokens` | prompt and generated tokens of the read, summed over its pages. Counted whether or not the server timed the request: the server's own count where it gave one, the reply's `usage` otherwise. Blank where any page reported none |
+| `extract_in_tokens`, `extract_out_tokens` | the same over every pass-2 request of the file, classify, segment and table agents included |
 | `network_seconds`, `extract_network_seconds` | retired; written blank. Rows from before the change carry the app's clock minus `server_seconds` |
 
 Where the tokens come from: the reply's own `usage` on vLLM (cached tokens from

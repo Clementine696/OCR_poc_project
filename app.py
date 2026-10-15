@@ -843,6 +843,12 @@ def stream_page(image: Image.Image, stats: dict = None,
             # requests). See servertime.py.
             **{name: served[name] for name in servertime.FIELDS},
             server_timing=served["source"],
+            # What this page sent and got back, counted whether or not the
+            # server timed it (servertime.io_tokens). `out` falls back to the
+            # app's own count, which every backend has.
+            in_tokens=served.get("in_tokens"),
+            out_tokens=(served.get("out_tokens") if served.get("out_tokens") is not None
+                        else new_tokens),
             image_bytes=len(image_uri),
         )
 
@@ -4646,6 +4652,10 @@ def summarise(all_stats, detail, started, job_id=None):
     # mixed pages with a phase and pages without would read as smaller than it is.
     served = [s for s in all_stats if s.get("server_seconds") is not None]
     images = [s.get("image_bytes") for s in all_stats]
+    # Tokens sent and generated over the pages, whether or not the server timed
+    # them; blank where any page reported none (servertime.io_tokens).
+    page_in = [s.get("in_tokens") for s in all_stats]
+    page_out = [s.get("out_tokens") for s in all_stats]
 
     return {
         "page_count": len(all_stats),
@@ -4677,6 +4687,10 @@ def summarise(all_stats, detail, started, job_id=None):
         # a page did not record one.
         "image_bytes": (sum(images) if images and all(isinstance(b, int) for b in images)
                         else None),
+        "in_tokens": (sum(page_in) if page_in and all(v is not None for v in page_in)
+                      else None),
+        "out_tokens": (sum(page_out) if page_out and all(v is not None for v in page_out)
+                       else None),
         "server_timing": served[0].get("server_timing", "") if served else "",
         "server_timed_pages": len(served),
         "page_stats": all_stats,
@@ -6362,6 +6376,7 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive) -> tuple:
     started = time.perf_counter()
     texts, looped, truncated = [], False, False
     ttft, page_s, page_tps, tokens = [], [], [], 0
+    page_in, page_out = [], []
     for page in pages:
         if cancel.is_set():
             raise SweepCancelled("stopped")
@@ -6378,17 +6393,34 @@ def _stress_read(pages, cancel, rec: dict, live: _StressLive) -> tuple:
         truncated = truncated or bool(stats.get("truncated"))
         tokens += stats.get("new_tokens") or 0
         ttft.append(stats.get("ttft_seconds"))
+        page_in.append(stats.get("in_tokens"))
+        page_out.append(stats.get("out_tokens"))
         page_s.append(stats.get("seconds"))
         if stats.get("tokens_per_second"):
             page_tps.append(stats["tokens_per_second"])
         live.page(stats.get("new_tokens") or 0)
     rec.update(ocr_s=round(time.perf_counter() - started, 3), pages=len(pages),
-               ocr_tokens=tokens, ttft_s=ttft, page_s=page_s, page_tps=page_tps)
+               ocr_tokens=tokens, ttft_s=ttft, page_s=page_s, page_tps=page_tps,
+               page_in=page_in, page_out=page_out)
     return texts, looped, truncated
 
 
 def _stress_classify(pack: dict, rec: dict, live: _StressLive, cancel) -> None:
-    """Group a long glued file into documents, then classify each one."""
+    """Group a long glued file into documents, then classify each one.
+
+    Its model requests are counted as the file's EXTRACTION tokens (the user's
+    rule: classify counts as extraction) -- a tally round the whole of it.
+    """
+    previous = servertime.open_tally()
+    try:
+        _stress_classify_body(pack, rec, live, cancel)
+    finally:
+        tally = servertime.close_tally(previous) or {}
+        rec["extract_in"] = tally.get("in_tokens")
+        rec["extract_out"] = tally.get("out_tokens")
+
+
+def _stress_classify_body(pack: dict, rec: dict, live: _StressLive, cancel) -> None:
     status = backends.extract_status()
     started = time.perf_counter()
     asked = refused = 0
@@ -6472,6 +6504,11 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                                         pages=texts, truth_fed=mode == "extract")
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
                 rec["extract_tokens"] = result.get("tokens") or 0
+                # Every pass-2 request of this file: classify, segment, steps or
+                # the single request, table agents (servertime's tally).
+                served = result.get("server_time") or {}
+                rec["extract_in"] = served.get("in_tokens")
+                rec["extract_out"] = served.get("out_tokens")
                 if result.get("error"):
                     raise ValueError(result["error"])
                 payload = {"truth": truth, "looped": looped,

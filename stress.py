@@ -386,6 +386,16 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
             "unscored": sum(1 for r in ok if r.get("unscored")),
             "partial_replies": sum(1 for r in rows if r.get("partial_reply")),
         }
+    if mode in ("ocr", "full"):
+        out["ocr"]["tokens_per_page"] = io_spread(
+            [(i, o) for r in done
+             for i, o in zip(r.get("page_in") or [], r.get("page_out") or [])])
+    if mode in ("extract", "full", "classify"):
+        # Per FILE, every pass-2 request it made. In classify mode the file is a
+        # glued pack and its requests are the segment and classify questions.
+        files = [r for r in done if "extract_in" in r or "extract_out" in r]
+        out["extract_tokens_per_file"] = io_spread(
+            [(r.get("extract_in"), r.get("extract_out")) for r in files])
     if mode == "full" and out.get("ocr") and out.get("extract"):
         a, b = out["ocr"]["busy_seconds"], out["extract"]["busy_seconds"]
         out["stage_share"] = {"ocr": round(a / (a + b), 4) if a + b else None,
@@ -412,6 +422,21 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
                            if total("docs_exact", ok) else None),
             "model_classified": total("model_classified", ok),
         }
+    return out
+
+
+def io_spread(pairs) -> dict:
+    """Min, max and mean of the in and the out tokens over `(in, out)` pairs.
+
+    A blank side (a server that sent no usage) is left out of that side only, and
+    `n` says how many each figure is over.
+    """
+    out = {}
+    for key, index in (("in", 0), ("out", 1)):
+        values = [p[index] for p in pairs if p[index] is not None]
+        out[key] = ({"min": min(values), "max": max(values),
+                     "mean": round(sum(values) / len(values), 1), "n": len(values)}
+                    if values else None)
     return out
 
 
