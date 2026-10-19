@@ -1649,8 +1649,28 @@ models selected in the Workspace and never switches them.
 | **Detail** / **Extraction shape** / **Pages per file** | shown for the modes that use them |
 | **How documents are drawn**, **Seed**, **Lock document** | the same rules as the random test; the seed goes into the box so a run can be repeated |
 
-**By default nothing is written anywhere.** No run-log row, no `solution/out/` transcript,
-no page image in the Compare cache. Only the report is shown — no per-document values.
+**Every new Stress test is saved to History.** Open **Stress test → History** to select a run
+and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,
+models, servers, sampling and extraction settings, together with its complete report,
+latency tables, scores, errors and timeline. Download JSON includes all saved values.
+Completed, stopped, failed and interrupted runs are retained across refreshes and app restarts.
+Earlier runs cannot be recovered because they were not saved.
+Use **Current run** in the same Stress test tab to return to the controls and current report.
+
+History lives in `OCR_LOG_DIR/run_history.sqlite3` and stays separate from the accuracy
+ranking CSV. No per-job run-log row, transcript or page image is written by this feature.
+The database is runtime data and is excluded from Git and deployment packages.
+
+**Save monitor snapshots to History** is on by default. On vLLM it saves KV cache,
+VRAM (when available), Running/Waiting, token rates and cache-hit readings at the selected
+sampling interval and at completion. The latest 300 snapshots of each run are kept;
+choose any saved snapshot to inspect its tiles and sparklines. These are historical readings,
+not current server values. Disable the checkbox to avoid these additional monitor requests.
+On a full pipeline, both vLLM servers are retained separately; snapshot sparklines never
+mix readings from different URLs. Non-vLLM servers are never asked for monitor metrics.
+An unfinished run from another app process is labelled as unfinished rather than failed,
+because the other instance may still be working on it. History is shared across workspaces,
+like the accuracy run log; each snapshot also records the originating workspace.
 
 Tick **Save each job to the run log** to keep the data: every measured job is then one
 ordinary row in `logs/runs.csv` — the same row a normal read or extraction writes — with two
@@ -3138,13 +3158,22 @@ can run here, and `keys` is every key in the schema in the order the prompt list
 `POST /api/stress/stream` — run a stress test. Body: `mode` (`ocr`, `extract`, `classify`,
 `full`), `concurrency`, `jobs`, `warmup`, `max_seconds`, `detail`, `extract_mode`,
 `pack_pages`, `strategy`, `seed`, `lock_case`, `metrics` (sample vLLM `/metrics`),
-`metrics_every`, `no_cache` (bypass the server's prompt cache) and `save_log` (one run-log
-row per measured job; ignored for `classify`). Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
+`metrics_every`, `no_cache` (bypass prompt cache), `save_log` (per-job accuracy rows),
+`history_monitor` (save monitor snapshots, default true), and `gpu_url` / `gpu_extract_url`
+(optional VRAM exporters).
+Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
 (jobs in each stage, done, live pages and tokens per second, and `server_metrics` when
 sampling), an `alert` the moment a job hits a problem (`kind` — `error`, `looped`,
 `truncated`, `partial` or `stalled` — with `job`, `case`, `stage`, `page` when known,
 `message`, `phase` and `elapsed`), then `done` with `report`. After a Stop, `draining` events follow until the
 server's last request ends. `409` while a random test or another stress test is running.
+Events carry `history_id` when storage is available, or `history_error` when saving failed.
+The final event includes `monitor_samples` and `monitor_samples_total`.
+
+`GET /api/history?limit=50&offset=0` — saved Stress test runs, newest first, with
+settings and status. Returns `runs`, `total`, `limit` and `offset`; limit is capped at 100.
+`GET /api/history/<id>` — full saved settings, plan, report, snapshots and errors.
+Add `?download=1` to download the same data as JSON.
 
 `POST /api/stress/stop` — stop the running stress test. Same answer shape as
 `/api/randomtest/stop`.
