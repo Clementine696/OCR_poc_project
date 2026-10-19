@@ -15,6 +15,7 @@ Accepts any raster format Pillow can open, plus PDFs (PyMuPDF), HEIC/HEIF
 import base64
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -49,6 +50,7 @@ import stress
 import tables
 import validate
 import verify
+import workspace
 
 # Prompt text and tunables live outside this file so either can be read, edited
 # and diffed without the request-assembly code around them. `prompts.py` holds
@@ -187,6 +189,17 @@ except ImportError:  # pragma: no cover - optional dependency
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
+
+@app.before_request
+def _enter_workspace():
+    """Put this request in its browser tab's workspace -- see `workspace`.
+
+    The page sends its id as a header on every fetch, and as `?ws=` on the page
+    load itself, which no script can add a header to. Neither: the default
+    workspace, which is how every caller other than the page has always run.
+    """
+    workspace.enter(request.headers.get(workspace.HEADER) or request.args.get("ws"))
+
 # Prepared page images, kept so the browser can show the source beside the text.
 # In memory, so MAX_JOBS is a RAM ceiling rather than a history depth -- see
 # settings.py.
@@ -198,6 +211,17 @@ _jobs_lock = threading.Lock()
 # against the document it belongs to instead of as an anonymous row. Text only --
 # a few hundred bytes per job, which is why it is not what MAX_JOBS is sized for.
 _job_meta = OrderedDict()
+# Which workspace each job belongs to. MAX_JOBS is per workspace, so one user
+# reading a stack of files does not push another user's pages out of the compare
+# view; JOBS_CEILING bounds the lot, oldest first, whoever they belong to.
+_job_owner = {}
+JOBS_CEILING = MAX_JOBS * 20
+
+
+def _evict_job(job_id):
+    _jobs.pop(job_id, None)
+    _job_meta.pop(job_id, None)
+    _job_owner.pop(job_id, None)
 
 
 def register_job(pages, context=None):
@@ -208,12 +232,16 @@ def register_job(pages, context=None):
         buf = io.BytesIO()
         page.save(buf, format="PNG")
         encoded.append(buf.getvalue())
+    owner = workspace.current_id()
     with _jobs_lock:
         _jobs[job_id] = encoded
         _job_meta[job_id] = context or {}
-        while len(_jobs) > MAX_JOBS:
-            evicted, _ = _jobs.popitem(last=False)
-            _job_meta.pop(evicted, None)
+        _job_owner[job_id] = owner
+        mine = [j for j in _jobs if _job_owner.get(j) == owner]
+        for evicted in mine[:max(0, len(mine) - MAX_JOBS)]:
+            _evict_job(evicted)
+        while len(_jobs) > JOBS_CEILING:
+            _evict_job(next(iter(_jobs)))
     return job_id
 
 
@@ -250,9 +278,25 @@ def job_context(job_id: str) -> dict:
 # The thread running a sweep, or None. **The THREAD is the sweep** -- Werkzeug's
 # threaded server handles one request per thread and does not pool them, so a
 # request that ended, however it ended, is a thread that is no longer alive.
+#
+# **One per WORKSPACE** (2026-10-19): each browser tab has its own pickers, so a
+# sweep in one tab switches only that tab's models and a sweep in another is no
+# business of its guard. The globals are the default workspace's -- the CLI's.
 _sweep_thread = None
 _sweep_cancel = None
 _sweep_lock = threading.Lock()
+workspace.field("sweep", lambda: (None, None), fresh=True)
+
+
+def _sweep_state() -> tuple:
+    """(thread, cancel) of the current workspace's sweep."""
+    return workspace.get("sweep", (_sweep_thread, _sweep_cancel))
+
+
+def _set_sweep(thread, cancel):
+    global _sweep_thread, _sweep_cancel
+    if not workspace.put("sweep", (thread, cancel)):
+        _sweep_thread, _sweep_cancel = thread, cancel
 
 
 class SweepCancelled(Exception):
@@ -370,20 +414,22 @@ def begin_sweep(cancel=None):
     `cancel` lets the stress test bring a `MultiCancel`; the random test takes
     the one-slot default.
     """
-    global _sweep_thread, _sweep_cancel
     with _sweep_lock:
-        _sweep_thread = threading.current_thread()
-        _sweep_cancel = cancel or Cancel()
-        return _sweep_cancel
+        thread, _ = _sweep_state()
+        if thread is not threading.current_thread():
+            workspace.hold()
+        cancel = cancel or Cancel()
+        _set_sweep(threading.current_thread(), cancel)
+        return cancel
 
 
 def end_sweep():
     """Release it. Idempotent, and only the thread that took it may release."""
-    global _sweep_thread, _sweep_cancel
     with _sweep_lock:
-        if _sweep_thread is threading.current_thread():
-            _sweep_thread = None
-            _sweep_cancel = None
+        thread, _ = _sweep_state()
+        if thread is threading.current_thread():
+            _set_sweep(None, None)
+            workspace.release()
 
 
 def cancel_sweep() -> bool:
@@ -403,7 +449,7 @@ def cancel_sweep() -> bool:
     one round rather than the rest of the plan.
     """
     with _sweep_lock:
-        cancel, thread = _sweep_cancel, _sweep_thread
+        thread, cancel = _sweep_state()
     if cancel is not None and thread is not None and thread.is_alive():
         cancel.set()
         return True
@@ -438,7 +484,7 @@ def sweeps_running() -> bool:
     is still going, and it is still the run the guard is protecting.
     """
     with _sweep_lock:
-        thread = _sweep_thread
+        thread, _ = _sweep_state()
     return bool(thread and thread.is_alive()
                 and thread is not threading.current_thread())
 
@@ -2802,8 +2848,9 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
                                 thread_name_prefix="agentic-step") as pool:
             def submit(index):
                 step = table[index]
-                return pool.submit(batch.run, _run_step, step, prefix,
-                                   _step_question(step, framing), status, source)
+                return pool.submit(workspace.bind(batch.run), _run_step, step,
+                                   prefix, _step_question(step, framing), status,
+                                   source)
 
             # The warm-up only exists to fill the prefix cache; with the cache
             # bypassed it would just delay the other steps for nothing.
@@ -2812,7 +2859,8 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
                 # find the shared prefix in vLLM's cache rather than each
                 # prefilling it again in the same scheduler step.
                 warmed = threading.Event()
-                futures = {pool.submit(batch.run, _warm_step, warmed, table[0],
+                futures = {pool.submit(workspace.bind(batch.run), _warm_step,
+                                       warmed, table[0],
                                        prefix, _step_question(table[0], framing),
                                        status, source): 0}
                 warmed.wait(VLLM_PREFIX_WARMUP_WAIT)
@@ -2946,10 +2994,15 @@ if _ocr_profile != OCR_PROFILE:
                f"({', '.join(OCR_PROFILES)}); using {_ocr_profile}.", sys.stderr)
 _profile_lock = threading.Lock()
 
+# These five are the page's switches, so each browser tab has its own copy --
+# see `workspace`. The globals are the default workspace's.
+workspace.field("extract_mode", lambda: _extract_mode)
+workspace.field("ocr_profile", lambda: _ocr_profile)
+
 
 def ocr_profile() -> str:
     with _profile_lock:
-        return _ocr_profile
+        return workspace.get("ocr_profile", _ocr_profile)
 
 
 def set_ocr_profile(name: str) -> str:
@@ -2957,7 +3010,8 @@ def set_ocr_profile(name: str) -> str:
         raise ValueError(f"profile must be one of: {', '.join(OCR_PROFILES)}.")
     global _ocr_profile
     with _profile_lock:
-        _ocr_profile = name
+        if not workspace.put("ocr_profile", name):
+            _ocr_profile = name
     return name
 
 
@@ -2984,18 +3038,20 @@ def profile_spec(name: str = None) -> dict:
 # before the backstop fired.
 _loop_guard = LOOP_GUARD
 _loop_guard_lock = threading.Lock()
+workspace.field("loop_guard", lambda: _loop_guard)
 
 
 def loop_guard() -> bool:
     with _loop_guard_lock:
-        return _loop_guard
+        return workspace.get("loop_guard", _loop_guard)
 
 
 def set_loop_guard(on: bool) -> bool:
     global _loop_guard
     with _loop_guard_lock:
-        _loop_guard = bool(on)
-    return _loop_guard
+        if not workspace.put("loop_guard", bool(on)):
+            _loop_guard = bool(on)
+    return loop_guard()
 
 
 # The two table agents, switchable from the page (2026-10-01). Process state like
@@ -3003,24 +3059,36 @@ def set_loop_guard(on: bool) -> bool:
 # `TABLE_IDENTIFY_AGENT` rather than beside them, so there is one value the code
 # reads and the tests patch -- two copies of one switch would disagree after the
 # first flip. Each document reads both once, at the start of its table.
+#
+# Per workspace like the rest: a tab that has flipped one holds its own three,
+# and the default workspace reads the globals the tests patch.
 _table_agents_lock = threading.Lock()
+
+
+def _agents_default() -> dict:
+    return {"concat": bool(TABLE_CONCAT_AGENT), "fix": bool(TABLE_FIX_AGENT),
+            "identify": bool(TABLE_IDENTIFY_AGENT)}
+
+
+workspace.field("table_agents", _agents_default)
 
 
 def table_agents() -> dict:
     with _table_agents_lock:
-        return {"concat": bool(TABLE_CONCAT_AGENT), "fix": bool(TABLE_FIX_AGENT),
-                "identify": bool(TABLE_IDENTIFY_AGENT), "table": bool(TABLE_EXTRACT)}
+        return {**workspace.get("table_agents", _agents_default()),
+                "table": bool(TABLE_EXTRACT)}
 
 
 def set_table_agents(fix=None, identify=None, concat=None) -> dict:
     global TABLE_FIX_AGENT, TABLE_IDENTIFY_AGENT, TABLE_CONCAT_AGENT
     with _table_agents_lock:
-        if fix is not None:
-            TABLE_FIX_AGENT = bool(fix)
-        if identify is not None:
-            TABLE_IDENTIFY_AGENT = bool(identify)
-        if concat is not None:
-            TABLE_CONCAT_AGENT = bool(concat)
+        mine = dict(workspace.get("table_agents", _agents_default()))
+        for key, value in (("fix", fix), ("identify", identify), ("concat", concat)):
+            if value is not None:
+                mine[key] = bool(value)
+        if not workspace.put("table_agents", mine):
+            TABLE_FIX_AGENT, TABLE_IDENTIFY_AGENT = mine["fix"], mine["identify"]
+            TABLE_CONCAT_AGENT = mine["concat"]
     return table_agents()
 
 
@@ -3039,12 +3107,13 @@ def set_table_agents(fix=None, identify=None, concat=None) -> dict:
 # reversible one and stays where it was; this is the one to leave low.
 _read_floor = MIN_READ_FOR_FIELDS
 _read_floor_lock = threading.Lock()
+workspace.field("read_floor", lambda: _read_floor)
 
 
 def read_floor() -> float:
     """The run-time floor as a FRACTION. See `runlog.read_floor` for the other."""
     with _read_floor_lock:
-        return _read_floor
+        return workspace.get("read_floor", _read_floor)
 
 
 def set_read_floor(fraction: float) -> float:
@@ -3059,7 +3128,8 @@ def set_read_floor(fraction: float) -> float:
     except (TypeError, ValueError):
         raise ValueError("min_read_pct must be a number between 0 and 100.")
     with _read_floor_lock:
-        _read_floor = value
+        if not workspace.put("read_floor", value):
+            _read_floor = value
     return value
 
 
@@ -3146,7 +3216,7 @@ def apply_read_floor(payload: dict, floor: float = None) -> str:
 
 def extract_mode() -> str:
     with _mode_lock:
-        return _extract_mode
+        return workspace.get("extract_mode", _extract_mode)
 
 
 def set_extract_mode(mode: str) -> str:
@@ -3154,7 +3224,8 @@ def set_extract_mode(mode: str) -> str:
         raise ValueError("mode must be 'single' or 'agentic'.")
     global _extract_mode
     with _mode_lock:
-        _extract_mode = mode
+        if not workspace.put("extract_mode", mode):
+            _extract_mode = mode
     return mode
 
 
@@ -3558,7 +3629,7 @@ def _table_identify_agent(table: dict, form: dict, fields, status: dict) -> dict
     table["master_rules"] = table.get("is_master_table")
     table["master_rules_why"] = table.get("master_why")
     table["master_from"] = "rules"
-    if not TABLE_IDENTIFY_AGENT or not table.get("rows"):
+    if not table_agents()["identify"] or not table.get("rows"):
         return table
     columns = table["columns"]
     bad = set(table.get("misaligned") or [])
@@ -3695,8 +3766,9 @@ def _item_table_stream(text: str, form: dict, status: dict, pages=None,
 
     # Read once: a switch flipped from the page mid-run takes effect on the next
     # document, not between the two halves of this one.
-    fix_on, identify_on = TABLE_FIX_AGENT, TABLE_IDENTIFY_AGENT
-    concat_on = TABLE_CONCAT_AGENT
+    agents = table_agents()
+    fix_on, identify_on = agents["fix"], agents["identify"]
+    concat_on = agents["concat"]
     # The table after every step, so the Table tab can say what each one
     # changed and who made the change: the read, the fix agent's cleaning, the
     # code's re-cut, the model's re-cut. Copies -- every step edits in place.
@@ -6825,7 +6897,8 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
         spec["submitted"], spec["deadline"] = started, deadline
         # Warm-up jobs are thrown away from the report, and from the log too.
         spec["log"] = bool(cfg.get("save_log")) and phase == "run"
-    futures = [pool.submit(_stress_job, spec, cfg, prepared, cancel, live)
+    job = workspace.bind(_stress_job)
+    futures = [pool.submit(job, spec, cfg, prepared, cancel, live)
                for spec in specs]
     pending, timeline = set(futures), []
     sampler = _StressSampler(list(targets), bases or {}, cfg["metrics_every"],
@@ -7648,8 +7721,12 @@ def runs_csv():
     """The log file itself, for a spreadsheet."""
     if not runlog.LOG_PATH.exists():
         return jsonify(error="Nothing logged yet."), 404
+    # Under the log's lock: another instance may be rewriting it -- see
+    # `runlog._LogLock`.
+    with runlog._lock:
+        body = runlog.LOG_PATH.read_bytes()
     return Response(
-        runlog.LOG_PATH.read_bytes(),
+        body,
         mimetype="text/csv",
         headers={"Content-Disposition": 'attachment; filename="ocr-runs.csv"'},
     )
@@ -7825,8 +7902,64 @@ def preflight():
             "Runs will not be logged; set OCR_LOG_DIR to a writable path.")
 
 
+def port_free(host: str, port: int) -> bool:
+    """True when nothing else is listening on `host:port`.
+
+    Bound WITHOUT SO_REUSEADDR on Windows, which is the point: there that flag
+    lets a second socket bind a port another process is already listening on,
+    and Werkzeug sets it -- so a second copy of the app used to start "fine" on
+    the first one's port, and each request went to whichever of the two Windows
+    picked. Elsewhere the flag only forgives TIME_WAIT and a listener still
+    refuses the bind, so it is set there as the server sets it.
+    """
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return True   # let the server report an unresolvable host itself
+    family, _, _, _, address = infos[0]
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if os.name != "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(address)
+        except OSError:
+            return False
+    return True
+
+
+def choose_port() -> int:
+    """The port this instance listens on; see `config.PORT_FIXED`."""
+    if config.PORT_FIXED:
+        if not port_free(config.HOST, config.PORT):
+            say(f"[ocr] port {config.PORT} is already in use -- another copy of "
+                "this app? Set PORT to a free port, or unset it to take the next "
+                "free one.", stream=sys.stderr)
+            sys.exit(1)
+        return config.PORT
+    for port in range(config.PORT, min(config.PORT + config.PORT_TRIES, 65536)):
+        if port_free(config.HOST, port):
+            if port != config.PORT:
+                say(f"[ocr] port {config.PORT} is in use (another instance?) -- "
+                    f"this one takes {port}.")
+            return port
+    say(f"[ocr] ports {config.PORT}-{config.PORT + config.PORT_TRIES - 1} are all "
+        "in use. Set PORT to a free port.", stream=sys.stderr)
+    sys.exit(1)
+
+
 if __name__ == "__main__":
+    # Before preflight, which prints the URL. Werkzeug's server sets
+    # SO_REUSEADDR, which on Windows would let a racing second instance bind
+    # this port anyway -- see `port_free` -- so it is turned off there.
+    config.PORT = choose_port()
+    if os.name == "nt":
+        import werkzeug.serving
+        werkzeug.serving.BaseWSGIServer.allow_reuse_address = False
     preflight()
+    # What every browser tab starts from: the server and models preflight just
+    # selected, and every switch as the environment set it.
+    workspace.seal()
     app.run(
         host=config.HOST,
         port=config.PORT,

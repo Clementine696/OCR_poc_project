@@ -257,6 +257,50 @@ $env:LLAMA_URL="http://127.0.0.1:11434"; $env:PORT="8000"; python app.py
 LLAMA_URL=http://127.0.0.1:11434 PORT=8000 python app.py
 ```
 
+### Two copies at once
+
+Run `python app.py` a second time, in another terminal, and the second copy takes the next
+free port and says so:
+
+```
+[ocr] port 5000 is in use (another instance?) -- this one takes 5001.
+```
+
+Each copy has its own pickers, so one can read on one model server while the other reads
+on another. Both write to the same `logs/runs.csv`; the log is locked across processes
+(`logs/runs.csv.lock`), so neither loses the other's rows. With `PORT` set, that port is
+used exactly, and the app exits with a message if it is already taken. To keep an
+experiment out of the main log, give that copy its own `OCR_LOG_DIR`.
+
+### Several people on one copy
+
+One copy can serve several people at once, and **each browser tab is its own workspace**:
+its own server and model pickers, Agentic switch, page-reading profile, loop backstop,
+sampling, table agents, read floor and context window, and its own random test and stress
+test. Two tabs can run a random test each at the same time, on different models, and each
+watches its own progress. Nothing one tab changes moves another.
+
+- **A refresh keeps the tab's settings; a new tab starts from the defaults**, which are what
+  the app selected at startup. The tab's id is in the address (`?ws=...`) and in the tab's
+  session storage. A link copied out of the address bar does not share the workspace: the
+  tab it is opened in takes its own. Neither does a duplicated tab.
+- **What stays shared** describes the servers rather than a choice made on them: the list of
+  servers, each server's type, and the run log, which every tab's runs are written to.
+- **Ollama:** switching model in one tab no longer unloads a model another tab is using
+  (one heard from within `WORKSPACE_ACTIVE_MINUTES`, or running a test). Two tabs on two
+  different models still share the card, and a model this app did not load is still
+  stopped. Set `OLLAMA_UNLOAD_ON_SWITCH=0` when the Ollama serves anything else.
+- **Two stress tests at once measure each other.** Each reports its own figures, but the
+  server is serving both loads.
+- **Run one process.** Workspaces are kept in memory, so the app must be one process (this
+  `python app.py`, or one waitress process with threads). Several worker processes would
+  each hold different workspaces. A restart forgets them all and every tab starts again
+  from the defaults.
+- Callers that name no workspace (`compare.py`, `randomtest.py`, `stress.py`, curl) share
+  one *default* workspace, which behaves exactly as the whole app did before.
+- Rendered pages for the compare view are kept per tab (`MAX_JOBS` each, at most
+  20 × `MAX_JOBS` in all).
+
 Device placement, threads and quantization belong to the model server. This app has no
 CPU/GPU control.
 
@@ -302,7 +346,7 @@ The ones that matter for a deployment:
 | Variable | Default | Why you would change it |
 |---|---|---|
 | `OCR_HOST` | `127.0.0.1` | Loopback. Leave it — see [Security](#security). |
-| `PORT` | `5000` | Port to bind. |
+| `PORT` | `5000` | Port to bind. Unset, a second copy steps to the next free port (up to `PORT_TRIES`, 10); set, it is used exactly. |
 | `LLAMA_URL` | `http://127.0.0.1:8080` | Where the model server is listening. |
 | `OCR_ENDPOINTS` | *(unset)* | Comma-separated list offered in the server picker. |
 | `EXTRACT_URL` | *(unset)* | A second server for field extraction (and the other text requests: classification, segmentation, the table agents). Unset, both passes use the reading server — the one-URL setup for local llama-server or Ollama. Set, page images go to the reading server and extraction goes here. Any OpenAI-compatible server works. Changeable in the page's **Extraction server** picker. |
@@ -342,8 +386,10 @@ The ones that matter for a deployment:
 
 ## Security
 
-**No authentication, no authorisation, no rate limiting, no CSRF protection.** This is a
-single-user tool meant to be reached over loopback, which is why `OCR_HOST` defaults to
+**No authentication, no authorisation, no rate limiting, no CSRF protection.** Workspaces
+keep people's settings apart (see [Several people on one copy](#several-people-on-one-copy));
+they are not access control, and anyone can delete rows from the shared run log. It is meant
+to be reached over loopback, which is why `OCR_HOST` defaults to
 `127.0.0.1` and why startup warns whenever it does not. That default is the security
 control; changing it removes the only one there is.
 

@@ -21,6 +21,7 @@ Three things worth knowing before editing anything here:
 """
 
 import config
+import workspace
 
 # --------------------------------------------------------------------------
 # intake limits
@@ -589,6 +590,14 @@ OCR_TOP_K = config.env_int("OCR_TOP_K", 1, minimum=0)
 # What the process started at, so the page can say what "reset" means. The three above
 # are rebound at run time by `set_ocr_sampling` (the Workspace controls).
 OCR_SAMPLING_DEFAULT = {"temperature": OCR_TEMPERATURE, "top_p": OCR_TOP_P, "top_k": OCR_TOP_K}
+# Per browser tab, like the rest of the Workspace controls -- see `workspace`.
+# The three globals stay the default workspace's, which is what tests patch and
+# what a caller naming no workspace reads.
+workspace.field("ocr_sampling", lambda: (OCR_TEMPERATURE, OCR_TOP_P, OCR_TOP_K))
+
+
+def _sampling() -> tuple:
+    return workspace.get("ocr_sampling", (OCR_TEMPERATURE, OCR_TOP_P, OCR_TOP_K))
 
 
 def set_ocr_sampling(temperature=None, top_p=None, top_k=None) -> dict:
@@ -608,7 +617,7 @@ def set_ocr_sampling(temperature=None, top_p=None, top_k=None) -> dict:
             raise ValueError(f"{name} must be between {low:g} and {high:g}.")
         return float(value)
 
-    new_t, new_p, new_k = OCR_TEMPERATURE, OCR_TOP_P, OCR_TOP_K
+    new_t, new_p, new_k = _sampling()
     if temperature is not None:
         new_t = number("temperature", temperature, 0.0, 2.0)
     if top_p is not None:
@@ -618,21 +627,24 @@ def set_ocr_sampling(temperature=None, top_p=None, top_k=None) -> dict:
         if k != int(k):
             raise ValueError("top_k must be a whole number.")
         new_k = int(k)
-    OCR_TEMPERATURE, OCR_TOP_P, OCR_TOP_K = new_t, new_p, new_k
+    if not workspace.put("ocr_sampling", (new_t, new_p, new_k)):
+        OCR_TEMPERATURE, OCR_TOP_P, OCR_TOP_K = new_t, new_p, new_k
     return ocr_sampling_state()
 
 
 def ocr_sampling_state() -> dict:
     """What is in force, as the page shows it (top_k 0 = not sent)."""
-    return {"temperature": OCR_TEMPERATURE, "top_p": OCR_TOP_P, "top_k": OCR_TOP_K,
+    temperature, top_p, top_k = _sampling()
+    return {"temperature": temperature, "top_p": top_p, "top_k": top_k,
             "defaults": dict(OCR_SAMPLING_DEFAULT)}
 
 
 def ocr_sampling() -> dict:
     """The decoding fields of a pass-1 request (min_p is pinned off by the caller)."""
-    fields = {"temperature": OCR_TEMPERATURE, "top_p": OCR_TOP_P}
-    if OCR_TOP_K > 0:
-        fields["top_k"] = OCR_TOP_K
+    temperature, top_p, top_k = _sampling()
+    fields = {"temperature": temperature, "top_p": top_p}
+    if top_k > 0:
+        fields["top_k"] = top_k
     return fields
 
 

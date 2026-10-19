@@ -32,6 +32,7 @@ easyocr-models/
 # are per-deployment measurements, not source.
 logs/*.csv
 logs/*.csv.tmp
+logs/*.csv.lock
 
 # Saved OCR output from compare.py -- regenerated on every run.
 solution/out/
