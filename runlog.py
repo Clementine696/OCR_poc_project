@@ -635,7 +635,89 @@ _SERVER_FIELDS = ("server_seconds", "server_queue_seconds",
 # (app imports runlog).
 _DRY = settings.DRY_MULTIPLIER
 
-_lock = threading.Lock()
+class _LogLock:
+    """The run log's lock: one thread at a time, and one PROCESS at a time.
+
+    **Two instances of the app share one log** when they run from one folder --
+    two copies on two ports, for two model servers or two people. A thread lock
+    serialises only the threads of its own process, and the log has three
+    writers that rewrite the whole file (`_migrate`, `update_extract`, `delete`)
+    through one fixed `runs.csv.tmp`: two processes rewriting at once write that
+    temp together, and an append landing between another process's read and its
+    `os.replace` is lost. On Windows a reader holding the file open also makes
+    the other process's `os.replace` fail outright.
+
+    So the thread lock is taken first -- one thread per process ever waits on
+    the file -- and then an OS lock on `runs.csv.lock` beside the log, which
+    every process here takes around every read and write. The lock file is
+    opened per acquisition, so a log directory created later, or moved by a
+    test, is followed. Where it cannot be opened at all (a read-only mount) the
+    thread lock alone is what there was before, and logging degrades exactly as
+    it already did.
+    """
+
+    def __init__(self):
+        self._thread = threading.Lock()
+        self._handle = None
+
+    def __enter__(self):
+        self._thread.acquire()
+        try:
+            path = LOG_PATH.with_name(LOG_PATH.name + ".lock")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(path, "a+b")
+        except OSError:
+            return self
+        try:
+            _lock_file(handle)
+        except OSError:
+            handle.close()
+            return self
+        self._handle = handle
+        return self
+
+    def __exit__(self, *exc):
+        handle, self._handle = self._handle, None
+        try:
+            if handle is not None:
+                try:
+                    _unlock_file(handle)
+                finally:
+                    handle.close()
+        finally:
+            self._thread.release()
+        return False
+
+
+if os.name == "nt":
+    import msvcrt
+
+    def _lock_file(handle):
+        # LK_LOCK gives up after ten one-second tries and raises; a long delete
+        # on a big log can outlast that, so keep asking rather than skip the lock.
+        handle.seek(0)
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError as err:
+                if getattr(err, "errno", None) not in (13, 36):  # EACCES, EDEADLOCK
+                    raise
+
+    def _unlock_file(handle):
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock_file(handle):
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+    def _unlock_file(handle):
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+_lock = _LogLock()
 
 
 # --------------------------------------------------------------------------

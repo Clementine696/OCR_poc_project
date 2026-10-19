@@ -257,6 +257,21 @@ $env:LLAMA_URL="http://127.0.0.1:11434"; $env:PORT="8000"; python app.py
 LLAMA_URL=http://127.0.0.1:11434 PORT=8000 python app.py
 ```
 
+### Two copies at once
+
+Run `python app.py` a second time, in another terminal, and the second copy takes the next
+free port and says so:
+
+```
+[ocr] port 5000 is in use (another instance?) -- this one takes 5001.
+```
+
+Each copy has its own pickers, so one can read on one model server while the other reads
+on another. Both write to the same `logs/runs.csv`; the log is locked across processes
+(`logs/runs.csv.lock`), so neither loses the other's rows. With `PORT` set, that port is
+used exactly, and the app exits with a message if it is already taken. To keep an
+experiment out of the main log, give that copy its own `OCR_LOG_DIR`.
+
 Device placement, threads and quantization belong to the model server. This app has no
 CPU/GPU control.
 
@@ -302,7 +317,7 @@ The ones that matter for a deployment:
 | Variable | Default | Why you would change it |
 |---|---|---|
 | `OCR_HOST` | `127.0.0.1` | Loopback. Leave it — see [Security](#security). |
-| `PORT` | `5000` | Port to bind. |
+| `PORT` | `5000` | Port to bind. Unset, a second copy steps to the next free port (up to `PORT_TRIES`, 10); set, it is used exactly. |
 | `LLAMA_URL` | `http://127.0.0.1:8080` | Where the model server is listening. |
 | `OCR_ENDPOINTS` | *(unset)* | Comma-separated list offered in the server picker. |
 | `EXTRACT_URL` | *(unset)* | A second server for field extraction (and the other text requests: classification, segmentation, the table agents). Unset, both passes use the reading server — the one-URL setup for local llama-server or Ollama. Set, page images go to the reading server and extraction goes here. Any OpenAI-compatible server works. Changeable in the page's **Extraction server** picker. |

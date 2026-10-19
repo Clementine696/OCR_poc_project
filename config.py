@@ -162,3 +162,8 @@ LOG_DIR = env_path("OCR_LOG_DIR", BASE_DIR / "logs")
 # reverse proxy or on a trusted network, never straight onto the internet.
 HOST = os.environ.get("OCR_HOST") or os.environ.get("HOST") or "127.0.0.1"
 PORT = env_int("PORT", 5000, minimum=1, maximum=65535)
+# A second copy of the app started without PORT steps up from 5000 to the first
+# free port, up to this many tries, so two can run side by side. A PORT that is
+# set is taken as meant: if it is in use the app says so and exits.
+PORT_FIXED = bool((os.environ.get("PORT") or "").strip())
+PORT_TRIES = env_int("PORT_TRIES", 10, minimum=1, maximum=100)

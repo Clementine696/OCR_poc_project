@@ -15,6 +15,7 @@ Accepts any raster format Pillow can open, plus PDFs (PyMuPDF), HEIC/HEIF
 import base64
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -7630,8 +7631,12 @@ def runs_csv():
     """The log file itself, for a spreadsheet."""
     if not runlog.LOG_PATH.exists():
         return jsonify(error="Nothing logged yet."), 404
+    # Under the log's lock: another instance may be rewriting it -- see
+    # `runlog._LogLock`.
+    with runlog._lock:
+        body = runlog.LOG_PATH.read_bytes()
     return Response(
-        runlog.LOG_PATH.read_bytes(),
+        body,
         mimetype="text/csv",
         headers={"Content-Disposition": 'attachment; filename="ocr-runs.csv"'},
     )
@@ -7807,7 +7812,60 @@ def preflight():
             "Runs will not be logged; set OCR_LOG_DIR to a writable path.")
 
 
+def port_free(host: str, port: int) -> bool:
+    """True when nothing else is listening on `host:port`.
+
+    Bound WITHOUT SO_REUSEADDR on Windows, which is the point: there that flag
+    lets a second socket bind a port another process is already listening on,
+    and Werkzeug sets it -- so a second copy of the app used to start "fine" on
+    the first one's port, and each request went to whichever of the two Windows
+    picked. Elsewhere the flag only forgives TIME_WAIT and a listener still
+    refuses the bind, so it is set there as the server sets it.
+    """
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return True   # let the server report an unresolvable host itself
+    family, _, _, _, address = infos[0]
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if os.name != "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(address)
+        except OSError:
+            return False
+    return True
+
+
+def choose_port() -> int:
+    """The port this instance listens on; see `config.PORT_FIXED`."""
+    if config.PORT_FIXED:
+        if not port_free(config.HOST, config.PORT):
+            say(f"[ocr] port {config.PORT} is already in use -- another copy of "
+                "this app? Set PORT to a free port, or unset it to take the next "
+                "free one.", stream=sys.stderr)
+            sys.exit(1)
+        return config.PORT
+    for port in range(config.PORT, min(config.PORT + config.PORT_TRIES, 65536)):
+        if port_free(config.HOST, port):
+            if port != config.PORT:
+                say(f"[ocr] port {config.PORT} is in use (another instance?) -- "
+                    f"this one takes {port}.")
+            return port
+    say(f"[ocr] ports {config.PORT}-{config.PORT + config.PORT_TRIES - 1} are all "
+        "in use. Set PORT to a free port.", stream=sys.stderr)
+    sys.exit(1)
+
+
 if __name__ == "__main__":
+    # Before preflight, which prints the URL. Werkzeug's server sets
+    # SO_REUSEADDR, which on Windows would let a racing second instance bind
+    # this port anyway -- see `port_free` -- so it is turned off there.
+    config.PORT = choose_port()
+    if os.name == "nt":
+        import werkzeug.serving
+        werkzeug.serving.BaseWSGIServer.allow_reuse_address = False
     preflight()
     app.run(
         host=config.HOST,
