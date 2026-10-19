@@ -1098,6 +1098,15 @@ OLLAMA_REPEAT_PENALTY = config.env_float("OLLAMA_REPEAT_PENALTY", 1.1,
 # failing to parse costs that step's fields rather than the whole extraction.
 AGENTIC_EXTRACT = config.env_bool("AGENTIC_EXTRACT", False)
 
+# Whether pass 2 asks for `other_fields` -- the overflow list of every labelled
+# fact the form has no key for -- when nothing has switched it at runtime. The
+# page's "Extra fields" switch flips it per tab. Added 2026-10-19 at the user's
+# request. Off, the single prompt and its grammar leave the list out and the
+# agentic `other` step is not sent, in every document of a split file. Nothing
+# scores the list, so this costs no figure; what it saves is the longest and
+# most loop-prone part of the reply, which matters most under load.
+EXTRACT_OTHER_FIELDS = config.env_bool("EXTRACT_OTHER_FIELDS", True)
+
 # How many times a step may be asked again after it returned a value that is not
 # in the transcript. The retry quotes the rejected values back, so it is a
 # different question rather than the same one repeated; asking again in identical

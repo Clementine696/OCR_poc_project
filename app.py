@@ -92,6 +92,7 @@ from settings import (
     MONITOR_MIN_INTERVAL,
     ACCEPTED_SUFFIXES,
     AGENTIC_EXTRACT,
+    EXTRACT_OTHER_FIELDS,
     AUTO_SELECT_SERVER,
     AGENTIC_PARALLEL,
     AGENTIC_PARALLEL_MAX,
@@ -2003,7 +2004,7 @@ def _segment_record(seg: dict, index: int, total: int) -> dict:
 
 
 def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
-               pages=None):
+               pages=None, extras=None):
     """Everything downstream needs about one document's form, in one dict.
 
     **Resolved once per extraction and handed to everything**: the prompt's
@@ -2015,6 +2016,8 @@ def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
     page that is both a credit note and a tax invoice must answer for both, and
     an intersection would let each type excuse the other's obligations.
     `doc_type` is the primary one, for a label and nothing else.
+
+    `extras` is whether `other_fields` is asked for; None takes the switch.
     """
     codes, how, heading, confidence, escalated = resolve_doc_types(
         text, case_id, doc_type, status, pages)
@@ -2070,7 +2073,10 @@ def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
             # entry rather than folded into `mandatory` for the reason `items` is
             # its own entry: a row's obligation is not a key's, and `validate`
             # reports it against a path no key list could match.
-            "mandatory_items": list(mandatory_items_for_types(codes))}
+            "mandatory_items": list(mandatory_items_for_types(codes)),
+            # Whether `other_fields` is asked for: the single prompt and grammar
+            # and the agentic `other` step all read it off here.
+            "extras": extract_extras() if extras is None else bool(extras)}
 
 
 def _classified(form: dict, mode: str) -> dict:
@@ -2122,8 +2128,9 @@ def _classified(form: dict, mode: str) -> dict:
         # Named only for the shape that walks them. Single mode asks one
         # question, and reporting the steps it did not take would describe a run
         # that did not happen.
-        "steps": ([s["id"] for s in steps_for_types(codes)]
+        "steps": ([s["id"] for s in steps_for_types(codes, form.get("extras", True))]
                   if mode == "agentic" else []),
+        "extras": form.get("extras", True),
         "rules": list(rules_for_types(codes)),
         # Whether the answer reached the PROMPT or only the field list. It is
         # per mode and a setting can turn it off, so a reader comparing two runs
@@ -2158,7 +2165,8 @@ def _extract_single(text: str, status: dict, form: dict) -> dict:
     # grammar listing a key the prompt never asked for is an invitation to fill
     # it, which is the note `prompts.extract_schema` carries.
     retry = _extract_once(text, status,
-                          extract_schema(form["keys"], form["items"]), form)
+                          extract_schema(form["keys"], form["items"],
+                                         form.get("extras", True)), form)
     retry["seconds"] = round(result.get("seconds", 0) + retry.get("seconds", 0), 2)
     if "fields" not in retry:
         # Both failed. The first reply is the one to report -- it is the one the
@@ -2212,7 +2220,7 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
     # "single" because this function IS single mode's one request -- agentic
     # never reaches here, it goes through `_step_question`.
     message = (extract_prompt(form["keys"], _framing(form, "single"),
-                              TYPE_FRAMING_BULLETS, form["items"])
+                              TYPE_FRAMING_BULLETS, form["items"], form.get("extras", True))
                + text + EXTRACT_REMINDER)
     url, payload = backends.structured_request(
         backends.system_prefix(status)
@@ -2261,6 +2269,10 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
                          "Re-extract; if it persists, extract one page at a time.",
                 "envelope": True, "raw": raw[:2000], "prompt": message,
                 "seconds": elapsed}
+    if not form.get("extras", True):
+        # Not asked for, so not kept if the model wrote some anyway: the list
+        # is empty, as it is on an agentic run without the `other` step.
+        fields["other_fields"] = []
 
     _, _, tokens = backends.structured_reply(body, status)
     return {
@@ -2627,7 +2639,7 @@ def _step_count_label():
             else f"{min(counts)}-{max(counts)}")
 
 
-def _steps_for(wanted, doc_types=()):
+def _steps_for(wanted, doc_types=(), extras=True):
     """The step table, or the named subset of it, in the table's own order.
 
     A measurement tool and nothing else: it is what lets one step's prompt be
@@ -2638,7 +2650,7 @@ def _steps_for(wanted, doc_types=()):
     The order is always `EXTRACT_STEPS`', never the caller's, so a restricted run
     is the full run with steps removed rather than a differently ordered one.
     """
-    table = steps_for_types(doc_types)
+    table = steps_for_types(doc_types, extras)
     if not wanted:
         return table
     ids = [s.strip() for s in wanted if str(s).strip()]
@@ -2800,8 +2812,8 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
     # caller applied. `steps_only` is measured against this rather than against
     # the whole step table: an invoice legitimately runs six of the eight steps
     # and is a complete run of its own form, not a partial run of someone else's.
-    full_table = steps_for_types(form["doc_types"])
-    table = _steps_for(only, form["doc_types"])
+    full_table = steps_for_types(form["doc_types"], form.get("extras", True))
+    table = _steps_for(only, form["doc_types"], form.get("extras", True))
     source = grounding.Source(text)
     started = time.perf_counter()
     fields, steps, replies = {}, [], []
@@ -2999,6 +3011,12 @@ _profile_lock = threading.Lock()
 # see `workspace`. The globals are the default workspace's.
 workspace.field("extract_mode", lambda: _extract_mode)
 workspace.field("ocr_profile", lambda: _ocr_profile)
+
+# Whether pass 2 asks for `other_fields` at all. Held and switched like the mode
+# above, and stamped on every result as `extras` so a row says which it ran under.
+# See `settings.EXTRACT_OTHER_FIELDS`.
+_extract_extras = bool(EXTRACT_OTHER_FIELDS)
+workspace.field("extract_extras", lambda: _extract_extras)
 
 
 def ocr_profile() -> str:
@@ -3228,6 +3246,19 @@ def set_extract_mode(mode: str) -> str:
         if not workspace.put("extract_mode", mode):
             _extract_mode = mode
     return mode
+
+
+def extract_extras() -> bool:
+    with _mode_lock:
+        return bool(workspace.get("extract_extras", _extract_extras))
+
+
+def set_extract_extras(on: bool) -> bool:
+    global _extract_extras
+    with _mode_lock:
+        if not workspace.put("extract_extras", bool(on)):
+            _extract_extras = bool(on)
+    return extract_extras()
 
 
 def _recut_message(table: dict) -> str:
@@ -3872,7 +3903,7 @@ def _score_item_table(result: dict, case_id: str, pages=None, text: str = "") ->
 
 def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
                           steps=None, doc_type: str = None, pages=None,
-                          truth_fed: bool = False):
+                          truth_fed: bool = False, extras: bool = None):
     """Turn a finished transcript into structured JSON, yielding progress.
 
     A separate text-only pass rather than part of the OCR prompt: mixing
@@ -3918,6 +3949,9 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     if not status["text_available"]:
         return {"error": status["text_reason"]}
     mode = mode or extract_mode()
+    # Whether `other_fields` is asked for, decided once for every document of
+    # the file so a switch flipped mid-file cannot split it.
+    extras = extract_extras() if extras is None else bool(extras)
     # Every model request this extraction makes -- the segment and classify
     # questions, the steps or the single request, the table agents -- is timed
     # by the server too, and summed here into `server_time`. Closed in `finally`
@@ -3925,7 +3959,7 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     previous = servertime.open_tally()
     try:
         result = yield from _extract_file(text, mode, case_id, steps, doc_type,
-                                          pages, truth_fed, status)
+                                          pages, truth_fed, status, extras)
     finally:
         served = servertime.close_tally(previous)
     if isinstance(result, dict) and served:
@@ -3933,7 +3967,8 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     return result
 
 
-def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status):
+def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status,
+                  extras=True):
     """The body of `extract_fields_stream`, split out so the server-time tally
     can be wrapped round all of it."""
     segments, split_from = yield from _segment_stream(text, pages, status)
@@ -3948,11 +3983,11 @@ def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status
     if len(segments) > 1:
         result = yield from _extract_documents(segments, records, mode, case_id,
                                                steps, doc_type, status,
-                                               truth_fed)
+                                               truth_fed, extras)
     else:
         result = yield from _extract_document(segments[0]["text"], mode, case_id,
                                               steps, doc_type, status,
-                                              truth_fed=truth_fed)
+                                              truth_fed=truth_fed, extras=extras)
     if isinstance(result, dict):
         # On every result, however many documents: what the file was read as is
         # a fact about the run, and a reader looking at one document's fields
@@ -3960,12 +3995,15 @@ def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status
         result["segments"] = records
         result.setdefault("documents_found", 1)
         result["split_from"] = split_from
+        # Whether `other_fields` was asked for. An empty list means "none
+        # found" only where it was; the run log reads this to leave it blank.
+        result["extras"] = extras
     return result
 
 
 def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
                       status: dict, record: dict = None,
-                      truth_fed: bool = False):
+                      truth_fed: bool = False, extras: bool = True):
     """One document: classify it, ask for its form, ground it, validate it, score it.
 
     The whole of what `extract_fields_stream` used to be, lifted out unchanged so
@@ -3983,7 +4021,7 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
     # missing, what validate checks and what fieldscore scores all come off this
     # one dict, so the two modes cannot disagree about which document this is.
     form = _field_set(text, case_id, doc_type, status,
-                      (record or {}).get("pages"))
+                      (record or {}).get("pages"), extras)
     # Stage 0, announced before either shape starts. It is the one part of a
     # pass-2 run that is finished before the first request goes out, so a page
     # that shows it immediately is showing something true rather than a
@@ -4020,7 +4058,8 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
 
 
 def _extract_documents(segments, records, mode: str, case_id: str, steps,
-                       doc_type, status: dict, truth_fed: bool = False):
+                       doc_type, status: dict, truth_fed: bool = False,
+                       extras: bool = True):
     """Every document in the file, one at a time, merged into one result.
 
     **The fields are independent and are kept that way.** Each document is
@@ -4044,7 +4083,7 @@ def _extract_documents(segments, records, mode: str, case_id: str, steps,
                "page_range": record["page_range"]}
         result = yield from _extract_document(seg["text"], mode, case_id,
                                               steps, doc_type, status, record,
-                                              truth_fed)
+                                              truth_fed, extras)
         if not isinstance(result, dict):
             result = {"error": "extraction returned nothing"}
         result["document"] = record["document"]
@@ -4368,10 +4407,10 @@ def _drain(generator):
 
 def extract_fields(text: str, mode: str = None, case_id: str = None,
                    steps=None, doc_type: str = None, pages=None,
-                   truth_fed: bool = False) -> dict:
+                   truth_fed: bool = False, extras: bool = None) -> dict:
     """`extract_fields_stream` for callers with nowhere to show progress."""
     return _drain(extract_fields_stream(text, mode, case_id, steps, doc_type,
-                                        pages, truth_fed))
+                                        pages, truth_fed, extras))
 
 
 def strip_fence(text: str) -> str:
@@ -5051,6 +5090,7 @@ def index():
         ctx_choices=backends.NUM_CTX_CHOICES,
         num_ctx=backends.num_ctx(),
         extract_mode=extract_mode(),
+        extract_extras=extract_extras(),
         # A RANGE, not a count: the step table is per document type now, so an
         # invoice runs six of the eight steps and a credit note all eight. The
         # picker is drawn before any document is chosen, so the only honest
@@ -5511,7 +5551,8 @@ def classify_endpoint():
         # What the answer buys, which is the whole reason to ask: the steps an
         # agentic run would walk, the rules `validate` would then apply, and the
         # framing both prompts would carry.
-        "steps": [s["id"] for s in steps_for_types(form["doc_types"])],
+        "steps": [s["id"] for s in steps_for_types(form["doc_types"],
+                                                   form.get("extras", True))],
         "rules": list(rules_for_types(form["doc_types"])),
         "type_phrase": type_phrase(form["doc_types"]),
     })
@@ -5621,6 +5662,25 @@ def extract_mode_set():
     except ValueError as err:
         return jsonify(error=str(err)), 400
     return jsonify(mode=mode, steps=len(EXTRACT_STEPS))
+
+
+@app.get("/api/extract/extras")
+def extract_extras_get():
+    return jsonify(extras=extract_extras())
+
+
+@app.post("/api/extract/extras")
+def extract_extras_set():
+    """Ask for `other_fields` or not, for everything this tab extracts next.
+
+    Not refused during a sweep, for the mode's reason: every result carries
+    `extras`, so a batch split across the switch still says which ran how.
+    """
+    body = request.get_json(silent=True) or {}
+    on = body.get("extras")
+    if not isinstance(on, bool):
+        return jsonify(error="extras must be true or false."), 400
+    return jsonify(extras=set_extract_extras(on))
 
 
 @app.get("/api/ocr/profile")
@@ -6496,6 +6556,9 @@ def _stress_config(body: dict) -> dict:
         "gpu_extract_url": str(body.get("gpu_extract_url") or "").strip() or MONITOR_GPU_URL,
         "detail": resolve_detail(body.get("detail") or "medium"),
         "extract_mode": shape,
+        # Whether `other_fields` is asked for, fixed for the run like the shape.
+        "extras": (body["extras"] if isinstance(body.get("extras"), bool)
+                   else extract_extras()),
         "strategy": strategy,
         "seed": body.get("seed"),
         "lock": lock,
@@ -6698,6 +6761,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     text = prepared["truths"][case_id]
                 started = time.perf_counter()
                 result = extract_fields(text, cfg["extract_mode"], case_id,
+                                        extras=cfg.get("extras"),
                                         pages=texts, truth_fed=mode == "extract")
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
                 rec["extract_tokens"] = result.get("tokens") or 0
@@ -6992,6 +7056,7 @@ def _stress_run(cfg: dict, cancel):
         "strategy": cfg["strategy"], "lock": cfg["lock"],
         "detail": cfg["detail"] if mode in ("ocr", "full") else "",
         "extract_mode": cfg["extract_mode"] if mode in ("extract", "full") else "",
+        "extras": bool(cfg.get("extras", True)) if mode in ("extract", "full") else None,
         "pack_pages": cfg["pack_pages"] if mode == "classify" else 0,
         "documents": len({s["case"] for s in specs if "case" in s}),
         "server": {"url": info["url"], "kind": info["kind"]},

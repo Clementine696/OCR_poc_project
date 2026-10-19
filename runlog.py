@@ -889,6 +889,15 @@ def _extract_cells(summary: dict) -> dict:
     every mean over this file.
     """
     extracted = (summary or {}).get("extracted") or {}
+    cells = _extract_cells_of(summary, extracted)
+    if extracted.get("extras") is False:
+        # `other_fields` was not asked for, so its count is blank rather than
+        # 0: nobody looked, which is not the same as finding none.
+        cells.update(other_fields="", other_distinct="")
+    return cells
+
+
+def _extract_cells_of(summary: dict, extracted: dict) -> dict:
     documents = extracted.get("documents")
     if isinstance(documents, list) and len(documents) > 1:
         return _document_cells(summary, extracted, documents)
