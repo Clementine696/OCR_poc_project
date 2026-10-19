@@ -6644,6 +6644,60 @@ def _stress_sample(targets: list, bases: dict, elapsed: float) -> tuple:
     return views, snaps, errors
 
 
+class _StressSampler:
+    """Reads /metrics every `every` s on its own thread, whatever the load.
+
+    The sampler used to run inside the progress loop, which woke on every job
+    that finished (2026-10-19, reported by the user: /metrics in the stress
+    test "blocking the server request" at high concurrency). A read there held
+    up every progress event behind vLLM's /metrics, which answers slowest
+    exactly when the server is busiest. Here the clock alone decides: one tick
+    every `every` s from the start, never two reads at once, and a tick that
+    comes due while a slow read is still out is skipped rather than queued. The
+    progress loop only picks up the latest result, so it never waits on it.
+    """
+
+    def __init__(self, targets: list, bases: dict, every: float, started: float):
+        self._targets, self._bases = targets, bases
+        self._every, self._started = every, started
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._fresh = None              # (views, errors) not yet handed out
+        self.last = {}                  # the last snapshot of each target, by URL
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="stress-metrics")
+
+    def start(self):
+        if self._targets:
+            self._thread.start()
+        return self
+
+    def _run(self):
+        tick = self._started + self._every
+        while not self._stop.wait(max(0.0, tick - time.perf_counter())):
+            views, snaps, errors = _stress_sample(
+                self._targets, self._bases, time.perf_counter() - self._started)
+            with self._lock:
+                self.last.update(snaps)
+                self._fresh = (views, errors)
+            # Ticks missed during a slow read are skipped, not caught up.
+            now = time.perf_counter()
+            while tick <= now:
+                tick += self._every
+
+    def take(self):
+        """The newest `(views, errors)` since the last call, or None."""
+        with self._lock:
+            fresh, self._fresh = self._fresh, None
+            return fresh
+
+    def stop(self):
+        """Stops ticking. A read in flight finishes on its own; nothing waits."""
+        self._stop.set()
+        with self._lock:
+            return dict(self.last)
+
+
 def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
                   targets: list = (), bases: dict = None):
     """Run one queue of jobs at the configured concurrency, yielding progress.
@@ -6674,11 +6728,17 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
     futures = [pool.submit(_stress_job, spec, cfg, prepared, cancel, live)
                for spec in specs]
     pending, timeline = set(futures), []
-    last_metrics, sampled_at = {}, started
+    sampler = _StressSampler(list(targets), bases or {}, cfg["metrics_every"],
+                             started).start()
+    tick = started
     try:
         while pending and not cancel.is_set():
-            _, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+            # One event a second on the clock, not one per finished job: at
+            # high concurrency jobs finish many times a second.
+            tick += 1.0
+            _, pending = wait(pending, timeout=max(0.0, tick - time.perf_counter()))
             now = time.perf_counter()
+            tick = max(tick, now - 1.0)
             elapsed = now - started
             snap = live.snapshot()
             stages = snap["stages"]
@@ -6688,10 +6748,9 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
                      "elapsed": round(elapsed, 1), "total": len(specs), **snap,
                      "pages_per_second": round(snap["pages"] / elapsed, 3) if elapsed else 0,
                      "tokens_per_second": round(snap["tokens"] / elapsed, 2) if elapsed else 0}
-            if targets and now - sampled_at >= cfg["metrics_every"]:
-                sampled_at = now
-                views, snaps, errors = _stress_sample(targets, bases or {}, elapsed)
-                last_metrics.update(snaps)
+            fresh = sampler.take()
+            if fresh:
+                views, errors = fresh
                 if views:
                     event["servers_metrics"] = views
                     event["server_metrics"] = views[0]["view"]
@@ -6702,6 +6761,7 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
         # Queued jobs are dropped; running ones carry on and are drained by the
         # caller. Nothing here blocks on them.
         pool.shutdown(wait=False, cancel_futures=True)
+        last_metrics = sampler.stop()
     wall = time.perf_counter() - started
     records, draining = [], []
     for future in futures:
