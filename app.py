@@ -25,6 +25,7 @@ import uuid
 import weakref
 from collections import OrderedDict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from pathlib import Path
 
 import requests
@@ -920,8 +921,13 @@ def _timed_post(url: str, payload: dict, status: dict):
 
 
 def _post_once(url: str, payload: dict, status: dict):
-    if _guards_extraction(url, payload, status):
-        return _streamed_post(url, payload, status)
+    with _watched() as progress:
+        if _guards_extraction(url, payload, status):
+            return _streamed_post(url, payload, status, progress)
+        return _plain_post(url, payload, status)
+
+
+def _plain_post(url: str, payload: dict, status: dict):
     clock = servertime.Clock(status)
     res = backends.http_post(url, status, json=payload, timeout=GEN_TIMEOUT)
     # The whole reply is in, so the prefill certainly is: release anything
@@ -982,6 +988,78 @@ def _prefilled():
     if hook is not None:
         _prefill_hook.cb = None
         hook()
+
+
+# Who is told that a pass-2 request is still making progress: the stress test's
+# stall alert. Until 2026-10-19 that alert heard only when a job's whole
+# extraction returned, so a multi-document file -- classify, split, one
+# extraction per document, table agents -- read as "stalled" under load while
+# every one of its requests was moving. `cb(event, request, what)`, with `event`
+# "begin", "chunk" (a streamed line arrived) or "end"; `request` is an object
+# unique to one request and `what` names it ("step parties"), from `_asking`.
+# Thread-local like `_prefill_hook`; `_carry_progress` takes it into the agentic
+# step threads, which a thread-local alone would never reach.
+_progress = threading.local()
+
+
+def _progress_swap(cb):
+    """Install `cb` as this thread's progress hook. Returns the one it replaced."""
+    previous = getattr(_progress, "cb", None)
+    _progress.cb = cb
+    return previous
+
+
+def _carry_progress(fn):
+    """`fn`, set to run with this thread's progress hook -- for handing to a thread."""
+    cb = getattr(_progress, "cb", None)
+    what = getattr(_progress, "what", None)
+    if cb is None:
+        return fn
+
+    def run(*args, **kwargs):
+        previous, previous_what = _progress_swap(cb), getattr(_progress, "what", None)
+        _progress.what = what
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _progress_swap(previous)
+            _progress.what = previous_what
+    return run
+
+
+@contextmanager
+def _asking(what: str):
+    """Name the requests made inside this block, for the stall alert.
+
+    Never wrapped round a `yield`: a generator can resume on another thread,
+    and the name would stay behind on this one.
+    """
+    previous = getattr(_progress, "what", None)
+    _progress.what = what
+    try:
+        yield
+    finally:
+        _progress.what = previous
+
+
+def _no_progress():
+    pass
+
+
+@contextmanager
+def _watched():
+    """One request, reported to the progress hook. Yields the call to make on
+    each streamed line; "end" is sent however the request finishes."""
+    cb = getattr(_progress, "cb", None)
+    if cb is None:
+        yield _no_progress
+        return
+    request, what = object(), getattr(_progress, "what", None)
+    cb("begin", request, what)
+    try:
+        yield lambda: cb("chunk", request, what)
+    finally:
+        cb("end", request, what)
 
 
 # Pass-2 requests this process cut off for looping, since it started. Read by the
@@ -1076,7 +1154,7 @@ class _Reply:
         return self._body
 
 
-def _streamed_post(url: str, payload: dict, status: dict):
+def _streamed_post(url: str, payload: dict, status: dict, progress=_no_progress):
     """One pass-2 request, streamed, and closed the moment it starts cycling.
 
     Closing the connection is the whole of the termination: vLLM aborts a request
@@ -1085,6 +1163,7 @@ def _streamed_post(url: str, payload: dict, status: dict):
     so the callers' salvage and diagnosis run exactly as on a loop that ran to the
     cap -- `_why_unparsable` names it a loop -- and the body carries
     `loop_aborted` for anything that wants to know it was cut rather than run out.
+    `progress` is called on every line that arrives (the stall alert's clock).
     """
     body = dict(payload, stream=True, stream_options={"include_usage": True})
     clock = servertime.Clock(status)
@@ -1100,6 +1179,7 @@ def _streamed_post(url: str, payload: dict, status: dict):
             # vLLM sends nothing until the first token exists, so the first line
             # of the body means the prompt has been prefilled -- and cached.
             _prefilled()
+            progress()
             line = raw.decode("utf-8", errors="replace")
             if not line.startswith("data:"):
                 continue
@@ -1435,7 +1515,8 @@ def _classify_with_model(text: str, status: dict):
             backends.system_prefix(status)
             + [{"role": "user", "content": message}],
             None, CLASSIFY_MAX_TOKENS, status)
-        res = _timed_post(url, payload, status)
+        with _asking("classify"):
+            res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return [], ""
         raw, _, _ = backends.structured_reply(res.json(), status)
@@ -1709,7 +1790,8 @@ def _segment_with_model(pages, status: dict):
             backends.system_prefix(status)
             + [{"role": "user", "content": message}],
             None, SEGMENT_MAX_TOKENS, status)
-        res = _timed_post(url, payload, status)
+        with _asking("split"):
+            res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return None
         raw, _, _ = backends.structured_reply(res.json(), status)
@@ -1843,7 +1925,8 @@ class _SegmentChat:
             url, payload = backends.structured_request(
                 self._messages(number, page), None, SEGMENT_MAX_TOKENS,
                 self.status)
-            res = _timed_post(url, payload, self.status)
+            with _asking(f"split, page {number}"):
+                res = _timed_post(url, payload, self.status)
             if res.status_code != 200:
                 return None
             raw, _, _ = backends.structured_reply(res.json(), self.status)
@@ -2229,7 +2312,8 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
 
     started = time.perf_counter()
     try:
-        res = _timed_post(url, payload, status)
+        with _asking("extraction"):
+            res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return {"error": f"{status['kind'] or 'model server'} HTTP "
                              f"{res.status_code}: {res.text[:200]}"}
@@ -2694,6 +2778,12 @@ def _warm_step(warmed, *args):
 
 
 def _run_step(step: dict, prefix: str, question: str, status: dict, source):
+    """`_run_step_asked`, its requests named after the step for the stall alert."""
+    with _asking(f"step {step['id']}"):
+        return _run_step_asked(step, prefix, question, status, source)
+
+
+def _run_step_asked(step: dict, prefix: str, question: str, status: dict, source):
     """Ask one agentic step, with its grounding re-ask, and record what happened.
 
     Returns (record, values, replies, tokens). Self-contained by design: it reads
@@ -2861,7 +2951,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
                                 thread_name_prefix="agentic-step") as pool:
             def submit(index):
                 step = table[index]
-                return pool.submit(workspace.bind(batch.run), _run_step, step,
+                return pool.submit(_carry_progress(workspace.bind(batch.run)), _run_step, step,
                                    prefix, _step_question(step, framing), status,
                                    source)
 
@@ -2872,7 +2962,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
                 # find the shared prefix in vLLM's cache rather than each
                 # prefilling it again in the same scheduler step.
                 warmed = threading.Event()
-                futures = {pool.submit(workspace.bind(batch.run), _warm_step,
+                futures = {pool.submit(_carry_progress(workspace.bind(batch.run)), _warm_step,
                                        warmed, table[0],
                                        prefix, _step_question(table[0], framing),
                                        status, source): 0}
@@ -3832,26 +3922,30 @@ def _item_table_stream(text: str, form: dict, status: dict, pages=None,
         if concat_on and table.get("_others"):
             yield event("concat", "running", offered=len(table["_others"]),
                         model=status.get("model") or "")
-            table = _table_concat_agent(table, status, snap)
+            with _asking("table concat agent"):
+                table = _table_concat_agent(table, status, snap)
             yield event("concat", "done", **_agent_brief(table.get("concat")))
         else:
             yield event("concat", "off" if not concat_on else "skipped")
         if fix_on:
             yield event("fix", "running", rows=len(table["rows"]),
                         model=status.get("model") or "")
-            table = _table_fix_agent(table, status, snap)
+            with _asking("table fix agent"):
+                table = _table_fix_agent(table, status, snap)
             yield event("fix", "done", **_agent_brief(table.get("fix_agent")))
         else:
             yield event("fix", "off")
             table = tables.reclassify(tables.realign(table))
             snap("realign", "code", table)
-            table = _recut_with_model(table, status)
+            with _asking("table recut"):
+                table = _recut_with_model(table, status)
             snap("recut", "model", table)
         # Agent 2 last, on the table as it now stands.
         asking = identify_on and bool(table.get("rows"))
         if asking:
             yield event("identify", "running", model=status.get("model") or "")
-        table = _table_identify_agent(table, form, fields, status)
+        with _asking("table identify agent"):
+            table = _table_identify_agent(table, form, fields, status)
         yield event("identify", "done" if asking else "off",
                     is_master_table=table.get("is_master_table"),
                     master_from=table.get("master_from"),
@@ -4396,21 +4490,27 @@ def _attribute_blame(score, case_id: str, transcript: str,
         return {"skipped": f"attribution failed: {err}"}
 
 
-def _drain(generator):
-    """Run a generator that returns a value, discarding what it yields."""
+def _drain(generator, each=None):
+    """Run a generator that returns a value, discarding what it yields -- or
+    handing each event to `each`."""
     while True:
         try:
-            next(generator)
+            event = next(generator)
         except StopIteration as stop:
             return stop.value
+        if each is not None:
+            each(event)
 
 
 def extract_fields(text: str, mode: str = None, case_id: str = None,
                    steps=None, doc_type: str = None, pages=None,
-                   truth_fed: bool = False, extras: bool = None) -> dict:
-    """`extract_fields_stream` for callers with nowhere to show progress."""
+                   truth_fed: bool = False, extras: bool = None,
+                   each=None) -> dict:
+    """`extract_fields_stream` for callers with nowhere to show progress.
+    `each`, where given, sees every event (the stress test reads which document
+    is being extracted off them)."""
     return _drain(extract_fields_stream(text, mode, case_id, steps, doc_type,
-                                        pages, truth_fed, extras))
+                                        pages, truth_fed, extras), each)
 
 
 def strip_fence(text: str) -> str:
@@ -6426,7 +6526,8 @@ class _StressLive:
     def begin(self, job: int, case: str, stage: str):
         with self._lock:
             self._active[job] = {"case": case, "stage": stage,
-                                 "last": time.perf_counter(), "flagged": False}
+                                 "last": time.perf_counter(), "flagged": False,
+                                 "document": None, "requests": {}}
 
     def touch(self, job: int, stage: str = None):
         with self._lock:
@@ -6439,18 +6540,63 @@ class _StressLive:
         with self._lock:
             self._active.pop(job, None)
 
+    def hook(self, job: int):
+        """This job's progress hook (`_progress`): every pass-2 request it makes,
+        on whatever thread, resets its clock on each line and when it ends."""
+        return lambda event, request, what: self.request(job, event, request, what)
+
+    def request(self, job: int, event: str, request, what: str = None):
+        """One request's begin, chunk or end. Beginning is not hearing back, so
+        only a chunk or the end resets the clock."""
+        with self._lock:
+            active = self._active.get(job)
+            if not active:
+                return
+            now = time.perf_counter()
+            if event == "begin":
+                label = ", ".join(p for p in (active["document"], what) if p)
+                active["requests"][request] = {"what": label, "last": now}
+                return
+            active["last"] = now
+            if event == "end":
+                active["requests"].pop(request, None)
+            elif request in active["requests"]:
+                active["requests"][request]["last"] = now
+
+    def extract_event(self, job: int, event: dict):
+        """An extraction's progress event: which document it is on, if several."""
+        if isinstance(event, dict) and event.get("event") == "document":
+            with self._lock:
+                active = self._active.get(job)
+                if active:
+                    active["document"] = (f"document {event.get('document')} of "
+                                          f"{event.get('documents')}")
+
     def flag_stalled(self, limit: float):
-        """Flag, once each, the jobs that have been silent for `limit` seconds."""
+        """Flag, once each, the jobs that have been silent for `limit` seconds.
+
+        Silent means no request of the job has sent a line or finished -- not
+        that the job as a whole has not finished. The alert names the requests
+        still in flight, the quietest first.
+        """
         now = time.perf_counter()
         with self._lock:
             for job, active in self._active.items():
                 if not active["flagged"] and now - active["last"] >= limit:
                     active["flagged"] = True
+                    verb = _STAGE_VERB.get(active["stage"], active["stage"])
+                    quiet = sorted(active["requests"].values(),
+                                   key=lambda r: r["last"])
+                    names = [r["what"] or "a request" for r in quiet]
+                    waiting = ""
+                    if names:
+                        more = f"; {len(names) - 3} more" if len(names) > 3 else ""
+                        waiting = f" (waiting on {'; '.join(names[:3])}{more})"
                     self._alerts.append({
                         "kind": "stalled", "job": job, "case": active["case"],
                         "stage": active["stage"], "at": now,
                         "message": f"nothing back for {now - active['last']:.0f} s "
-                                   f"while {_STAGE_VERB.get(active['stage'], active['stage'])}"
+                                   f"while {verb}{waiting}"
                                    " -- the request may be hung or the server "
                                    "stopped answering"})
 
@@ -6731,6 +6877,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
            "stress_concurrency": cfg["concurrency"]} if log else {}
     all_stats, row, logged = [], None, False
     read_began = began
+    # Every pass-2 request this job makes resets its stall clock as it streams
+    # and when it ends -- not only the extraction as a whole (see `_progress`).
+    previous_hook = _progress_swap(live.hook(job))
     try:
         if mode == "classify":
             _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel, job)
@@ -6760,9 +6909,10 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 else:
                     text = prepared["truths"][case_id]
                 started = time.perf_counter()
-                result = extract_fields(text, cfg["extract_mode"], case_id,
-                                        extras=cfg.get("extras"),
-                                        pages=texts, truth_fed=mode == "extract")
+                result = extract_fields(
+                    text, cfg["extract_mode"], case_id, pages=texts,
+                    truth_fed=mode == "extract", extras=cfg.get("extras"),
+                    each=lambda event: live.extract_event(job, event))
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
                 rec["extract_tokens"] = result.get("tokens") or 0
                 # Every pass-2 request of this file: classify, segment, steps or
@@ -6826,6 +6976,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 _stress_log_error(mode, spec, prepared, all_stats, read_began,
                                   cfg, tag, err)
     finally:
+        _progress_swap(previous_hook)
         live.end(job)
         rec.pop("at_page", None)
         rec.pop("alerted", None)
