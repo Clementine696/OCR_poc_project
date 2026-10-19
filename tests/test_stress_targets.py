@@ -1,4 +1,5 @@
-"""A full-pipeline stress run samples /metrics on BOTH servers it uses."""
+"""A stress run samples /metrics on BOTH servers, the OCR and the extraction one."""
+import json
 import threading
 import time
 import unittest
@@ -45,6 +46,25 @@ class TargetTests(unittest.TestCase):
         self.assertIn("http://read:8000", snaps)
         self.assertEqual(len(errors), 1)
         self.assertIn("extractor", errors[0])
+
+
+class RunWatchesBothTests(unittest.TestCase):
+    """An extraction-only run still watches the OCR server, idle beside it."""
+
+    def test_an_extract_run_samples_the_reader_too(self):
+        result = {"tokens": 10, "field_score": {"overall": {
+            "counts": {"correct": 1, "partial": 0}, "expected": 1}}}
+        with mock.patch.object(app, "llama_status", return_value=READ),              mock.patch.object(app.backends, "extract_status",
+                               return_value=dict(EXTRACT, text_available=True,
+                                                 text_reason=None)),              mock.patch.object(app, "extract_fields", return_value=result),              mock.patch.object(app, "_vllm_metrics",
+                               return_value={"vllm:num_requests_running": 0.0}):
+            cfg = app._stress_config({"mode": "extract", "jobs": 1, "seed": 1,
+                                      "metrics": True})
+            events = [json.loads(line) for line in app._stress_run(cfg, app.MultiCancel())]
+        self.assertEqual([t["role"] for t in events[0]["metrics_servers"]],
+                         ["reader", "extractor"])
+        self.assertEqual([v["role"] for v in events[-1]["report"]["servers_metrics"]],
+                         ["reader", "extractor"])
 
 
 class SamplerTests(unittest.TestCase):

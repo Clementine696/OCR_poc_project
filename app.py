@@ -6712,11 +6712,11 @@ def _stress_log_error(mode, spec, prepared, all_stats, read_began, cfg, tag,
 
 
 def _stress_targets(reader: dict, extractor: dict) -> list:
-    """The vLLM servers a stress run uses, each once: `[{role, url}]`.
+    """The vLLM servers a stress run watches, each once: `[{role, url}]`.
 
-    A full-pipeline run reads on one server and extracts on another when a
-    separate extraction server is set, and both carry load -- so both are
-    sampled. A server that is not vLLM is never asked (`serves_metrics`), and a
+    The reading server and the extraction server are both sampled, whichever
+    of them the run's mode loads: a full-pipeline run loads both, and an OCR-
+    or extraction-only run shows the other one idle beside it. A server that is not vLLM is never asked (`serves_metrics`), and a
     URL used for both passes is one target, `reader + extractor`.
     """
     out = []
@@ -6895,7 +6895,10 @@ def _stress_run(cfg: dict, cancel):
     reader = llama_status() if mode in ("ocr", "full") else None
     extractor = backends.extract_status() if mode != "ocr" else None
     info = reader or extractor
-    targets = _stress_targets(reader, extractor) if cfg["metrics"] else []
+    # Both servers are watched whatever the mode (the user's request,
+    # 2026-10-19): a run that loads one shows the other beside it.
+    targets = _stress_targets(reader or llama_status(),
+                              extractor or backends.extract_status())         if cfg["metrics"] else []
 
     specs = [{"index": i} for i in range(total)]
     if mode != "classify":
@@ -7106,11 +7109,21 @@ def _local_gpu():
     return _smi_cache["value"]
 
 
-def _monitor_target():
-    """The vLLM server to watch: the reading server, else the extraction one."""
-    urls = [backends.active_url()]
-    if backends.extract_separate():
-        urls.append(backends.extract_url())
+def _monitor_target(which: str = ""):
+    """The vLLM server to watch: the reading server, else the extraction one.
+
+    `which` names one: "ocr" the reading server, "extract" the extraction
+    server (the reader's own URL where none is set apart). The page asks for
+    each in turn to watch both side by side.
+    """
+    if which == "ocr":
+        urls = [backends.active_url()]
+    elif which == "extract":
+        urls = [backends.extract_url()]
+    else:
+        urls = [backends.active_url()]
+        if backends.extract_separate():
+            urls.append(backends.extract_url())
     seen = None
     for url in urls:
         info = backends.known(url) or backends.status(url)
@@ -7149,11 +7162,16 @@ def _vram(samples, url, gpu_url):
 def monitor_now():
     """One live reading of the vLLM server: KV cache, VRAM, queue, throughput.
 
-    `gpu=` names a GPU exporter's /metrics URL for VRAM, overriding
-    `MONITOR_GPU_URL`. Rates are since this process last scraped the same
-    server (`monitor.observe`), so the first call of a session has none.
+    `server=ocr|extract` picks the reading or the extraction server; without it,
+    the reading server, else the extraction one. `gpu=` names a GPU exporter's
+    /metrics URL for VRAM, overriding `MONITOR_GPU_URL`. Rates are since this
+    process last scraped the same server (`monitor.observe`), so the first call
+    of a session has none.
     """
-    info, refused = _monitor_target()
+    which = (request.args.get("server") or "").strip().lower()
+    if which not in ("", "ocr", "extract"):
+        return jsonify(error="server must be ocr or extract."), 400
+    info, refused = _monitor_target(which)
     if refused:
         return jsonify(error=refused, kind=(info or {}).get("kind"),
                        url=(info or {}).get("url")), 409

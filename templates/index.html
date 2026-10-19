@@ -1931,8 +1931,8 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </div>
           <!-- The live monitor: /metrics read on a timer, on its own, whether or
                not a stress test is running. vLLM only, like everything in this
-               box; the reading server is watched, or the extraction server
-               where only that one is vLLM. -->
+               box; the OCR (reading) server and the extraction server are each
+               watched in a pane of their own when both are vLLM. -->
           <div class="row" style="margin-top:8px">
             <button id="monToggle" class="ghost-sm" disabled>Start live monitor</button>
             <label class="st-check">refresh every
@@ -1945,6 +1945,12 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
               A DCGM or nvidia_gpu_exporter /metrics URL; blank uses what the vLLM scrape
               carries, or nvidia-smi when the server runs on this machine</span>
             <input id="monGpu" type="text" placeholder="http://gpu-box:9400/metrics">
+          </label>
+          <label class="field" id="monGpuExtractRow" style="margin-top:8px;display:none">
+            VRAM of the extraction server's GPU
+            <span class="muted-inline" style="font-weight:400">&mdash; the same, for the
+              extraction server; the box above is the OCR server's</span>
+            <input id="monGpuExtract" type="text" placeholder="http://extract-box:9400/metrics">
           </label>
         </div>
 
@@ -12570,7 +12576,7 @@ const stOut = stEl('stOut'), stNote = stEl('stNote');
 const stFetchBtn = stEl('stFetchMetrics'), stSample = stEl('stSample');
 let stAbort = null, stStopping = false;
 let stState = null;          // {plan, progress, report, metrics, draining, alerts}
-let stSnapshot = null;       // a manual /metrics snapshot, shown until the next run
+let stSnapshot = null;       // manual /metrics snapshots [{label, data}], shown until the next run
 
 const ST_MODE_TEXT = {
   ocr: 'Each job reads one document with the Workspace reading model and scores '
@@ -12615,7 +12621,7 @@ function stPaintServer() {
   const vllm = server && server.kind === 'vllm';
   const busy = !!document.getElementById('stStop') && !document.getElementById('stStop').disabled;
   const extractVllm = !!(extractInfo && extractInfo.separate && extractInfo.kind === 'vllm');
-  btn.disabled = !vllm || busy;
+  btn.disabled = !(vllm || extractVllm) || busy;
   sample.disabled = !(vllm || extractVllm) || busy;
   if (!(vllm || extractVllm)) sample.checked = false;
   document.getElementById('stMetricsState').textContent = vllm
@@ -12633,8 +12639,9 @@ function stPaintServer() {
       + 'extraction server at ' + extractInfo.url;
     else if (vllm && extractVllm && extractInfo.url !== server.url)
       document.getElementById('stMetricsState').textContent = '— vLLM at ' + server.url
-        + ' (reading) and ' + extractInfo.url + ' (extraction); a stress run samples both';
+        + ' (OCR) and ' + extractInfo.url + ' (extraction); both are watched, side by side';
   }
+  if (typeof monState !== 'undefined' && monState && monState.on) { monSync(); paintMon(); }
 }
 
 function stShowing(on) {
@@ -12967,9 +12974,10 @@ function stPaint() {
     html += '<p class="note err">Stopped. ' + s.draining + ' request(s) are still running '
       + 'on the server; another test can start when they finish.</p>';
   }
-  if (stSnapshot) {
-    html += stMetricsTable(stSnapshot.view, 'vLLM /metrics snapshot · '
-      + new Date(stSnapshot.at * 1000).toLocaleTimeString(), ' (since server start)');
+  for (const snap of stSnapshot || []) {
+    html += stMetricsTable(snap.data.view, 'vLLM /metrics snapshot · '
+      + (stSnapshot.length > 1 ? snap.label + ' · ' + snap.data.url + ' · ' : '')
+      + new Date(snap.data.at * 1000).toLocaleTimeString(), ' (since server start)');
   }
   stOut.innerHTML = html;
   stWireChart();
@@ -13085,11 +13093,16 @@ if (stRun) {
   stFetchBtn.addEventListener('click', async () => {
     stFetchBtn.disabled = true;
     try {
-      const res = await fetch('/api/stress/metrics');
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
-      stSnapshot = data;
-      stNote.textContent = 'Fetched ' + data.url + '/metrics.';
+      const snaps = [];
+      for (const t of monTargets()) {
+        const res = await fetch('/api/stress/metrics' + (t.key === 'extract' ? '?server=extract' : ''));
+        const data = await res.json();
+        if (!res.ok) throw new Error(t.label + ': ' + (data.error || ('HTTP ' + res.status)));
+        snaps.push({ label: t.label, data });
+      }
+      if (!snaps.length) throw new Error('Neither server is vLLM, so /metrics was not requested.');
+      stSnapshot = snaps;
+      stNote.textContent = 'Fetched ' + snaps.map(x => x.data.url + '/metrics').join(' and ') + '.';
       stNote.classList.remove('err');
     } catch (err) {
       stNote.textContent = err.message;
@@ -13109,20 +13122,36 @@ if (stRun) {
    request at a time (the next is scheduled when the last has answered). Rates
    come from the server, which diffs its own last two scrapes; the page only
    keeps a short history for the sparklines. */
-var monState = { on: false, hist: [], last: null, error: '', timer: null,
-                 delay: 0, idleRuns: 0, minEvery: 2, idleMax: 30 };
+var monState = { on: false, panes: {}, minEvery: 2, idleMax: 30 };
 const MON_HIST = 300;
 const monToggleBtn = stEl('monToggle'), monEveryInp = stEl('monEvery');
-const monGpuInp = stEl('monGpu'), monOut = stEl('stMon');
+const monGpuInp = stEl('monGpu'), monGpuExInp = stEl('monGpuExtract'), monOut = stEl('stMon');
 
 function monStore(key, value) {
   try { localStorage.setItem(key, value); } catch (e) { /* private window */ }
 }
 try {
   const g = localStorage.getItem('monGpu'), e = localStorage.getItem('monEvery');
+  const gx = localStorage.getItem('monGpuExtract');
   if (g) monGpuInp.value = g;
+  if (gx) monGpuExInp.value = gx;
   if (e) monEveryInp.value = e;
 } catch (e) { /* storage unavailable: defaults stand */ }
+
+/* The servers to watch, each that says it is vLLM: the OCR (reading) server
+   and the extraction server, side by side. One pane where both passes share a
+   URL. A function declaration, so `stPaintServer` can call it at parse time. */
+function monTargets() {
+  const sep = !!(extractInfo && extractInfo.separate);
+  const out = [];
+  if (server && server.kind === 'vllm') {
+    out.push({ key: 'ocr', label: sep ? 'OCR server' : 'OCR + extraction server', url: server.url });
+  }
+  if (sep && extractInfo.kind === 'vllm') {
+    out.push({ key: 'extract', label: 'Extraction server', url: extractInfo.url });
+  }
+  return out;
+}
 
 /* The box's value, never below the server's MONITOR_MIN_INTERVAL: asking
    faster only gets the cached reading back. */
@@ -13139,57 +13168,78 @@ function monIdle(d) {
            || r.prompt_tps > 0 || r.requests_per_s > 0);
 }
 
-function monSchedule() {
-  clearTimeout(monState.timer);
-  if (!monState.on) return;
+/* Each server is polled on its own clock, so a slow or idle one never holds up
+   the other: its own backoff, its own one-request-at-a-time. */
+function monSchedule(p) {
+  clearTimeout(p.timer);
+  if (!monState.on || monState.panes[p.key] !== p) return;
   const base = monEvery(), cap = Math.max(base, monState.idleMax || 0);
-  monState.delay = monState.idleRuns > 1 && monState.idleMax > 0
-    ? Math.min(cap, base * Math.pow(2, monState.idleRuns - 1)) : base;
-  monState.timer = setTimeout(monTick, monState.delay * 1000);
+  p.delay = p.idleRuns > 1 && monState.idleMax > 0
+    ? Math.min(cap, base * Math.pow(2, p.idleRuns - 1)) : base;
+  p.timer = setTimeout(() => monTick(p), p.delay * 1000);
 }
 
-async function monTick() {
-  if (!monState.on || monState.busy) return;
-  if (document.hidden) { monSchedule(); return; }
-  monState.busy = true;
+async function monTick(p) {
+  if (!monState.on || p.busy || monState.panes[p.key] !== p) return;
+  if (document.hidden) { monSchedule(p); return; }
+  p.busy = true;
   try {
-    const gpu = monGpuInp.value.trim();
-    const res = await fetch('/api/monitor' + (gpu ? '?gpu=' + encodeURIComponent(gpu) : ''));
+    const gpu = (p.key === 'extract' ? monGpuExInp : monGpuInp).value.trim();
+    const res = await fetch('/api/monitor?server=' + p.key
+      + (gpu ? '&gpu=' + encodeURIComponent(gpu) : ''));
     const d = await res.json();
     if (d.min_interval !== undefined) monState.minEvery = d.min_interval;
     if (d.idle_max !== undefined) monState.idleMax = d.idle_max;
     if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
     const s = d.snapshot || {}, r = d.rates || {}, g = d.gpu;
     // Another tab scraped a moment ago: the same reading, so no new point.
-    const repeat = monState.last && monState.last.at === d.at;
-    monState.idleRuns = monIdle(d) ? monState.idleRuns + 1 : 0;
-    monState.last = d;
-    monState.error = '';
-    if (!repeat) monState.hist.push({
+    const repeat = p.last && p.last.at === d.at;
+    p.idleRuns = monIdle(d) ? p.idleRuns + 1 : 0;
+    p.last = d;
+    p.error = '';
+    if (!repeat) p.hist.push({
       t: d.at, kv_free: s.kv_free, running: s.running, waiting: s.waiting,
       vram_free: g ? g.free_mb / 1024 : null,
       gen: r.generation_tps, prompt: r.prompt_tps, hit: r.prefix_hit_rate,
       rps: r.requests_per_s
     });
-    if (monState.hist.length > MON_HIST) monState.hist.shift();
+    if (p.hist.length > MON_HIST) p.hist.shift();
   } catch (err) {
-    monState.error = err.message;
-    monState.idleRuns += 1;
+    p.error = err.message;
+    p.idleRuns += 1;
   } finally {
-    monState.busy = false;
+    p.busy = false;
   }
   paintMon();
-  monSchedule();
+  monSchedule(p);
 }
+
+/* Brings the panes in line with the servers now set: a server switched away
+   from loses its pane, a new one gets a fresh one, read at once. */
+function monSync() {
+  const want = monState.on ? monTargets() : [];
+  for (const key of Object.keys(monState.panes)) {
+    const p = monState.panes[key], t = want.find(w => w.key === key);
+    if (!t || t.url !== p.url) { clearTimeout(p.timer); delete monState.panes[key]; }
+  }
+  for (const t of want) {
+    if (monState.panes[t.key]) { monState.panes[t.key].label = t.label; continue; }
+    const p = monState.panes[t.key] = { ...t, hist: [], last: null, error: '',
+                                         timer: null, delay: 0, idleRuns: 0, busy: false };
+    monTick(p);
+  }
+}
+
+function monEach(fn) { Object.values(monState.panes).forEach(fn); }
 
 function monSet(on) {
   monState.on = on;
-  clearTimeout(monState.timer);
+  monEach(p => clearTimeout(p.timer));
   monToggleBtn.textContent = on ? 'Stop live monitor' : 'Start live monitor';
   if (on) {
-    monState.hist = []; monState.last = null; monState.error = ''; monState.idleRuns = 0;
+    monState.panes = {};
     stShowing(true);
-    monTick();
+    monSync();
   }
   paintMon();
   if (!on) stPaint();
@@ -13197,8 +13247,8 @@ function monSet(on) {
 
 /* One series per tile, so no legend: the tile label names it. The line is the
    last readings left to right; a gap is a reading that had no value. */
-function monSpark(key, fixedMax) {
-  const vals = monState.hist.map(h => h[key]);
+function monSpark(hist, key, fixedMax) {
+  const vals = hist.map(h => h[key]);
   const nums = vals.filter(v => v !== null && v !== undefined);
   if (nums.length < 2) return '<div class="mon-spark mon-spark-empty"></div>';
   const max = fixedMax || Math.max(...nums) || 1;
@@ -13226,31 +13276,40 @@ function monSpark(key, fixedMax) {
     + lines + '</svg>';
 }
 
-function monTile(label, value, sub, key, fixedMax, cls) {
+function monTile(hist, label, value, sub, key, fixedMax, cls) {
   return '<div class="st-tile mon-tile' + (cls ? ' ' + cls : '') + '">'
     + '<div class="st-tile-label">' + esc(label) + '</div>'
     + '<div class="st-tile-num">' + value + '</div>'
     + (sub ? '<div class="st-tile-sub">' + sub + '</div>' : '')
-    + monSpark(key, fixedMax) + '</div>';
+    + monSpark(hist, key, fixedMax) + '</div>';
 }
 
 function paintMon() {
   if (!monOut) return;
-  if (!monState.on && !monState.last) { monOut.innerHTML = ''; return; }
-  const d = monState.last || {};
+  const order = ['ocr', 'extract'];
+  const panes = Object.values(monState.panes)
+    .sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+  const exRow = stEl('monGpuExtractRow');
+  if (exRow) exRow.style.display = monTargets().length > 1 ? '' : 'none';
+  if (!monState.on && !panes.some(p => p.last)) { monOut.innerHTML = ''; return; }
+  monOut.innerHTML = panes.map(p => monPaneHtml(p, panes.length > 1)).join('');
+}
+
+function monPaneHtml(p, many) {
+  const d = p.last || {}, hist = p.hist;
   const s = d.snapshot || {}, r = d.rates || {}, g = d.gpu;
-  const every = monState.delay || monEvery();
+  const every = p.delay || monEvery();
   const slowed = monState.on && every > monEvery()
-    ? (monState.error ? ' (backing off after an error)' : ' (server idle, slowed down)') : '';
-  let head = monState.on
+    ? (p.error ? ' (backing off after an error)' : ' (server idle, slowed down)') : '';
+  let head = (many ? '<b>' + esc(p.label) + '</b> · ' : '') + (monState.on
     ? '<span class="mon-dot"></span><b>Live</b> · every ' + every + ' s' + slowed
-    : '<b>Stopped</b>';
+    : '<b>Stopped</b>');
   if (d.url) head += ' · ' + esc(d.kind || '') + ' at ' + esc(d.url)
     + (d.model ? ' · ' + esc(d.model) : '')
     + ' · updated ' + new Date(d.at * 1000).toLocaleTimeString();
   let html = '<div class="mon-head">' + head + '</div>';
-  if (monState.error) html += '<p class="note err">' + esc(monState.error) + '</p>';
-  if (!d.snapshot) { monOut.innerHTML = html; return; }
+  if (p.error) html += '<p class="note err">' + esc(p.error) + '</p>';
+  if (!d.snapshot) return html;
   const noRate = 'needs a second reading';
 
   const kvFree = s.kv_free;
@@ -13295,18 +13354,18 @@ function paintMon() {
 
   const waitCls = s.waiting ? 'mon-warn' : '';
   html += '<div class="st-tiles mon-tiles">'
-    + monTile('KV cache free', stPct(kvFree), kvSub, 'kv_free', 1, kvCls)
-    + monTile(vramLabel, vramVal, vramSub, 'vram_free', 0, vramCls)
-    + monTile('Running (concurrent)', stNum(s.running, 0), 'requests being decoded', 'running')
-    + monTile('Waiting', stNum(s.waiting, 0),
+    + monTile(hist, 'KV cache free', stPct(kvFree), kvSub, 'kv_free', 1, kvCls)
+    + monTile(hist, vramLabel, vramVal, vramSub, 'vram_free', 0, vramCls)
+    + monTile(hist, 'Running (concurrent)', stNum(s.running, 0), 'requests being decoded', 'running')
+    + monTile(hist, 'Waiting', stNum(s.waiting, 0),
         'queued inside vLLM' + (s.swapped ? ' · ' + stNum(s.swapped, 0) + ' swapped' : ''),
         'waiting', 0, waitCls)
-    + monTile('Generation tok/s', stNum(r.generation_tps, 1),
+    + monTile(hist, 'Generation tok/s', stNum(r.generation_tps, 1),
         r.seconds ? 'over the last ' + r.seconds + ' s' : noRate, 'gen')
-    + monTile('Prompt tok/s', stNum(r.prompt_tps, 1),
+    + monTile(hist, 'Prompt tok/s', stNum(r.prompt_tps, 1),
         r.seconds ? 'prefill, over the last ' + r.seconds + ' s' : noRate, 'prompt')
-    + monTile('Requests/s (finished)', stNum(r.requests_per_s, 2), reqSub, 'rps', 0, reqCls)
-    + monTile('Prefix cache hit', stPct(r.prefix_hit_rate),
+    + monTile(hist, 'Requests/s (finished)', stNum(r.requests_per_s, 2), reqSub, 'rps', 0, reqCls)
+    + monTile(hist, 'Prefix cache hit', stPct(r.prefix_hit_rate),
         (r.seconds
           ? (r.prefix_queries ? 'of ' + stNum(r.prefix_queries, 0) + ' tokens looked up'
                               : 'no lookups in this window')
@@ -13315,16 +13374,21 @@ function paintMon() {
             ? ' · ' + stPct(d.lifetime_hit_rate) + ' since start' : ''),
         'hit', 1)
     + '</div>';
-  monOut.innerHTML = html;
+  return html;
 }
 
 if (monToggleBtn) {
   monToggleBtn.addEventListener('click', () => monSet(!monState.on));
-  monEveryInp.addEventListener('change', () => { monStore('monEvery', monEveryInp.value); monState.idleRuns = 0; monSchedule(); paintMon(); });
+  monEveryInp.addEventListener('change', () => {
+    monStore('monEvery', monEveryInp.value);
+    monEach(p => { p.idleRuns = 0; monSchedule(p); });
+    paintMon();
+  });
   monGpuInp.addEventListener('change', () => monStore('monGpu', monGpuInp.value.trim()));
+  monGpuExInp.addEventListener('change', () => monStore('monGpuExtract', monGpuExInp.value.trim()));
   // Back from a hidden tab: read now rather than waiting out the interval.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && monState.on) { clearTimeout(monState.timer); monTick(); }
+    if (!document.hidden && monState.on) monEach(p => { clearTimeout(p.timer); monTick(p); });
   });
   stPaintServer();
 }
