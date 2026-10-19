@@ -25,6 +25,7 @@ import uuid
 import weakref
 from collections import OrderedDict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from pathlib import Path
 
 import requests
@@ -92,6 +93,7 @@ from settings import (
     MONITOR_MIN_INTERVAL,
     ACCEPTED_SUFFIXES,
     AGENTIC_EXTRACT,
+    EXTRACT_OTHER_FIELDS,
     AUTO_SELECT_SERVER,
     AGENTIC_PARALLEL,
     AGENTIC_PARALLEL_MAX,
@@ -919,8 +921,13 @@ def _timed_post(url: str, payload: dict, status: dict):
 
 
 def _post_once(url: str, payload: dict, status: dict):
-    if _guards_extraction(url, payload, status):
-        return _streamed_post(url, payload, status)
+    with _watched() as progress:
+        if _guards_extraction(url, payload, status):
+            return _streamed_post(url, payload, status, progress)
+        return _plain_post(url, payload, status)
+
+
+def _plain_post(url: str, payload: dict, status: dict):
     clock = servertime.Clock(status)
     res = backends.http_post(url, status, json=payload, timeout=GEN_TIMEOUT)
     # The whole reply is in, so the prefill certainly is: release anything
@@ -981,6 +988,78 @@ def _prefilled():
     if hook is not None:
         _prefill_hook.cb = None
         hook()
+
+
+# Who is told that a pass-2 request is still making progress: the stress test's
+# stall alert. Until 2026-10-19 that alert heard only when a job's whole
+# extraction returned, so a multi-document file -- classify, split, one
+# extraction per document, table agents -- read as "stalled" under load while
+# every one of its requests was moving. `cb(event, request, what)`, with `event`
+# "begin", "chunk" (a streamed line arrived) or "end"; `request` is an object
+# unique to one request and `what` names it ("step parties"), from `_asking`.
+# Thread-local like `_prefill_hook`; `_carry_progress` takes it into the agentic
+# step threads, which a thread-local alone would never reach.
+_progress = threading.local()
+
+
+def _progress_swap(cb):
+    """Install `cb` as this thread's progress hook. Returns the one it replaced."""
+    previous = getattr(_progress, "cb", None)
+    _progress.cb = cb
+    return previous
+
+
+def _carry_progress(fn):
+    """`fn`, set to run with this thread's progress hook -- for handing to a thread."""
+    cb = getattr(_progress, "cb", None)
+    what = getattr(_progress, "what", None)
+    if cb is None:
+        return fn
+
+    def run(*args, **kwargs):
+        previous, previous_what = _progress_swap(cb), getattr(_progress, "what", None)
+        _progress.what = what
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _progress_swap(previous)
+            _progress.what = previous_what
+    return run
+
+
+@contextmanager
+def _asking(what: str):
+    """Name the requests made inside this block, for the stall alert.
+
+    Never wrapped round a `yield`: a generator can resume on another thread,
+    and the name would stay behind on this one.
+    """
+    previous = getattr(_progress, "what", None)
+    _progress.what = what
+    try:
+        yield
+    finally:
+        _progress.what = previous
+
+
+def _no_progress():
+    pass
+
+
+@contextmanager
+def _watched():
+    """One request, reported to the progress hook. Yields the call to make on
+    each streamed line; "end" is sent however the request finishes."""
+    cb = getattr(_progress, "cb", None)
+    if cb is None:
+        yield _no_progress
+        return
+    request, what = object(), getattr(_progress, "what", None)
+    cb("begin", request, what)
+    try:
+        yield lambda: cb("chunk", request, what)
+    finally:
+        cb("end", request, what)
 
 
 # Pass-2 requests this process cut off for looping, since it started. Read by the
@@ -1075,7 +1154,7 @@ class _Reply:
         return self._body
 
 
-def _streamed_post(url: str, payload: dict, status: dict):
+def _streamed_post(url: str, payload: dict, status: dict, progress=_no_progress):
     """One pass-2 request, streamed, and closed the moment it starts cycling.
 
     Closing the connection is the whole of the termination: vLLM aborts a request
@@ -1084,6 +1163,7 @@ def _streamed_post(url: str, payload: dict, status: dict):
     so the callers' salvage and diagnosis run exactly as on a loop that ran to the
     cap -- `_why_unparsable` names it a loop -- and the body carries
     `loop_aborted` for anything that wants to know it was cut rather than run out.
+    `progress` is called on every line that arrives (the stall alert's clock).
     """
     body = dict(payload, stream=True, stream_options={"include_usage": True})
     clock = servertime.Clock(status)
@@ -1099,6 +1179,7 @@ def _streamed_post(url: str, payload: dict, status: dict):
             # vLLM sends nothing until the first token exists, so the first line
             # of the body means the prompt has been prefilled -- and cached.
             _prefilled()
+            progress()
             line = raw.decode("utf-8", errors="replace")
             if not line.startswith("data:"):
                 continue
@@ -1434,7 +1515,8 @@ def _classify_with_model(text: str, status: dict):
             backends.system_prefix(status)
             + [{"role": "user", "content": message}],
             None, CLASSIFY_MAX_TOKENS, status)
-        res = _timed_post(url, payload, status)
+        with _asking("classify"):
+            res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return [], ""
         raw, _, _ = backends.structured_reply(res.json(), status)
@@ -1708,7 +1790,8 @@ def _segment_with_model(pages, status: dict):
             backends.system_prefix(status)
             + [{"role": "user", "content": message}],
             None, SEGMENT_MAX_TOKENS, status)
-        res = _timed_post(url, payload, status)
+        with _asking("split"):
+            res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return None
         raw, _, _ = backends.structured_reply(res.json(), status)
@@ -1842,7 +1925,8 @@ class _SegmentChat:
             url, payload = backends.structured_request(
                 self._messages(number, page), None, SEGMENT_MAX_TOKENS,
                 self.status)
-            res = _timed_post(url, payload, self.status)
+            with _asking(f"split, page {number}"):
+                res = _timed_post(url, payload, self.status)
             if res.status_code != 200:
                 return None
             raw, _, _ = backends.structured_reply(res.json(), self.status)
@@ -2003,7 +2087,7 @@ def _segment_record(seg: dict, index: int, total: int) -> dict:
 
 
 def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
-               pages=None):
+               pages=None, extras=None):
     """Everything downstream needs about one document's form, in one dict.
 
     **Resolved once per extraction and handed to everything**: the prompt's
@@ -2015,6 +2099,8 @@ def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
     page that is both a credit note and a tax invoice must answer for both, and
     an intersection would let each type excuse the other's obligations.
     `doc_type` is the primary one, for a label and nothing else.
+
+    `extras` is whether `other_fields` is asked for; None takes the switch.
     """
     codes, how, heading, confidence, escalated = resolve_doc_types(
         text, case_id, doc_type, status, pages)
@@ -2070,7 +2156,10 @@ def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
             # entry rather than folded into `mandatory` for the reason `items` is
             # its own entry: a row's obligation is not a key's, and `validate`
             # reports it against a path no key list could match.
-            "mandatory_items": list(mandatory_items_for_types(codes))}
+            "mandatory_items": list(mandatory_items_for_types(codes)),
+            # Whether `other_fields` is asked for: the single prompt and grammar
+            # and the agentic `other` step all read it off here.
+            "extras": extract_extras() if extras is None else bool(extras)}
 
 
 def _classified(form: dict, mode: str) -> dict:
@@ -2122,8 +2211,9 @@ def _classified(form: dict, mode: str) -> dict:
         # Named only for the shape that walks them. Single mode asks one
         # question, and reporting the steps it did not take would describe a run
         # that did not happen.
-        "steps": ([s["id"] for s in steps_for_types(codes)]
+        "steps": ([s["id"] for s in steps_for_types(codes, form.get("extras", True))]
                   if mode == "agentic" else []),
+        "extras": form.get("extras", True),
         "rules": list(rules_for_types(codes)),
         # Whether the answer reached the PROMPT or only the field list. It is
         # per mode and a setting can turn it off, so a reader comparing two runs
@@ -2158,7 +2248,8 @@ def _extract_single(text: str, status: dict, form: dict) -> dict:
     # grammar listing a key the prompt never asked for is an invitation to fill
     # it, which is the note `prompts.extract_schema` carries.
     retry = _extract_once(text, status,
-                          extract_schema(form["keys"], form["items"]), form)
+                          extract_schema(form["keys"], form["items"],
+                                         form.get("extras", True)), form)
     retry["seconds"] = round(result.get("seconds", 0) + retry.get("seconds", 0), 2)
     if "fields" not in retry:
         # Both failed. The first reply is the one to report -- it is the one the
@@ -2212,7 +2303,7 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
     # "single" because this function IS single mode's one request -- agentic
     # never reaches here, it goes through `_step_question`.
     message = (extract_prompt(form["keys"], _framing(form, "single"),
-                              TYPE_FRAMING_BULLETS, form["items"])
+                              TYPE_FRAMING_BULLETS, form["items"], form.get("extras", True))
                + text + EXTRACT_REMINDER)
     url, payload = backends.structured_request(
         backends.system_prefix(status)
@@ -2221,7 +2312,8 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
 
     started = time.perf_counter()
     try:
-        res = _timed_post(url, payload, status)
+        with _asking("extraction"):
+            res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return {"error": f"{status['kind'] or 'model server'} HTTP "
                              f"{res.status_code}: {res.text[:200]}"}
@@ -2261,6 +2353,10 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
                          "Re-extract; if it persists, extract one page at a time.",
                 "envelope": True, "raw": raw[:2000], "prompt": message,
                 "seconds": elapsed}
+    if not form.get("extras", True):
+        # Not asked for, so not kept if the model wrote some anyway: the list
+        # is empty, as it is on an agentic run without the `other` step.
+        fields["other_fields"] = []
 
     _, _, tokens = backends.structured_reply(body, status)
     return {
@@ -2627,7 +2723,7 @@ def _step_count_label():
             else f"{min(counts)}-{max(counts)}")
 
 
-def _steps_for(wanted, doc_types=()):
+def _steps_for(wanted, doc_types=(), extras=True):
     """The step table, or the named subset of it, in the table's own order.
 
     A measurement tool and nothing else: it is what lets one step's prompt be
@@ -2638,7 +2734,7 @@ def _steps_for(wanted, doc_types=()):
     The order is always `EXTRACT_STEPS`', never the caller's, so a restricted run
     is the full run with steps removed rather than a differently ordered one.
     """
-    table = steps_for_types(doc_types)
+    table = steps_for_types(doc_types, extras)
     if not wanted:
         return table
     ids = [s.strip() for s in wanted if str(s).strip()]
@@ -2682,6 +2778,12 @@ def _warm_step(warmed, *args):
 
 
 def _run_step(step: dict, prefix: str, question: str, status: dict, source):
+    """`_run_step_asked`, its requests named after the step for the stall alert."""
+    with _asking(f"step {step['id']}"):
+        return _run_step_asked(step, prefix, question, status, source)
+
+
+def _run_step_asked(step: dict, prefix: str, question: str, status: dict, source):
     """Ask one agentic step, with its grounding re-ask, and record what happened.
 
     Returns (record, values, replies, tokens). Self-contained by design: it reads
@@ -2800,8 +2902,8 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
     # caller applied. `steps_only` is measured against this rather than against
     # the whole step table: an invoice legitimately runs six of the eight steps
     # and is a complete run of its own form, not a partial run of someone else's.
-    full_table = steps_for_types(form["doc_types"])
-    table = _steps_for(only, form["doc_types"])
+    full_table = steps_for_types(form["doc_types"], form.get("extras", True))
+    table = _steps_for(only, form["doc_types"], form.get("extras", True))
     source = grounding.Source(text)
     started = time.perf_counter()
     fields, steps, replies = {}, [], []
@@ -2849,7 +2951,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
                                 thread_name_prefix="agentic-step") as pool:
             def submit(index):
                 step = table[index]
-                return pool.submit(workspace.bind(batch.run), _run_step, step,
+                return pool.submit(_carry_progress(workspace.bind(batch.run)), _run_step, step,
                                    prefix, _step_question(step, framing), status,
                                    source)
 
@@ -2860,7 +2962,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
                 # find the shared prefix in vLLM's cache rather than each
                 # prefilling it again in the same scheduler step.
                 warmed = threading.Event()
-                futures = {pool.submit(workspace.bind(batch.run), _warm_step,
+                futures = {pool.submit(_carry_progress(workspace.bind(batch.run)), _warm_step,
                                        warmed, table[0],
                                        prefix, _step_question(table[0], framing),
                                        status, source): 0}
@@ -2999,6 +3101,12 @@ _profile_lock = threading.Lock()
 # see `workspace`. The globals are the default workspace's.
 workspace.field("extract_mode", lambda: _extract_mode)
 workspace.field("ocr_profile", lambda: _ocr_profile)
+
+# Whether pass 2 asks for `other_fields` at all. Held and switched like the mode
+# above, and stamped on every result as `extras` so a row says which it ran under.
+# See `settings.EXTRACT_OTHER_FIELDS`.
+_extract_extras = bool(EXTRACT_OTHER_FIELDS)
+workspace.field("extract_extras", lambda: _extract_extras)
 
 
 def ocr_profile() -> str:
@@ -3228,6 +3336,19 @@ def set_extract_mode(mode: str) -> str:
         if not workspace.put("extract_mode", mode):
             _extract_mode = mode
     return mode
+
+
+def extract_extras() -> bool:
+    with _mode_lock:
+        return bool(workspace.get("extract_extras", _extract_extras))
+
+
+def set_extract_extras(on: bool) -> bool:
+    global _extract_extras
+    with _mode_lock:
+        if not workspace.put("extract_extras", bool(on)):
+            _extract_extras = bool(on)
+    return extract_extras()
 
 
 def _recut_message(table: dict) -> str:
@@ -3801,26 +3922,30 @@ def _item_table_stream(text: str, form: dict, status: dict, pages=None,
         if concat_on and table.get("_others"):
             yield event("concat", "running", offered=len(table["_others"]),
                         model=status.get("model") or "")
-            table = _table_concat_agent(table, status, snap)
+            with _asking("table concat agent"):
+                table = _table_concat_agent(table, status, snap)
             yield event("concat", "done", **_agent_brief(table.get("concat")))
         else:
             yield event("concat", "off" if not concat_on else "skipped")
         if fix_on:
             yield event("fix", "running", rows=len(table["rows"]),
                         model=status.get("model") or "")
-            table = _table_fix_agent(table, status, snap)
+            with _asking("table fix agent"):
+                table = _table_fix_agent(table, status, snap)
             yield event("fix", "done", **_agent_brief(table.get("fix_agent")))
         else:
             yield event("fix", "off")
             table = tables.reclassify(tables.realign(table))
             snap("realign", "code", table)
-            table = _recut_with_model(table, status)
+            with _asking("table recut"):
+                table = _recut_with_model(table, status)
             snap("recut", "model", table)
         # Agent 2 last, on the table as it now stands.
         asking = identify_on and bool(table.get("rows"))
         if asking:
             yield event("identify", "running", model=status.get("model") or "")
-        table = _table_identify_agent(table, form, fields, status)
+        with _asking("table identify agent"):
+            table = _table_identify_agent(table, form, fields, status)
         yield event("identify", "done" if asking else "off",
                     is_master_table=table.get("is_master_table"),
                     master_from=table.get("master_from"),
@@ -3872,7 +3997,7 @@ def _score_item_table(result: dict, case_id: str, pages=None, text: str = "") ->
 
 def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
                           steps=None, doc_type: str = None, pages=None,
-                          truth_fed: bool = False):
+                          truth_fed: bool = False, extras: bool = None):
     """Turn a finished transcript into structured JSON, yielding progress.
 
     A separate text-only pass rather than part of the OCR prompt: mixing
@@ -3918,6 +4043,9 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     if not status["text_available"]:
         return {"error": status["text_reason"]}
     mode = mode or extract_mode()
+    # Whether `other_fields` is asked for, decided once for every document of
+    # the file so a switch flipped mid-file cannot split it.
+    extras = extract_extras() if extras is None else bool(extras)
     # Every model request this extraction makes -- the segment and classify
     # questions, the steps or the single request, the table agents -- is timed
     # by the server too, and summed here into `server_time`. Closed in `finally`
@@ -3925,7 +4053,7 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     previous = servertime.open_tally()
     try:
         result = yield from _extract_file(text, mode, case_id, steps, doc_type,
-                                          pages, truth_fed, status)
+                                          pages, truth_fed, status, extras)
     finally:
         served = servertime.close_tally(previous)
     if isinstance(result, dict) and served:
@@ -3933,7 +4061,8 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     return result
 
 
-def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status):
+def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status,
+                  extras=True):
     """The body of `extract_fields_stream`, split out so the server-time tally
     can be wrapped round all of it."""
     segments, split_from = yield from _segment_stream(text, pages, status)
@@ -3948,11 +4077,11 @@ def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status
     if len(segments) > 1:
         result = yield from _extract_documents(segments, records, mode, case_id,
                                                steps, doc_type, status,
-                                               truth_fed)
+                                               truth_fed, extras)
     else:
         result = yield from _extract_document(segments[0]["text"], mode, case_id,
                                               steps, doc_type, status,
-                                              truth_fed=truth_fed)
+                                              truth_fed=truth_fed, extras=extras)
     if isinstance(result, dict):
         # On every result, however many documents: what the file was read as is
         # a fact about the run, and a reader looking at one document's fields
@@ -3960,12 +4089,15 @@ def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status
         result["segments"] = records
         result.setdefault("documents_found", 1)
         result["split_from"] = split_from
+        # Whether `other_fields` was asked for. An empty list means "none
+        # found" only where it was; the run log reads this to leave it blank.
+        result["extras"] = extras
     return result
 
 
 def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
                       status: dict, record: dict = None,
-                      truth_fed: bool = False):
+                      truth_fed: bool = False, extras: bool = True):
     """One document: classify it, ask for its form, ground it, validate it, score it.
 
     The whole of what `extract_fields_stream` used to be, lifted out unchanged so
@@ -3983,7 +4115,7 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
     # missing, what validate checks and what fieldscore scores all come off this
     # one dict, so the two modes cannot disagree about which document this is.
     form = _field_set(text, case_id, doc_type, status,
-                      (record or {}).get("pages"))
+                      (record or {}).get("pages"), extras)
     # Stage 0, announced before either shape starts. It is the one part of a
     # pass-2 run that is finished before the first request goes out, so a page
     # that shows it immediately is showing something true rather than a
@@ -4020,7 +4152,8 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
 
 
 def _extract_documents(segments, records, mode: str, case_id: str, steps,
-                       doc_type, status: dict, truth_fed: bool = False):
+                       doc_type, status: dict, truth_fed: bool = False,
+                       extras: bool = True):
     """Every document in the file, one at a time, merged into one result.
 
     **The fields are independent and are kept that way.** Each document is
@@ -4044,7 +4177,7 @@ def _extract_documents(segments, records, mode: str, case_id: str, steps,
                "page_range": record["page_range"]}
         result = yield from _extract_document(seg["text"], mode, case_id,
                                               steps, doc_type, status, record,
-                                              truth_fed)
+                                              truth_fed, extras)
         if not isinstance(result, dict):
             result = {"error": "extraction returned nothing"}
         result["document"] = record["document"]
@@ -4357,21 +4490,27 @@ def _attribute_blame(score, case_id: str, transcript: str,
         return {"skipped": f"attribution failed: {err}"}
 
 
-def _drain(generator):
-    """Run a generator that returns a value, discarding what it yields."""
+def _drain(generator, each=None):
+    """Run a generator that returns a value, discarding what it yields -- or
+    handing each event to `each`."""
     while True:
         try:
-            next(generator)
+            event = next(generator)
         except StopIteration as stop:
             return stop.value
+        if each is not None:
+            each(event)
 
 
 def extract_fields(text: str, mode: str = None, case_id: str = None,
                    steps=None, doc_type: str = None, pages=None,
-                   truth_fed: bool = False) -> dict:
-    """`extract_fields_stream` for callers with nowhere to show progress."""
+                   truth_fed: bool = False, extras: bool = None,
+                   each=None) -> dict:
+    """`extract_fields_stream` for callers with nowhere to show progress.
+    `each`, where given, sees every event (the stress test reads which document
+    is being extracted off them)."""
     return _drain(extract_fields_stream(text, mode, case_id, steps, doc_type,
-                                        pages, truth_fed))
+                                        pages, truth_fed, extras), each)
 
 
 def strip_fence(text: str) -> str:
@@ -5051,6 +5190,7 @@ def index():
         ctx_choices=backends.NUM_CTX_CHOICES,
         num_ctx=backends.num_ctx(),
         extract_mode=extract_mode(),
+        extract_extras=extract_extras(),
         # A RANGE, not a count: the step table is per document type now, so an
         # invoice runs six of the eight steps and a credit note all eight. The
         # picker is drawn before any document is chosen, so the only honest
@@ -5511,7 +5651,8 @@ def classify_endpoint():
         # What the answer buys, which is the whole reason to ask: the steps an
         # agentic run would walk, the rules `validate` would then apply, and the
         # framing both prompts would carry.
-        "steps": [s["id"] for s in steps_for_types(form["doc_types"])],
+        "steps": [s["id"] for s in steps_for_types(form["doc_types"],
+                                                   form.get("extras", True))],
         "rules": list(rules_for_types(form["doc_types"])),
         "type_phrase": type_phrase(form["doc_types"]),
     })
@@ -5621,6 +5762,25 @@ def extract_mode_set():
     except ValueError as err:
         return jsonify(error=str(err)), 400
     return jsonify(mode=mode, steps=len(EXTRACT_STEPS))
+
+
+@app.get("/api/extract/extras")
+def extract_extras_get():
+    return jsonify(extras=extract_extras())
+
+
+@app.post("/api/extract/extras")
+def extract_extras_set():
+    """Ask for `other_fields` or not, for everything this tab extracts next.
+
+    Not refused during a sweep, for the mode's reason: every result carries
+    `extras`, so a batch split across the switch still says which ran how.
+    """
+    body = request.get_json(silent=True) or {}
+    on = body.get("extras")
+    if not isinstance(on, bool):
+        return jsonify(error="extras must be true or false."), 400
+    return jsonify(extras=set_extract_extras(on))
 
 
 @app.get("/api/ocr/profile")
@@ -6366,7 +6526,8 @@ class _StressLive:
     def begin(self, job: int, case: str, stage: str):
         with self._lock:
             self._active[job] = {"case": case, "stage": stage,
-                                 "last": time.perf_counter(), "flagged": False}
+                                 "last": time.perf_counter(), "flagged": False,
+                                 "document": None, "requests": {}}
 
     def touch(self, job: int, stage: str = None):
         with self._lock:
@@ -6379,18 +6540,63 @@ class _StressLive:
         with self._lock:
             self._active.pop(job, None)
 
+    def hook(self, job: int):
+        """This job's progress hook (`_progress`): every pass-2 request it makes,
+        on whatever thread, resets its clock on each line and when it ends."""
+        return lambda event, request, what: self.request(job, event, request, what)
+
+    def request(self, job: int, event: str, request, what: str = None):
+        """One request's begin, chunk or end. Beginning is not hearing back, so
+        only a chunk or the end resets the clock."""
+        with self._lock:
+            active = self._active.get(job)
+            if not active:
+                return
+            now = time.perf_counter()
+            if event == "begin":
+                label = ", ".join(p for p in (active["document"], what) if p)
+                active["requests"][request] = {"what": label, "last": now}
+                return
+            active["last"] = now
+            if event == "end":
+                active["requests"].pop(request, None)
+            elif request in active["requests"]:
+                active["requests"][request]["last"] = now
+
+    def extract_event(self, job: int, event: dict):
+        """An extraction's progress event: which document it is on, if several."""
+        if isinstance(event, dict) and event.get("event") == "document":
+            with self._lock:
+                active = self._active.get(job)
+                if active:
+                    active["document"] = (f"document {event.get('document')} of "
+                                          f"{event.get('documents')}")
+
     def flag_stalled(self, limit: float):
-        """Flag, once each, the jobs that have been silent for `limit` seconds."""
+        """Flag, once each, the jobs that have been silent for `limit` seconds.
+
+        Silent means no request of the job has sent a line or finished -- not
+        that the job as a whole has not finished. The alert names the requests
+        still in flight, the quietest first.
+        """
         now = time.perf_counter()
         with self._lock:
             for job, active in self._active.items():
                 if not active["flagged"] and now - active["last"] >= limit:
                     active["flagged"] = True
+                    verb = _STAGE_VERB.get(active["stage"], active["stage"])
+                    quiet = sorted(active["requests"].values(),
+                                   key=lambda r: r["last"])
+                    names = [r["what"] or "a request" for r in quiet]
+                    waiting = ""
+                    if names:
+                        more = f"; {len(names) - 3} more" if len(names) > 3 else ""
+                        waiting = f" (waiting on {'; '.join(names[:3])}{more})"
                     self._alerts.append({
                         "kind": "stalled", "job": job, "case": active["case"],
                         "stage": active["stage"], "at": now,
                         "message": f"nothing back for {now - active['last']:.0f} s "
-                                   f"while {_STAGE_VERB.get(active['stage'], active['stage'])}"
+                                   f"while {verb}{waiting}"
                                    " -- the request may be hung or the server "
                                    "stopped answering"})
 
@@ -6496,6 +6702,9 @@ def _stress_config(body: dict) -> dict:
         "gpu_extract_url": str(body.get("gpu_extract_url") or "").strip() or MONITOR_GPU_URL,
         "detail": resolve_detail(body.get("detail") or "medium"),
         "extract_mode": shape,
+        # Whether `other_fields` is asked for, fixed for the run like the shape.
+        "extras": (body["extras"] if isinstance(body.get("extras"), bool)
+                   else extract_extras()),
         "strategy": strategy,
         "seed": body.get("seed"),
         "lock": lock,
@@ -6668,6 +6877,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
            "stress_concurrency": cfg["concurrency"]} if log else {}
     all_stats, row, logged = [], None, False
     read_began = began
+    # Every pass-2 request this job makes resets its stall clock as it streams
+    # and when it ends -- not only the extraction as a whole (see `_progress`).
+    previous_hook = _progress_swap(live.hook(job))
     try:
         if mode == "classify":
             _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel, job)
@@ -6697,8 +6909,10 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 else:
                     text = prepared["truths"][case_id]
                 started = time.perf_counter()
-                result = extract_fields(text, cfg["extract_mode"], case_id,
-                                        pages=texts, truth_fed=mode == "extract")
+                result = extract_fields(
+                    text, cfg["extract_mode"], case_id, pages=texts,
+                    truth_fed=mode == "extract", extras=cfg.get("extras"),
+                    each=lambda event: live.extract_event(job, event))
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
                 rec["extract_tokens"] = result.get("tokens") or 0
                 # Every pass-2 request of this file: classify, segment, steps or
@@ -6762,6 +6976,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 _stress_log_error(mode, spec, prepared, all_stats, read_began,
                                   cfg, tag, err)
     finally:
+        _progress_swap(previous_hook)
         live.end(job)
         rec.pop("at_page", None)
         rec.pop("alerted", None)
@@ -6992,6 +7207,7 @@ def _stress_run(cfg: dict, cancel):
         "strategy": cfg["strategy"], "lock": cfg["lock"],
         "detail": cfg["detail"] if mode in ("ocr", "full") else "",
         "extract_mode": cfg["extract_mode"] if mode in ("extract", "full") else "",
+        "extras": bool(cfg.get("extras", True)) if mode in ("extract", "full") else None,
         "pack_pages": cfg["pack_pages"] if mode == "classify" else 0,
         "documents": len({s["case"] for s in specs if "case" in s}),
         "server": {"url": info["url"], "kind": info["kind"]},

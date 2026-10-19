@@ -1667,6 +1667,13 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </label>
       </div>
       <p class="note" id="extractNote"></p>
+      <div class="row" id="extrasRow">
+        <label class="check" style="flex:1;min-width:200px">
+          <input id="extrasChk" type="checkbox" {% if extract_extras %}checked{% endif %}>
+          Also extract extra fields (<code>other_fields</code>)
+        </label>
+      </div>
+      <p class="note" id="extrasNote"></p>
       <div class="row">
         <button id="run" class="primary" disabled>Read document</button>
         <button id="stop" disabled>Stop</button>
@@ -1973,6 +1980,11 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
               <option value="single">single</option>
               <option value="agentic">agentic</option>
             </select>
+          </label>
+          <label class="check" style="flex:1;min-width:110px" id="stExtrasField"
+                 title="ask for other_fields as well as the form; off skips them in every document">
+            <input id="stExtras" type="checkbox" {% if extract_extras %}checked{% endif %}>
+            Extra fields
           </label>
           <label class="field" style="flex:1;min-width:110px" id="stPagesField"
                  title="each job glues ground-truth transcripts into one file of at least this many pages, then groups and classifies it">
@@ -4031,6 +4043,36 @@ fldMode.addEventListener('click',
   () => setMode(extractMode === 'agentic' ? 'single' : 'agentic'));
 extractSel.addEventListener('change', () => setMode(extractSel.value));
 paintMode();
+
+/* Whether pass 2 asks for `other_fields`. Server-owned like the mode: it applies
+   to Re-extract, the random test and the stress test alike. */
+const extrasChk = document.getElementById('extrasChk');
+const extrasNote = document.getElementById('extrasNote');
+
+function paintExtras() {
+  extrasNote.innerHTML = extrasChk.checked
+    ? 'Every labelled fact the form has no key for comes back under its own label. '
+      + 'Nothing scores it, and it is the longest part of most replies.'
+    : '<b>Off.</b> Only the form is asked for: the single prompt and its grammar '
+      + 'leave <code>other_fields</code> out, and agentic skips the <i>other</i> step.';
+}
+
+async function setExtras(on) {
+  extrasChk.disabled = true;
+  try {
+    const res = await fetch('/api/extract/extras', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ extras: on })
+    });
+    const body = await res.json();
+    if (typeof body.extras === 'boolean') extrasChk.checked = body.extras;
+  } catch (err) { /* leave it where it was */ }
+  extrasChk.disabled = false;
+  paintExtras();
+}
+
+extrasChk.addEventListener('change', () => setExtras(extrasChk.checked));
+paintExtras();
 
 /* ---------- pass 1: which prompt, and whether a system message goes with it ----
    The two move together on purpose. A prompt written for one model sent to
@@ -12723,6 +12765,7 @@ function stPaintMode() {
   const m = stMode.value;
   stEl('stDetailField').style.display = (m === 'ocr' || m === 'full') ? '' : 'none';
   stEl('stShapeField').style.display = (m === 'extract' || m === 'full') ? '' : 'none';
+  stEl('stExtrasField').style.display = (m === 'extract' || m === 'full') ? '' : 'none';
   stEl('stPagesField').style.display = m === 'classify' ? '' : 'none';
   stEl('stLockRow').style.display = m === 'classify' ? 'none' : '';
   stEl('stStrategyField').style.display = m === 'classify' ? 'none' : '';
@@ -12990,6 +13033,7 @@ function stReportHtml(s, snapshot, host) {
       + (plan.extractor ? ' · extracts with <b>' + esc(csModel(plan.extractor)) + '</b>' : '')
       + (plan.detail ? ' · ' + esc(plan.detail) : '')
       + (plan.extract_mode ? ' · ' + esc(plan.extract_mode) : '')
+      + (plan.extras === false ? ' · <b>no extra fields</b>' : '')
       + (plan.metrics ? ' · sampling vLLM /metrics on '
           + (plan.metrics_servers || []).map(t => esc(t.role) + ' ' + esc(t.url)).join(' and ') : '')
       + (plan.no_cache ? ' · prompt cache bypassed ('
@@ -13138,7 +13182,8 @@ function stBody() {
     mode: stMode.value, concurrency: Number(val('stConc')) || 1,
     jobs: Number(val('stJobs')) || 1, warmup: Number(val('stWarm')) || 0,
     max_seconds: Number(val('stMax')) || 0, detail: val('stDetail'),
-    extract_mode: val('stShape'), pack_pages: Number(val('stPages')) || 100,
+    extract_mode: val('stShape'), extras: stEl('stExtras').checked,
+    pack_pages: Number(val('stPages')) || 100,
     strategy: val('stStrategy'), seed: val('stSeed').trim() || null,
     lock_case: stMode.value === 'classify' ? '' : val('stLock'),
     metrics: stSample.checked && !stSample.disabled,
@@ -13648,6 +13693,7 @@ function historyRender(item) {
     ['Mode', cfg.mode], ['Concurrent', cfg.concurrency], ['Queue (jobs)', cfg.jobs],
     ['Warm-up', cfg.warmup], ['Time limit (s)', cfg.max_seconds],
     ['Detail', cfg.detail], ['Extraction shape', cfg.extract_mode],
+    ['Extra fields', cfg.extras ?? true],
     ['Seed', plan.seed ?? cfg.seed],
     ['Pages per file', cfg.pack_pages], ['Draw strategy', cfg.strategy],
     ['Lock document', cfg.lock || 'None'],
