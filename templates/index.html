@@ -196,10 +196,30 @@
   .side { position: sticky; top: 18px; max-height: calc(100vh - 36px); overflow-y: auto; }
   @media (max-width: 1080px) { .side { position: static; max-height: none; } }
   .side-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px; margin-bottom: 14px; }
+    gap: 6px; margin-bottom: 14px; }
   .side-tabs button { min-width: 0; padding: 8px 10px; font-size: .84rem;
-  border-radius: 8px; white-space: normal; overflow-wrap: anywhere; }
+    border-radius: 8px; white-space: normal; overflow-wrap: anywhere; }
   .side-tabs button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .st-views { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px; margin-bottom: 14px; }
+  .st-views button { min-width: 0; padding: 8px 10px; font-size: .84rem; }
+  .st-views button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .history-list { display: grid; gap: 8px; margin-top: 12px;
+    max-height: 55vh; overflow-y: auto; }
+  .history-item { text-align: left; min-width: 0; padding: 10px;
+    overflow-wrap: anywhere; font-size: .82rem; }
+  .history-item.on { background: var(--accent-soft); border-color: var(--accent); }
+  .history-item span { display: block; color: var(--muted); font-size: .76rem; margin-top: 3px; }
+  .history-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+  .history-config { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+    gap: 8px; margin: 14px 0; }
+  .history-config div { padding: 9px 11px; border: 1px solid var(--border);
+    border-radius: 8px; overflow-wrap: anywhere; font-size: .85rem; }
+  .history-config dt { color: var(--muted); font-size: .75rem; }
+  .history-config dd { margin: 2px 0 0; }
+  .history-report { min-width: 0; overflow-x: auto; }
+  .history-json { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh;
+    overflow: auto; font-size: .76rem; }
   .side-tabs .count {
     display: none; margin-left: 6px; font-size: .7rem; font-weight: 700;
     background: var(--accent); color: #fff; border-radius: 9px; padding: 0 6px;
@@ -1893,13 +1913,17 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
            the run log -- the figures were taken under contention no other run
            was, so they stay out of the setting tables. -->
       <div class="pane" id="paneStress">
+        <div class="st-views" id="stViews" aria-label="Stress test views">
+          <button type="button" data-st-view="run" class="on" aria-pressed="true">Current run</button>
+          <button type="button" data-st-view="history" aria-pressed="false">History</button>
+        </div>
+        <div id="stSetup">
         <p class="note">A benchmark of the <b>server</b>: a queue of jobs worked
           by as many concurrent requests as you set, against the reading and
           extraction models selected in the Workspace. Documents are drawn the
           way the random test draws them. Only the final metrics and scores are
-          shown, and <b>nothing is written to the run log</b>. An error, a loop,
-          a read at the token cap or a stalled job is flagged the moment it
-          happens, with its document.</p>
+          shown and saved to <b>History</b>. Per-job accuracy logging is optional.
+          Errors, loops, token caps and stalls are flagged as they happen.</p>
 
         <div class="row">
           <label class="field" style="flex:1;min-width:210px">
@@ -2047,14 +2071,30 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button id="stRun" class="primary">Run stress test</button>
           <button id="stStop" class="ghost-sm" disabled>Stop</button>
         </div>
+        <label class="st-check" style="margin-top:10px">
+          <input id="stHistoryMonitor" type="checkbox" checked> Save monitor snapshots to History
+        </label>
+        <p class="note">On vLLM, records KV cache, VRAM and throughput at the sampling interval above,
+          plus the final reading. Keeps the latest 300 snapshots per run.</p>
         <p class="note" id="stModeNote"></p>
+        </div>
+        <div id="stHistoryPanel" hidden>
+        <h2>Stress test history</h2>
+        <p class="note">Saved Stress test runs, with the settings and full report from each run.
+          History stays available after a refresh or app restart.</p>
+        <div class="row" style="margin-top:8px">
+          <button type="button" id="historyRefresh" class="ghost-sm">Refresh</button>
+          <span id="historyStatus" class="note" role="status" aria-live="polite"></span>
+        </div>
+        <div id="historyList" class="history-list"></div>
+        <div class="row">
+          <button type="button" id="historyPrev" class="ghost-sm" disabled>Newer</button>
+          <button type="button" id="historyNext" class="ghost-sm" disabled>Older</button>
+        </div>
+        </div>
       </div>
 
-      <!-- The narrow half of the Doc types tab: what the tab is, and the
-           legend for the matrix beside it. Everything with a shape goes in
-           `schemaCard`, which is full width -- a five-column matrix of thirty
-           keys does not fit 360px, and this is the same split the Random test
-           pane already uses. -->
+      <!-- Document types reference, alongside its full-width schema card. -->
       <div class="pane" id="paneSchema">
         <h2>Document types</h2>
         <p class="note">Every type this app can classify a page as, and the form
@@ -2184,6 +2224,15 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
          outside the grid it would leave the main column empty above itself.
          Drawn once from GET /api/schema and cached -- the requirement cannot
          change while the process runs. -->
+    <div class="card" id="historyCard" hidden>
+      <div class="history-head">
+        <h2 style="margin:0">Stress test history</h2>
+        <span id="historyTitle" class="note"></span>
+        <a id="historyDownload" class="ghost-sm" hidden download>Download JSON</a>
+      </div>
+      <div id="historyDetail"><p class="note">Choose a saved run to see its settings and metrics.</p></div>
+    </div>
+
     <div class="card" id="schemaCard" hidden>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">Document types and their fields</h2>
@@ -2782,8 +2831,12 @@ function showPane(name) {
     if (pane) pane.classList.toggle('on', on);
   });
   scOpen = name === 'schema';
+  stressPaneOpen = name === 'stress';
+  historyOpen = stressPaneOpen && stressView === 'history';
   paintMain();
   if (scOpen) paintSchema();
+  if (historyOpen) historyLoad();
+  else if (stressPaneOpen) stPaint();
 }
 
 /* One pane, so nothing moves between panes any more. `paintPanes` and
@@ -2803,16 +2856,18 @@ function showPane(name) {
    `var`, and only ids inside, because `showPane` is defined long before the
    card elements' own consts are -- a `let` read from here at parse time is a
    temporal-dead-zone throw, which takes the whole inline script down with it. */
-var scOpen = false, rtWanted = false, stWanted = false;
+var scOpen = false, historyOpen = false, rtWanted = false, stWanted = false;
+var stressPaneOpen = false, stressView = 'run';
 function paintMain() {
   const el = id => document.getElementById(id);
-  const st = !scOpen && stWanted;
-  const rt = !scOpen && !st && rtWanted;
+  const st = !scOpen && !historyOpen && (stWanted || stressPaneOpen);
+  const rt = !scOpen && !historyOpen && !st && rtWanted;
+  el('historyCard').hidden = !historyOpen;
   el('schemaCard').hidden = !scOpen;
   el('stCard').hidden = !st;
   el('rtCard').hidden = !rt;
-  el('resultCard').hidden = scOpen || rt || st;
-  el('compareCard').hidden = scOpen || rt || st;
+  el('resultCard').hidden = scOpen || historyOpen || rt || st;
+  el('compareCard').hidden = scOpen || historyOpen || rt || st;
 }
 sideTabs.addEventListener('click', e => {
   const btn = e.target.closest('button[data-pane]');
@@ -12721,6 +12776,20 @@ function stShowing(on) {
   paintMain();
 }
 
+function showStressView(view) {
+  stressView = view;
+  historyOpen = stressPaneOpen && view === 'history';
+  stEl('stSetup').hidden = view !== 'run';
+  stEl('stHistoryPanel').hidden = view !== 'history';
+  stEl('stViews').querySelectorAll('button[data-st-view]').forEach(button => {
+    const on = button.dataset.stView === view;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-pressed', String(on));
+  });
+  stPaint();
+  if (historyOpen) historyLoad();
+}
+
 function stBusy(on) {
   if (on) stStopping = false;
   stRun.disabled = on;
@@ -12759,7 +12828,7 @@ function stLatencyRows(rows) {
 /* In-flight jobs over time, stacked by stage. One axis (jobs in flight), two
    series at most -- only two stages can hold jobs in any one mode -- with a
    legend and a hover readout, and the numbers are in the tables beside it. */
-function stChart(report) {
+function stChart(report, host = stOut) {
   const t = report.timeline || [];
   const cols = report.timeline_columns || [];
   if (t.length < 2) return '';
@@ -12770,7 +12839,7 @@ function stChart(report) {
     : mode === 'ocr' ? [['ocr', 'Reading']]
     : [['ocr', 'Reading (OCR)'], ['extract', 'Extracting']]);
   // Drawn at the card's real width, so the axis text is never stretched.
-  const W = Math.max(320, Math.round(stOut.clientWidth || 640)), H = 190;
+  const W = Math.max(320, Math.round(host.clientWidth || 640)), H = 190;
   const L = 34, R = 10, T = 10, B = 22;
   const tMax = t[t.length - 1][0] || 1;
   const yMax = Math.max(1, report.concurrency || 1,
@@ -12804,10 +12873,10 @@ function stChart(report) {
     + '<div class="st-tip" hidden></div></div>';
 }
 
-function stWireChart() {
-  const svg = stOut.querySelector('.st-chart');
-  if (!svg || !stState || !stState.report) return;
-  const rep = stState.report, t = rep.timeline, cols = rep.timeline_columns;
+function stWireChart(host = stOut, rep = (stState || {}).report) {
+  const svg = host.querySelector('.st-chart');
+  if (!svg || !rep) return;
+  const t = rep.timeline, cols = rep.timeline_columns;
   const series = JSON.parse(svg.dataset.series);
   const tip = svg.parentElement.querySelector('.st-tip');
   const cross = svg.querySelector('.st-cross');
@@ -12896,9 +12965,19 @@ function stAlertsHtml(alerts) {
 function stPaint() {
   // The live monitor keeps the card up on its own, with or without a report.
   stShowing(!!(stState || stSnapshot || (typeof monState !== 'undefined' && monState.on)));
-  if (!stState && !stSnapshot) { stOut.innerHTML = ''; return; }
+  if (!stState && !stSnapshot) {
+    stOut.innerHTML = '<p class="note">Run a stress test to see its report here, or open History to review a saved run.</p>';
+    return;
+  }
+  stOut.innerHTML = stReportHtml(stState || {}, stSnapshot, stOut);
+  stWireChart();
+}
+
+function stReportHtml(s, snapshot, host) {
   let html = '';
-  const s = stState || {};
+  if (s.monitor_samples && s.monitor_samples.length) {
+    html += historyMonitorHtml(s.monitor_samples, s.monitor_samples_total);
+  }
   const plan = s.plan;
   if (plan) {
     html += '<p class="st-plan">' + esc(plan.mode === 'full' ? 'Full pipeline'
@@ -12994,7 +13073,7 @@ function stPaint() {
       html += '<p class="note">Of the time jobs spent working, <b>' + stPct(r.stage_share.ocr)
         + '</b> was reading and <b>' + stPct(r.stage_share.extract) + '</b> was extracting.</p>';
     }
-    html += stChart(r);
+    html += stChart(r, host);
     const lat = r.latency || {};
     const latency = stLatencyRows([
       ['Waiting in the queue', lat.queue_wait, 'time a job waited for a free worker on this side'],
@@ -13045,13 +13124,12 @@ function stPaint() {
     html += '<p class="note err">Stopped. ' + s.draining + ' request(s) are still running '
       + 'on the server; another test can start when they finish.</p>';
   }
-  for (const snap of stSnapshot || []) {
+  for (const snap of snapshot || []) {
     html += stMetricsTable(snap.data.view, 'vLLM /metrics snapshot · '
-      + (stSnapshot.length > 1 ? snap.label + ' · ' + snap.data.url + ' · ' : '')
+      + (snapshot.length > 1 ? snap.label + ' · ' + snap.data.url + ' · ' : '')
       + new Date(snap.data.at * 1000).toLocaleTimeString(), ' (since server start)');
   }
-  stOut.innerHTML = html;
-  stWireChart();
+  return html;
 }
 
 function stBody() {
@@ -13066,6 +13144,9 @@ function stBody() {
     metrics: stSample.checked && !stSample.disabled,
     no_cache: stEl('stNoCache').checked,
     save_log: stEl('stSaveLog').checked && stMode.value !== 'classify',
+    history_monitor: stEl('stHistoryMonitor').checked,
+    gpu_url: stEl('monGpu').value.trim(),
+    gpu_extract_url: stEl('monGpuExtract').value.trim(),
     metrics_every: Number(val('stEvery')) || 5
   };
 }
@@ -13102,6 +13183,8 @@ async function stStart() {
       for (const line of lines) {
         if (!line.trim()) continue;
         const ev = JSON.parse(line);
+        if (ev.history_id) stState.historyId = ev.history_id;
+        if (ev.history_error) stState.historyError = ev.history_error;
         if (ev.event === 'plan') {
           stState.plan = ev;
           stEl('stSeed').value = ev.seed;
@@ -13116,13 +13199,17 @@ async function stStart() {
             + ev.done + '/' + ev.total;
         } else if (ev.event === 'done') {
           stState.report = ev.report;
+          stState.monitor_samples = ev.monitor_samples;
+          stState.monitor_samples_total = ev.monitor_samples_total;
           stState.draining = ev.draining || 0;
           stNote.textContent = (ev.stopped ? 'Stopped' : 'Finished') + ' — seed ' + ev.seed
-            + (stState.plan && stState.plan.save_log ? '. Each measured job was saved to the run log.'
-              : '. Nothing was written to the run log.');
+            + (ev.history_error ? '. ' + ev.history_error
+              : ev.history_id ? '. Saved to History.' : '. No History record was saved.');
+          stNote.classList.toggle('err', !!ev.history_error);
+          if (stState.plan && stState.plan.save_log) stNote.textContent += " Each measured job was saved to the run log.";
         } else if (ev.event === 'alert') {
           stState.alerts.push(ev);
-          lastPaint = 0;          // a problem is drawn at once, not on the next tick
+          lastPaint = 0;
         } else if (ev.event === 'draining') {
           stState.draining = ev.in_flight;
         } else if (ev.event === 'error') {
@@ -13366,15 +13453,15 @@ function paintMon() {
   monOut.innerHTML = panes.map(p => monPaneHtml(p, panes.length > 1)).join('');
 }
 
-function monPaneHtml(p, many) {
+function monPaneHtml(p, many, on = monState.on) {
   const d = p.last || {}, hist = p.hist;
   const s = d.snapshot || {}, r = d.rates || {}, g = d.gpu;
   const every = p.delay || monEvery();
-  const slowed = monState.on && every > monEvery()
+  const slowed = on && every > monEvery()
     ? (p.error ? ' (backing off after an error)' : ' (server idle, slowed down)') : '';
-  let head = (many ? '<b>' + esc(p.label) + '</b> · ' : '') + (monState.on
+  let head = (many ? '<b>' + esc(p.label) + '</b> · ' : '') + (on
     ? '<span class="mon-dot"></span><b>Live</b> · every ' + every + ' s' + slowed
-    : '<b>Stopped</b>');
+    : '<b>' + (p.saved ? 'Saved monitor snapshot' : 'Stopped') + '</b>');
   if (d.url) head += ' · ' + esc(d.kind || '') + ' at ' + esc(d.url)
     + (d.model ? ' · ' + esc(d.model) : '')
     + ' · updated ' + new Date(d.at * 1000).toLocaleTimeString();
@@ -13448,6 +13535,10 @@ function monPaneHtml(p, many) {
   return html;
 }
 
+function monReportHtml(state, every) {
+  return monPaneHtml({...state, delay: every}, false, !!state.on);
+}
+
 if (monToggleBtn) {
   monToggleBtn.addEventListener('click', () => monSet(!monState.on));
   monEveryInp.addEventListener('change', () => {
@@ -13463,6 +13554,176 @@ if (monToggleBtn) {
   });
   stPaintServer();
 }
+/* ---------- persistent Stress test history ---------- */
+let historyOffset = 0, historySelected = null, historyCurrent = null;
+let historyListSeq = 0, historyDetailSeq = 0;
+stEl('stViews').addEventListener('click', event => {
+  const button = event.target.closest('button[data-st-view]');
+  if (button) showStressView(button.dataset.stView);
+});
+const historyPageSize = 50;
+const historyLabel = status => ({running: 'Running', completed: 'Completed',
+  completed_with_errors: 'Completed with errors', stopped: 'Stopped',
+  interrupted: 'Interrupted', unfinished: 'Unfinished / other instance', error: 'Error'}[status] || status);
+const historyDate = value => value ? new Date(value).toLocaleString() : '—';
+
+async function historyLoad() {
+  const mine = ++historyListSeq;
+  const note = stEl('historyStatus');
+  note.textContent = 'Loading…';
+  note.classList.remove('err');
+  try {
+    const res = await fetch('/api/history?limit=' + historyPageSize + '&offset=' + historyOffset,
+      {cache: 'no-store'});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    if (mine !== historyListSeq) return;
+    const runs = data.runs || [];
+    note.textContent = data.total ? (historyOffset + 1) + '–'
+      + (historyOffset + runs.length) + ' of ' + data.total : 'No saved runs yet.';
+    stEl('historyPrev').disabled = historyOffset === 0;
+    stEl('historyNext').disabled = historyOffset + runs.length >= data.total;
+    stEl('historyList').innerHTML = runs.length ? runs.map(run => {
+      const p = run.plan || run.configuration || {};
+      return '<button type="button" class="history-item" data-history-id="' + esc(run.id) + '">'
+        + '<b>' + esc(historyDate(run.started_at)) + '</b>'
+        + '<span>' + esc(historyLabel(run.status)) + ' · ' + esc(p.mode || '') + '</span>'
+        + '<span>Concurrent ' + esc(String(p.concurrency ?? '—'))
+        + ' · Queue ' + esc(String(p.jobs ?? '—')) + ' · Warm-up ' + esc(String(p.warmup ?? '—')) + '</span>'
+        + '<span>' + esc(p.reader || p.extractor || ((run.configuration.reader
+          || run.configuration.extractor || {}).model) || '') + '</span></button>';
+    }).join('') : '<p class="note">New Stress test runs will appear here automatically. '
+      + 'Earlier runs were not saved.</p>';
+    if (runs.length) {
+      const selected = runs.some(r => r.id === historySelected) ? historySelected : runs[0].id;
+      await historySelect(selected);
+    } else {
+      ++historyDetailSeq;
+      historySelected = null; historyCurrent = null;
+      stEl('historyTitle').textContent = '';
+      stEl('historyDownload').hidden = true;
+      stEl('historyDetail').innerHTML = '<p class="note">No saved Stress test runs on this page.</p>';
+    }
+  } catch (err) {
+    if (mine !== historyListSeq) return;
+    note.textContent = err.message;
+    note.classList.add('err');
+  }
+}
+
+async function historySelect(id) {
+  const mine = ++historyDetailSeq;
+  historySelected = id;
+  stEl('historyDownload').hidden = true;
+  stEl('historyTitle').textContent = 'Loading run…';
+  document.querySelectorAll('[data-history-id]').forEach(button => {
+    const on = button.dataset.historyId === id;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-pressed', String(on));
+  });
+  try {
+    const res = await fetch('/api/history/' + encodeURIComponent(id), {cache: 'no-store'});
+    const item = await res.json();
+    if (!res.ok) throw new Error(item.error || ('HTTP ' + res.status));
+    if (mine !== historyDetailSeq) return;
+    historyCurrent = item;
+    historyRender(item);
+  } catch (err) {
+    if (mine !== historyDetailSeq) return;
+    stEl('historyTitle').textContent = 'Could not load run';
+    stEl('historyDetail').innerHTML = '<p class="note err">' + esc(err.message) + '</p>';
+  }
+}
+
+function historyRender(item) {
+  const cfg = item.configuration || {}, plan = item.plan || {}, result = item.result || {};
+  const read = cfg.reader || {}, extract = cfg.extractor || {};
+  stEl('historyTitle').textContent = historyDate(item.started_at) + ' · ' + historyLabel(item.status);
+  const download = stEl('historyDownload');
+  download.href = '/api/history/' + encodeURIComponent(item.id) + '?download=1';
+  download.hidden = false;
+  const value = v => v === undefined || v === null ? '—' : typeof v === 'object'
+    ? JSON.stringify(v) : String(v);
+  const cells = [
+    ['Mode', cfg.mode], ['Concurrent', cfg.concurrency], ['Queue (jobs)', cfg.jobs],
+    ['Warm-up', cfg.warmup], ['Time limit (s)', cfg.max_seconds],
+    ['Detail', cfg.detail], ['Extraction shape', cfg.extract_mode],
+    ['Seed', plan.seed ?? cfg.seed],
+    ['Pages per file', cfg.pack_pages], ['Draw strategy', cfg.strategy],
+    ['Lock document', cfg.lock || 'None'],
+    ['OCR model', read.model], ['OCR server', read.url],
+    ['Extraction model', extract.model], ['Extraction server', extract.url],
+    ['OCR profile', cfg.ocr_profile], ['Context', cfg.context], ['Sampling', cfg.sampling],
+    ['Loop guard', cfg.loop_guard], ['Read floor', cfg.read_floor], ['Table agents', cfg.table_agents],
+    ['Sample /metrics', cfg.metrics], ['Monitor snapshots', cfg.history_monitor],
+    ['Sampling interval (s)', cfg.metrics_every], ['GPU exporter', cfg.gpu_url || 'Default / local'],
+    ['Extraction GPU exporter', cfg.gpu_extract_url || 'Default / local'],
+    ['Bypass prompt cache', cfg.no_cache], ['Save per-job accuracy rows', cfg.save_log],
+    ['Workspace', cfg.workspace || 'Default'],
+    ['Started', historyDate(item.started_at)], ['Finished', historyDate(item.finished_at)]
+  ];
+  const root = stEl('historyDetail');
+  root.innerHTML = (item.error ? '<p class="note err">' + esc(item.error) + '</p>' : '')
+    + (item.status === 'running' ? '<p class="note">This run is still in progress. Refresh to check its final report.</p>' : '')
+    + '<h3 class="st-h">Settings used for this run</h3><dl class="history-config">'
+    + cells.slice(0, 8).map(([key, v]) => '<div><dt>' + esc(key) + '</dt><dd>' + esc(value(v)) + '</dd></div>').join('')
+    + '</dl><details><summary>More settings: models, servers, sampling and monitor</summary><dl class="history-config">'
+    + cells.slice(8).map(([key, v]) => '<div><dt>' + esc(key) + '</dt><dd>' + esc(value(v)) + '</dd></div>').join('')
+    + '</dl></details><div id="historyReport" class="history-report"></div>'
+    + '<details><summary>All saved settings and metrics (JSON)</summary><pre class="history-json"></pre></details>';
+  const host = stEl('historyReport');
+  host.innerHTML = stReportHtml({plan: item.plan, report: result.report,
+    alerts: result.alerts || [], monitor_samples: result.monitor_samples,
+    monitor_samples_total: result.monitor_samples_total}, null, host)
+    + (!result.report ? '<p class="note">No final report was saved for this run.</p>' : '');
+  stWireChart(host, result.report);
+  root.querySelector('.history-json').textContent = JSON.stringify(item, null, 2);
+}
+
+function historyMonitorState(samples, index) {
+  const d = samples[index] || {};
+  return {saved: true, on: false, last: d, error: d.error || '',
+    hist: samples.slice(0, index + 1).filter(sample => sample.url === d.url).map(sample => {
+      const s = sample.snapshot || {}, r = sample.rates || {}, g = sample.gpu;
+      return {t: sample.at, kv_free: s.kv_free, running: s.running, waiting: s.waiting,
+        vram_free: g ? g.free_mb / 1024 : null, gen: r.generation_tps,
+        prompt: r.prompt_tps, hit: r.prefix_hit_rate, rps: r.requests_per_s};
+    })};
+}
+
+function historyMonitorHtml(samples, total) {
+  const options = samples.map((d, i) => '<option value="' + i + '"'
+    + (i === samples.length - 1 ? ' selected' : '') + '>'
+    + esc(d.at ? new Date(d.at * 1000).toLocaleTimeString() : 'Snapshot ' + (i + 1))
+    + (d.role ? ' · ' + esc(d.role) : '')
+    + (d.error ? ' · unavailable' : ' · running ' + esc(String((d.snapshot || {}).running ?? '—')))
+    + '</option>').join('');
+  return '<section class="history-monitor"><h3 class="st-h">Server monitor during this run</h3>'
+    + '<label class="field">Saved snapshot<select class="history-snapshot">' + options + '</select></label>'
+    + '<p class="note">' + samples.length + ' saved snapshot(s)'
+    + (total > samples.length ? ' · latest ' + samples.length + ' of ' + total : '')
+    + '. These are recorded values, not live readings.</p><div class="history-monitor-body">'
+    + monReportHtml(historyMonitorState(samples, samples.length - 1), 0) + '</div></section>';
+}
+
+stEl('historyList').addEventListener('click', event => {
+  const button = event.target.closest('[data-history-id]');
+  if (button) historySelect(button.dataset.historyId);
+});
+stEl('historyRefresh').addEventListener('click', historyLoad);
+stEl('historyPrev').addEventListener('click', () => {
+  historyOffset = Math.max(0, historyOffset - historyPageSize); historyLoad();
+});
+stEl('historyNext').addEventListener('click', () => { historyOffset += historyPageSize; historyLoad(); });
+document.addEventListener('change', event => {
+  if (!event.target.matches('.history-snapshot')) return;
+  const saved = !!event.target.closest('#historyCard');
+  const samples = saved ? ((historyCurrent || {}).result || {}).monitor_samples
+    : (stState || {}).monitor_samples;
+  if (!samples) return;
+  event.target.closest('.history-monitor').querySelector('.history-monitor-body').innerHTML =
+    monReportHtml(historyMonitorState(samples, Number(event.target.value)), 0);
+});
 </script>
 </body>
 </html>

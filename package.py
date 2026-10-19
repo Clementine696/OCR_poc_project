@@ -45,6 +45,7 @@ FILES = [
     "fixscore.py",
     "blame.py",
     "runlog.py",
+    "runhistory.py",
     "scoring.py",
     "segment.py",
     "servertime.py",

@@ -154,7 +154,9 @@ class GateTests(unittest.TestCase):
             yield '{"event": "done"}\n'
 
         with mock.patch.object(app, "_stress_run", fake_run), \
-                mock.patch.object(app, "_stress_config", lambda body: {}):
+                mock.patch.object(app, "_stress_config", lambda body: {"mode": "extract"}), \
+                mock.patch.object(app.backends, "extract_status", return_value={}), \
+                mock.patch.object(app, "_history_stream", lambda stream, *args: stream):
             res = app.app.test_client().post("/api/stress/stream", json={})
             res.get_data()
         self.assertEqual(seen, [True])

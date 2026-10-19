@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 import weakref
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -43,6 +43,7 @@ import normalise
 import prompts
 import randomtest
 import runlog
+import runhistory
 import scoring
 import segment
 import servertime
@@ -6298,7 +6299,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
 #
 # **What it deliberately does NOT share with the random test:**
 #
-# * **Nothing is logged by default.** No run-log row, no `solution/out/`
+# * **No per-job accuracy row is logged by default.** No run-log row, no `solution/out/`
 #   transcript, no page job in the compare-view cache: every figure here was
 #   taken under contention no other run was. **`save_log`** (2026-10-15, at the
 #   user's request -- the stress test is where the volume of data is) writes one
@@ -6306,6 +6307,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
 #   so the `stress` filter can keep or drop them. Warm-up, cancelled and skipped
 #   jobs are never written; classification has no row shape and is never
 #   written. Still no transcript and no page job.
+#   Aggregate settings and metrics are saved separately in History.
 # * **No model is switched.** The whole run uses the reader and the extraction
 #   model selected now. A stress test compares LOAD, and a model change between
 #   jobs would be a second variable nobody could separate from the first.
@@ -6489,6 +6491,9 @@ def _stress_config(body: dict) -> dict:
         # Classification has no row shape: a glued pack is no benchmark case and
         # its score is a grouping, so nothing is written for it.
         "save_log": bool(body.get("save_log")) and mode != "classify",
+        "history_monitor": bool(body.get("history_monitor", True)),
+        "gpu_url": str(body.get("gpu_url") or "").strip() or MONITOR_GPU_URL,
+        "gpu_extract_url": str(body.get("gpu_extract_url") or "").strip() or MONITOR_GPU_URL,
         "detail": resolve_detail(body.get("detail") or "medium"),
         "extract_mode": shape,
         "strategy": strategy,
@@ -7081,9 +7086,8 @@ def _stress_run(cfg: dict, cancel):
 def stress_stream():
     """Run a stress test, one NDJSON progress event a second and one report.
 
-    No per-job event is sent. Nothing is written anywhere unless `save_log` is
-    set, and then only a run-log row per measured job. See the section comment
-    above.
+    The full report is saved to History, separately from the accuracy run log.
+    Optional `save_log` also writes a CSV row per measured job.
     """
     body = request.get_json(silent=True) or {}
     try:
@@ -7096,8 +7100,8 @@ def stress_stream():
     cancel = begin_sweep(MultiCancel())
 
     def generate():
-        # Only the stress sampler (every `metrics_every` s) may read /metrics
-        # during the run and its drain -- not every request's server timing.
+        # The stress sampler and optional History monitor collect /metrics;
+        # per-request timing must not add its own scrapes under contention.
         servertime.suspend_metrics()
         # "Bypass prompt cache": every request of the run and its drain is sent
         # uncacheable, so prefill is measured rather than a cache lookup.
@@ -7105,7 +7109,14 @@ def stress_stream():
         try:
             if no_cache:
                 backends.bypass_prefix_cache()
-            yield from _stress_run(cfg, cancel)
+            configuration = {**cfg, "ocr_profile": ocr_profile(),
+                             "sampling": ocr_sampling_state(), "loop_guard": loop_guard(),
+                             "read_floor": read_floor(), "table_agents": table_agents(),
+                             "context": backends.num_ctx(),
+                             "workspace": workspace.current_id(),
+                             "reader": llama_status() if cfg.get("mode") in ("ocr", "full") else None,
+                             "extractor": backends.extract_status() if cfg.get("mode") in ("extract", "classify", "full") else None}
+            yield from _history_stream(_stress_run(cfg, cancel), "stress", configuration)
         except Exception as err:                    # noqa: BLE001
             yield json.dumps({"event": "error",
                               "error": f"{type(err).__name__}: {err}"[:300]}) + "\n"
@@ -7116,6 +7127,117 @@ def stress_stream():
             end_sweep()
 
     return Response(generate(), mimetype="application/x-ndjson")
+
+
+def _history_stream(stream, kind, configuration):
+    """Save on the server before emitting completion, including failed/closed streams."""
+    run_id, storage_error, progress, finished = None, "", None, False
+    samples, sampled_at, samples_total, alerts = deque(maxlen=300), None, 0, []
+    monitor_infos = []
+    for role in ("reader", "extractor"):
+        info = configuration.get(role)
+        if (info and backends.serves_metrics(info)
+                and not any(other["url"] == info["url"] for other in monitor_infos)):
+            monitor_infos.append({**info, "role": role})
+    try:
+        run_id = runhistory.start(kind, configuration)
+    except Exception as err:
+        storage_error = f"History could not be saved: {err}"
+    try:
+        for line in stream:
+            event = json.loads(line)
+            stage = event.get("event")
+            if (monitor_infos and configuration.get("history_monitor")
+                    and stage in ("plan", "progress", "done")
+                    and (stage == "done" or sampled_at is None
+                         or time.monotonic() - sampled_at >= configuration.get("metrics_every", 5))):
+                for monitor_info in monitor_infos:
+                    gpu_key = "gpu_extract_url" if monitor_info["role"] == "extractor" else "gpu_url"
+                    try:
+                        sample, _ = _monitor_scrape(monitor_info, monitor_info["url"],
+                                                    configuration.get(gpu_key, ""))
+                    except Exception as err:
+                        sample = {"error": str(err), "url": monitor_info["url"], "at": time.time()}
+                    samples.append({**sample, "role": monitor_info["role"]})
+                    samples_total += 1
+                sampled_at = time.monotonic()
+            if stage == "alert":
+                alerts.append(dict(event))
+            if event.get("event") == "plan" and run_id:
+                try:
+                    runhistory.save_plan(run_id, event)
+                except Exception as err:
+                    storage_error = f"History could not be saved: {err}"
+            if event.get("event") == "progress":
+                progress = event
+            if event.get("event") == "done":
+                event["monitor_samples"] = list(samples)
+                event["monitor_samples_total"] = samples_total
+                event["alerts"] = alerts
+                if run_id:
+                    try:
+                        report = event.get("report") or {}
+                        state = ("stopped" if event.get("stopped") else
+                                 "completed_with_errors" if (report.get("error_rate") or 0) > 0
+                                 else "completed")
+                        runhistory.finish(run_id, state, event, progress)
+                    except Exception as err:
+                        storage_error = f"History could not be saved: {err}"
+                finished = True
+            if run_id:
+                event["history_id"] = run_id
+            if storage_error:
+                event["history_error"] = storage_error
+            yield json.dumps(event) + "\n"
+        if run_id and not finished:
+            runhistory.finish(run_id, "interrupted", result={"monitor_samples": list(samples),
+                              "monitor_samples_total": samples_total, "alerts": alerts},
+                              progress=progress, error="The stream ended without a final report.")
+    except GeneratorExit:
+        if run_id and not finished:
+            try:
+                runhistory.finish(run_id, "interrupted", result={"monitor_samples": list(samples),
+                                  "monitor_samples_total": samples_total, "alerts": alerts}, progress=progress,
+                                  error="The client disconnected before the report finished.")
+            except Exception:
+                pass
+        raise
+    except Exception as err:
+        if run_id and not finished:
+            try:
+                runhistory.finish(run_id, "error", result={"monitor_samples": list(samples),
+                                  "monitor_samples_total": samples_total, "alerts": alerts}, progress=progress,
+                                  error=f"{type(err).__name__}: {err}"[:1000])
+            except Exception:
+                pass
+        raise
+    finally:
+        stream.close()
+
+
+@app.get("/api/history")
+def history_list():
+    try:
+        return jsonify(runhistory.list_runs(request.args.get("limit", 50),
+                                            request.args.get("offset", 0)))
+    except (ValueError, TypeError):
+        return jsonify(error="limit and offset must be whole numbers."), 400
+    except Exception as err:
+        return jsonify(error=f"Could not read History: {err}"), 503
+
+
+@app.get("/api/history/<run_id>")
+def history_detail(run_id):
+    try:
+        item = runhistory.get(run_id)
+    except Exception as err:
+        return jsonify(error=f"Could not read History: {err}"), 503
+    if item is None:
+        return jsonify(error="History run not found."), 404
+    response = jsonify(item)
+    if request.args.get("download") == "1":
+        response.headers["Content-Disposition"] = f'attachment; filename="run-{run_id}.json"'
+    return response
 
 
 @app.post("/api/stress/stop")
