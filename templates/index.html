@@ -126,8 +126,10 @@
      a long transcript is being read. */
   .side { position: sticky; top: 18px; max-height: calc(100vh - 36px); overflow-y: auto; }
   @media (max-width: 1080px) { .side { position: static; max-height: none; } }
-  .side-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
-  .side-tabs button { flex: 1; padding: 8px 10px; font-size: .84rem; border-radius: 8px; }
+  .side-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px; margin-bottom: 14px; }
+  .side-tabs button { min-width: 0; padding: 8px 10px; font-size: .84rem;
+  border-radius: 8px; white-space: normal; overflow-wrap: anywhere; }
   .side-tabs button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
   .side-tabs .count {
     display: none; margin-left: 6px; font-size: .7rem; font-weight: 700;
