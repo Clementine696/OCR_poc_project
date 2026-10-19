@@ -2005,11 +2005,29 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <input id="stSeed" type="text" placeholder="e.g. 1787218747">
           </label>
         </div>
+        <div class="rt-ex" id="stFilesField">
+          <span class="rt-ex-label">Files to test &mdash; untick any files to skip</span>
+          <div class="row">
+            <button type="button" class="ghost-sm" id="stFilesAll">Select all</button>
+            <button type="button" class="ghost-sm" id="stFilesNone">Clear selection</button>
+            <span class="note" id="stFileCount" aria-live="polite"></span>
+          </div>
+          <div class="rt-files" id="stFiles">
+            {% for c in cases|sort(attribute='id') %}
+            <label class="rt-chip"><input type="checkbox" value="{{ c.id }}"
+              data-field-truth="{{ '1' if c.field_truth else '0' }}" checked>
+              <span>{{ c.id }} &middot; {{ c.pdf }}</span></label>
+            {% endfor %}
+          </div>
+          <p class="note">Jobs, including warm-up, use only the selected benchmark files.
+            The draw strategy applies within this selection. Classification builds
+            its long files from the selected transcripts.</p>
+        </div>
         <div class="row" id="stLockRow">
           <label class="field" style="flex:1;min-width:150px">
             Lock document
             <select id="stLock">
-              <option value="">&mdash; spread over all &mdash;</option>
+              <option value="">&mdash; spread over selected files &mdash;</option>
               {% for doc_type, group in cases|selectattr('field_truth')|list|groupby('doc_type') %}
               <optgroup label="{{ doc_type or 'unclassified' }}">
                 {% for c in group %}
@@ -8968,7 +8986,7 @@ function rtBusy(on) {
   // by being unavailable rather than by an error after the click.
   if (rtExtractEndpoint) rtExtractEndpoint.disabled = on;
   // One sweep at a time: the server refuses the second with a 409 anyway.
-  if (typeof stRun !== 'undefined' && stRun) stRun.disabled = on;
+  if (typeof stRun !== 'undefined' && stRun) stPaintFiles();
   // The two share one card, so they cannot share the screen: a read started
   // mid-test would stream into a Result card the next round event hides again.
   // `paintServer` owns this button otherwise and puts it back on its own terms.
@@ -11678,11 +11696,17 @@ async function refreshServer() {
   try {
     // probe=1 bypasses the status cache and re-reads the model list too, which
     // is what "Re-check" is for after starting or stopping a server.
-    const data = await fetch('/api/servers?probe=1').then(r => r.json());
+    const res = await fetch('/api/servers?probe=1', {cache: 'no-store'});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not re-check the servers.');
     server = data.server;
     if (data.extract) extractInfo = data.extract;
+    // The last switch's "Now using ..." note may name a model that was just
+    // replaced on this port. The freshly painted status is authoritative.
+    setServerNote('');
     paintEndpoint();
-  } catch {
+  } catch (err) {
+    setServerNote(err.message || 'Could not re-check the servers.', true);
     serverText.textContent = was;
   } finally {
     recheckBtn.disabled = false;
@@ -12746,6 +12770,40 @@ let stAbort = null, stStopping = false;
 let stState = null;          // {plan, progress, report, metrics, draining, alerts}
 let stSnapshot = null;       // manual /metrics snapshots [{label, data}], shown until the next run
 
+function stFileBoxes() {
+  return [...stEl('stFiles').querySelectorAll('input')];
+}
+function stEligibleFile(box) {
+  return stMode.value === 'classify' || box.dataset.fieldTruth === '1';
+}
+function stSelectedCases() {
+  return stFileBoxes().filter(box => stEligibleFile(box) && box.checked)
+    .map(box => box.value);
+}
+function stPaintFiles() {
+  const busy = !!stAbort || rtRunning;
+  const boxes = stFileBoxes();
+  const eligible = boxes.filter(stEligibleFile);
+  const selected = new Set(stSelectedCases());
+  for (const box of boxes) {
+    const usable = stEligibleFile(box);
+    box.parentElement.style.display = usable ? '' : 'none';
+    box.parentElement.classList.toggle('off', !box.checked);
+    box.disabled = busy || !usable;
+  }
+  stEl('stFileCount').textContent = selected.size + ' / ' + eligible.length
+    + ' files selected' + (selected.size ? '' : ' — select at least one file');
+  stEl('stFilesAll').disabled = stEl('stFilesNone').disabled = busy;
+  const lock = stEl('stLock');
+  for (const option of lock.options) {
+    option.disabled = !!option.value && !selected.has(option.value);
+  }
+  if (lock.value && !selected.has(lock.value)) lock.value = '';
+  lock.disabled = busy || !selected.size;
+  stMode.disabled = busy;
+  stRun.disabled = busy || !selected.size;
+}
+
 const ST_MODE_TEXT = {
   ocr: 'Each job reads one document with the Workspace reading model and scores '
     + 'the transcript. Pages are decoded, trimmed, resized and encoded once '
@@ -12776,6 +12834,7 @@ function stPaintMode() {
     ? '— not for classification: a glued file is no benchmark case'
     : '— rows are tagged as stress runs';
   stEl('stModeNote').textContent = ST_MODE_TEXT[m] || '';
+  stPaintFiles();
 }
 
 /* The metrics controls follow the SERVER, not a setting: only a server that
@@ -12842,6 +12901,7 @@ function stBusy(on) {
   if (rtRun) rtRun.disabled = on;
   if (on) runBtn.disabled = true; else paintServer();
   stPaintServer();
+  stPaintFiles();
 }
 
 const stNum = (v, d = 1) => (v === null || v === undefined) ? '—'
@@ -13042,6 +13102,8 @@ function stReportHtml(s, snapshot, host) {
       + (plan.save_log ? ' · saving each job to the run log as stress run <b>'
           + esc(plan.run_id) + '</b>' : '')
       + ' · seed ' + plan.seed + '</p>';
+    if (plan.cases) html += '<details><summary>Files selected (' + plan.cases.length
+      + ')</summary><p class="note">' + plan.cases.map(esc).join(', ') + '</p></details>';
   }
   html += stAlertsHtml(s.alerts || []);
   const p = s.progress;
@@ -13186,6 +13248,7 @@ function stBody() {
     pack_pages: Number(val('stPages')) || 100,
     strategy: val('stStrategy'), seed: val('stSeed').trim() || null,
     lock_case: stMode.value === 'classify' ? '' : val('stLock'),
+    cases: stSelectedCases(),
     metrics: stSample.checked && !stSample.disabled,
     no_cache: stEl('stNoCache').checked,
     save_log: stEl('stSaveLog').checked && stMode.value !== 'classify',
@@ -13200,6 +13263,11 @@ async function stStart() {
   // Read the form BEFORE going busy: busy disables the sampling checkbox, and
   // a body built after that would never ask for /metrics.
   const body = stBody();
+  if (!body.cases.length) {
+    stNote.textContent = 'Select at least one file to stress test.';
+    stNote.classList.add('err');
+    return;
+  }
   stState = { draining: 0, alerts: [] };
   stSnapshot = null;
   stNote.textContent = 'Preparing…';
@@ -13277,6 +13345,13 @@ async function stStart() {
 }
 
 if (stRun) {
+  stEl('stFiles').addEventListener('change', stPaintFiles);
+  const selectFiles = checked => {
+    for (const box of stFileBoxes().filter(stEligibleFile)) box.checked = checked;
+    stPaintFiles();
+  };
+  stEl('stFilesAll').addEventListener('click', () => selectFiles(true));
+  stEl('stFilesNone').addEventListener('click', () => selectFiles(false));
   stMode.addEventListener('change', stPaintMode);
   stRun.addEventListener('click', () => stStart());
   const stop = async () => {
@@ -13697,6 +13772,7 @@ function historyRender(item) {
     ['Seed', plan.seed ?? cfg.seed],
     ['Pages per file', cfg.pack_pages], ['Draw strategy', cfg.strategy],
     ['Lock document', cfg.lock || 'None'],
+    ['Files selected', cfg.cases ? cfg.cases.join(', ') : undefined],
     ['OCR model', read.model], ['OCR server', read.url],
     ['Extraction model', extract.model], ['Extraction server', extract.url],
     ['OCR profile', cfg.ocr_profile], ['Context', cfg.context], ['Sampling', cfg.sampling],

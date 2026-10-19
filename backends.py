@@ -713,6 +713,18 @@ def probe(url: str, force: bool = False) -> dict:
     # time out would otherwise be stale the moment it was stored, and the very
     # next caller would pay for it again.
     _cache[url] = (time.time(), info)
+    if force and info["reachable"] and info["models"]:
+        # A server restarted on the same port may serve a different model.
+        # Re-check is an explicit request to follow what it now serves; a
+        # remembered pass-2 choice must not override that fresh discovery.
+        # Keep choices while it is offline or has no usable model list, and
+        # only reconcile the workspace that asked for the forced probe.
+        names = [m["name"] for m in info["models"]]
+        with _lock:
+            for choices in (_chosen_map(), _extract_chosen_map()):
+                chosen = choices.get(url)
+                if chosen and not any(_same_model(chosen, n) for n in names):
+                    choices.pop(url, None)
     return info
 
 
@@ -1445,7 +1457,7 @@ def overview(force: bool = False) -> dict:
     active = active_url()
     ex_url = extract_url()
     listed = []
-    for url in endpoints():
+    for url in dict.fromkeys([*endpoints(), active, ex_url]):
         info = probe(url, force=force)
         listed.append({
             "url": url,
@@ -1456,8 +1468,10 @@ def overview(force: bool = False) -> dict:
             "active": url == active,
             "extract": url == ex_url,
         })
-    server = status(force=force)
-    extract = extract_status(force=force)
+    # The loop just refreshed both servers. Reuse those probes rather than
+    # forcing the reader and extractor (sometimes the same URL) a second time.
+    server = status()
+    extract = extract_status()
     separate = extract_separate()
     return {
         "endpoints": listed,

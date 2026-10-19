@@ -1648,10 +1648,11 @@ models selected in the Workspace and never switches them.
 | **Time limit** | stop starting new jobs after this many seconds; `0` runs the whole queue |
 | **Detail** / **Extraction shape** / **Pages per file** | shown for the modes that use them |
 | **How documents are drawn**, **Seed**, **Lock document** | the same rules as the random test; the seed goes into the box so a run can be repeated |
+| **Files to test** | tick the benchmark files to use, with **Select all** and **Clear selection**. Warm-up and measured jobs draw only from this selection; classification builds its long files from these transcripts. A locked document must be selected |
 
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
 and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,
-models, servers, sampling and extraction settings, together with its complete report,
+selected file IDs, models, servers, sampling and extraction settings, together with its complete report,
 latency tables, scores, errors and timeline. Download JSON includes all saved values.
 Completed, stopped, failed and interrupted runs are retained across refreshes and app restarts.
 Earlier runs cannot be recovered because they were not saved.
@@ -3157,7 +3158,8 @@ can run here, and `keys` is every key in the schema in the order the prompt list
 
 `POST /api/stress/stream` — run a stress test. Body: `mode` (`ocr`, `extract`, `classify`,
 `full`), `concurrency`, `jobs`, `warmup`, `max_seconds`, `detail`, `extract_mode`,
-`pack_pages`, `strategy`, `seed`, `lock_case`, `metrics` (sample vLLM `/metrics`),
+`pack_pages`, `strategy`, `seed`, `lock_case`, `cases` (optional list of benchmark IDs;
+omitting it uses all eligible files, an empty list is rejected), `metrics` (sample vLLM `/metrics`),
 `metrics_every`, `no_cache` (bypass prompt cache), `save_log` (per-job accuracy rows),
 `history_monitor` (save monitor snapshots, default true), and `gpu_url` / `gpu_extract_url`
 (optional VRAM exporters).

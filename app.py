@@ -5260,7 +5260,9 @@ def context_set():
 def servers_list():
     """Configured endpoints, what each one is, and which is active."""
     force = request.args.get("probe") == "1"
-    return jsonify(backends.overview(force=force))
+    response = jsonify(backends.overview(force=force))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.post("/api/servers")
@@ -6666,11 +6668,22 @@ def _stress_config(body: dict) -> dict:
     if strategy not in ("balanced", "uniform"):
         raise ValueError("strategy must be 'balanced' or 'uniform'.")
     cases = _stress_cases(mode)
+    if "cases" in body:
+        selected = body["cases"]
+        if not isinstance(selected, list) or any(
+                not isinstance(cid, str) for cid in selected):
+            raise ValueError("cases must be a list of benchmark document IDs.")
+        if not selected:
+            raise ValueError("Select at least one file to stress test.")
+        unknown = sorted(set(selected) - set(cases))
+        if unknown:
+            raise ValueError(f"{', '.join(unknown)} is not a document this mode can use.")
+        cases = sorted(set(selected))
     lock = (body.get("lock_case") or "").strip()
     if lock and mode == "classify":
         lock = ""        # a pack of one case glued to itself has no findable boundaries
     if lock and lock not in cases:
-        raise ValueError(f"{lock} is not a document this mode can use.")
+        raise ValueError(f"{lock} is not among the selected documents this mode can use.")
     if not cases:
         raise ValueError("No benchmark case has the ground truth this mode needs.")
 
@@ -7205,6 +7218,7 @@ def _stress_run(cfg: dict, cancel):
         "concurrency": cfg["concurrency"], "jobs": cfg["jobs"],
         "warmup": cfg["warmup"], "max_seconds": cfg["max_seconds"],
         "strategy": cfg["strategy"], "lock": cfg["lock"],
+        "cases": cfg["cases"],
         "detail": cfg["detail"] if mode in ("ocr", "full") else "",
         "extract_mode": cfg["extract_mode"] if mode in ("extract", "full") else "",
         "extras": bool(cfg.get("extras", True)) if mode in ("extract", "full") else None,
