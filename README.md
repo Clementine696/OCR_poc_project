@@ -272,6 +272,35 @@ on another. Both write to the same `logs/runs.csv`; the log is locked across pro
 used exactly, and the app exits with a message if it is already taken. To keep an
 experiment out of the main log, give that copy its own `OCR_LOG_DIR`.
 
+### Several people on one copy
+
+One copy can serve several people at once, and **each browser tab is its own workspace**:
+its own server and model pickers, Agentic switch, page-reading profile, loop backstop,
+sampling, table agents, read floor and context window, and its own random test and stress
+test. Two tabs can run a random test each at the same time, on different models, and each
+watches its own progress. Nothing one tab changes moves another.
+
+- **A refresh keeps the tab's settings; a new tab starts from the defaults**, which are what
+  the app selected at startup. The tab's id is in the address (`?ws=...`) and in the tab's
+  session storage. A link copied out of the address bar does not share the workspace: the
+  tab it is opened in takes its own. Neither does a duplicated tab.
+- **What stays shared** describes the servers rather than a choice made on them: the list of
+  servers, each server's type, and the run log, which every tab's runs are written to.
+- **Ollama:** switching model in one tab no longer unloads a model another tab is using
+  (one heard from within `WORKSPACE_ACTIVE_MINUTES`, or running a test). Two tabs on two
+  different models still share the card, and a model this app did not load is still
+  stopped. Set `OLLAMA_UNLOAD_ON_SWITCH=0` when the Ollama serves anything else.
+- **Two stress tests at once measure each other.** Each reports its own figures, but the
+  server is serving both loads.
+- **Run one process.** Workspaces are kept in memory, so the app must be one process (this
+  `python app.py`, or one waitress process with threads). Several worker processes would
+  each hold different workspaces. A restart forgets them all and every tab starts again
+  from the defaults.
+- Callers that name no workspace (`compare.py`, `randomtest.py`, `stress.py`, curl) share
+  one *default* workspace, which behaves exactly as the whole app did before.
+- Rendered pages for the compare view are kept per tab (`MAX_JOBS` each, at most
+  20 × `MAX_JOBS` in all).
+
 Device placement, threads and quantization belong to the model server. This app has no
 CPU/GPU control.
 
@@ -357,8 +386,10 @@ The ones that matter for a deployment:
 
 ## Security
 
-**No authentication, no authorisation, no rate limiting, no CSRF protection.** This is a
-single-user tool meant to be reached over loopback, which is why `OCR_HOST` defaults to
+**No authentication, no authorisation, no rate limiting, no CSRF protection.** Workspaces
+keep people's settings apart (see [Several people on one copy](#several-people-on-one-copy));
+they are not access control, and anyone can delete rows from the shared run log. It is meant
+to be reached over loopback, which is why `OCR_HOST` defaults to
 `127.0.0.1` and why startup warns whenever it does not. That default is the security
 control; changing it removes the only one there is.
 

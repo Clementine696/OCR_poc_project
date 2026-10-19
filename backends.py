@@ -32,6 +32,7 @@ import config
 import prompts  # constants only, no imports of its own beyond the standard library
 import runlog  # for the model ranking a default is taken from; imports config, grounding and settings, so no cycle
 import settings  # for OLLAMA_SYSTEM and OLLAMA_REASONING_EFFORT; imports just config and jobs, so no cycle
+import workspace
 
 # (connect, read). A local server accepts a connection immediately, so a short
 # connect timeout is what keeps a dead port cheap: an endpoint that is not there
@@ -112,6 +113,43 @@ if _extract_url and _extract_url not in _endpoints:
     # and this one is in use, so the probe is not wasted.
     _endpoints.append(_extract_url)
 _cache = {}
+
+# **Per workspace (2026-10-19).** The four choices above are what a person picks
+# in the page, so each browser tab has its own -- see `workspace`. The globals
+# are the default workspace's, which every caller that names none still reads.
+# The endpoint LIST stays shared: it describes the servers, not a choice of one.
+workspace.field("active", lambda: _active)
+workspace.field("chosen", lambda: _chosen)
+workspace.field("extract_chosen", lambda: _extract_chosen)
+workspace.field("extract_url", lambda: _extract_url)
+
+
+def _cur_active() -> str:
+    return workspace.get("active", _active)
+
+
+def _set_active(url: str):
+    global _active
+    if not workspace.put("active", url):
+        _active = url
+
+
+def _chosen_map() -> dict:
+    return workspace.get("chosen", _chosen)
+
+
+def _extract_chosen_map() -> dict:
+    return workspace.get("extract_chosen", _extract_chosen)
+
+
+def _cur_extract_url():
+    return workspace.get("extract_url", _extract_url)
+
+
+def _set_extract_url(url):
+    global _extract_url
+    if not workspace.put("extract_url", url):
+        _extract_url = url
 
 # --------------------------------------------------------------------------
 # Which engine a server is: pinned, or detected and remembered (2026-10-05)
@@ -343,7 +381,7 @@ def _probe_kind(url, kind):
 def server_kind(url: str = None) -> str:
     """The pinned kind of `url`, or "auto"."""
     with _lock:
-        url = clean_url(url) if url else _active
+        url = clean_url(url) if url else _cur_active()
     return _kind_pinned.get(url) or "auto"
 
 
@@ -506,7 +544,7 @@ def known(url: str = None) -> dict:
     because everything that uses it says "as last seen" rather than "now".
     """
     with _lock:
-        url = clean_url(url) if url else _active
+        url = clean_url(url) if url else _cur_active()
     hit = _cache.get(url)
     return hit[1] if hit else None
 
@@ -752,12 +790,12 @@ def _resolve_model(url, info):
         # explicit choice if it is still served, otherwise what the server
         # lists first.
         names = [m["name"] for m in info["models"]]
-        picked = _chosen.get(url)
+        picked = _chosen_map().get(url)
         return picked if picked in names else info.get("model")
     if info["kind"] != "ollama" or not info["models"]:
         return info.get("model")
     names = [m["name"] for m in info["models"]]
-    picked = _chosen.get(url)
+    picked = _chosen_map().get(url)
     if picked in names:
         return picked
     # The log's best reader that this endpoint serves and that can read an image.
@@ -805,7 +843,7 @@ def status(url: str = None, force: bool = False) -> dict:
     refused by a pane built to measure exactly that.
     """
     with _lock:
-        url = clean_url(url) if url else _active
+        url = clean_url(url) if url else _cur_active()
     info = probe(url, force=force)
     model = _resolve_model(url, info)
     # What is wrong for a caller that needs no image. Kept separate from `reason`
@@ -861,7 +899,7 @@ def endpoints():
 
 def active_url():
     with _lock:
-        return _active
+        return _cur_active()
 
 
 def candidates() -> list:
@@ -924,13 +962,12 @@ def autoselect(force: bool = True) -> dict:
     and `reason` when nothing answered. Never raises -- an app with no model
     server has to start anyway and say so, which is `preflight`'s whole rule.
     """
-    global _active
     active = active_url()
     # A configured extraction server is not a reading candidate: somebody split
     # the two on purpose, and a dead OCR server must not quietly move page reads
     # onto the box that was set aside for pass 2.
     order = [active] + [u for u in candidates()
-                        if u != active and u != _extract_url]
+                        if u != active and u != _cur_extract_url()]
     order = order[:max(1, settings.AUTO_SELECT_MAX_CANDIDATES)]
     tried = []
     for url in order:
@@ -943,8 +980,8 @@ def autoselect(force: bool = True) -> dict:
             with _lock:
                 if url not in _endpoints:
                     _endpoints.append(url)
-                changed = url != _active
-                _active = url
+                changed = url != _cur_active()
+                _set_active(url)
             return {"selected": url, "changed": changed, "tried": tried,
                     "reason": None}
     return {"selected": active, "changed": False, "tried": tried,
@@ -1080,20 +1117,19 @@ def select(url: str = None, model: str = None, unload: bool = True) -> dict:
       the run in flight, so a switch made mid-batch would be paid for by the
       document being read.
     """
-    global _active
     with _lock:
-        was = _active
+        was = _cur_active()
         if url:
             url = clean_url(url)
             if not url:
                 raise ValueError("Empty server URL.")
             if url not in _endpoints:
                 _endpoints.append(url)
-            _active = url
+            _set_active(url)
         else:
-            url = _active
+            url = _cur_active()
         if model:
-            _chosen[url] = model
+            _chosen_map()[url] = model
     # Force: the point of switching is to see the new server's real state.
     info = status(url, force=True)
 
@@ -1114,27 +1150,38 @@ def _in_use(url: str) -> list:
     where it is the extraction endpoint -- both, in the one-URL setup, which is
     exactly the keep list `select` always used. With two endpoints, leaving the
     reading server must not evict the extractor off the other box.
+
+    **Asked of every workspace someone is working in**, not only the caller's
+    (`workspace.active`): one user switching model must not stop the model
+    another user is reading with on the same Ollama.
     """
     url = clean_url(url)
     keep = []
-    if url == active_url():
-        keep.append(status(url)["model"])
-    ex = extract_status()
-    if ex["url"] == url:
-        keep.append(ex["model"])
-    return [k for k in keep if k]
+    for ws in workspace.active():
+        with workspace.use(ws):
+            if url == active_url():
+                keep.append(status(url)["model"])
+            ex = extract_status()
+            if ex["url"] == url:
+                keep.append(ex["model"])
+    out = []
+    for name in keep:
+        if name and name not in out:
+            out.append(name)
+    return out
 
 
 def extract_url() -> str:
     """The endpoint pass 2 runs on: the separate one if set, else the reader's."""
     with _lock:
-        return _extract_url or _active
+        return _cur_extract_url() or _cur_active()
 
 
 def extract_separate() -> bool:
     """True where pass 2 goes to a different URL from the page images."""
     with _lock:
-        return bool(_extract_url) and _extract_url != _active
+        ex = _cur_extract_url()
+        return bool(ex) and ex != _cur_active()
 
 
 def configured_extract_url() -> str:
@@ -1145,7 +1192,7 @@ def configured_extract_url() -> str:
     URL" is a different choice from "this URL".
     """
     with _lock:
-        return _extract_url or ""
+        return _cur_extract_url() or ""
 
 
 def select_extract_url(url: str = None, unload: bool = True) -> dict:
@@ -1160,13 +1207,12 @@ def select_extract_url(url: str = None, unload: bool = True) -> dict:
     rarely served by another, so the new endpoint starts on its own default
     (see `_extract_model_on`) unless a choice was already recorded for it.
     """
-    global _extract_url
     url = clean_url(url) if url else None
     old = extract_url()
     with _lock:
         if url and url not in _endpoints:
             _endpoints.append(url)
-        _extract_url = url
+        _set_extract_url(url)
     info = extract_status(force=True)
     stopped = []
     if unload and settings.OLLAMA_UNLOAD_ON_SWITCH and old != info["url"]:
@@ -1189,7 +1235,7 @@ def _extract_model_on(url: str, info: dict):
     llama-server serves the one model it was started with, so it is that.
     """
     names = [m["name"] for m in info.get("models") or []]
-    chosen = _extract_chosen.get(url)
+    chosen = _extract_chosen_map().get(url)
     if chosen:
         served = next((n for n in names if _same_model(chosen, n)), None)
         return served or chosen
@@ -1245,7 +1291,7 @@ def extract_model(url: str = None) -> str:
     """
     url = clean_url(url) if url else extract_url()
     with _lock:
-        return _extract_chosen.get(url)
+        return _extract_chosen_map().get(url)
 
 
 def best_extractor(info: dict) -> str:
@@ -1339,9 +1385,9 @@ def autoselect_models(url: str = None) -> dict:
             "extract", ex["models"],
             lambda m: (not is_ocr_model(m["name"])
                        or _same_model(m["name"], info["model"])))
-        if best and not _extract_chosen.get(ex_url):
+        if best and not _extract_chosen_map().get(ex_url):
             with _lock:
-                _extract_chosen[ex_url] = best
+                _extract_chosen_map()[ex_url] = best
             picked["extract"] = best
         return picked
     if not info["model"]:
@@ -1352,7 +1398,7 @@ def autoselect_models(url: str = None) -> dict:
         # loaded yet at startup. The refusal it enforces cannot fire here
         # anyway -- `best_extractor` will not return a second OCR model.
         with _lock:
-            _extract_chosen[clean_url(url) if url else _active] = best
+            _extract_chosen_map()[clean_url(url) if url else _cur_active()] = best
         picked["extract"] = best
     return picked
 
@@ -1382,9 +1428,9 @@ def select_extract(model: str, url: str = None, unload: bool = True) -> dict:
                 "reading model'.")
     with _lock:
         if chosen:
-            _extract_chosen[url] = chosen
+            _extract_chosen_map()[url] = chosen
         else:
-            _extract_chosen.pop(url, None)
+            _extract_chosen_map().pop(url, None)
     info = extract_status()
     stopped = []
     if unload and settings.OLLAMA_UNLOAD_ON_SWITCH:
@@ -1465,11 +1511,12 @@ OLLAMA_NUM_CTX = config.env_int("OLLAMA_NUM_CTX", 8192,
                                 minimum=NUM_CTX_MIN, maximum=NUM_CTX_MAX)
 
 _num_ctx = OLLAMA_NUM_CTX
+workspace.field("num_ctx", lambda: _num_ctx)
 
 
 def num_ctx() -> int:
     with _lock:
-        return _num_ctx
+        return workspace.get("num_ctx", _num_ctx)
 
 
 def set_num_ctx(value) -> int:
@@ -1487,7 +1534,8 @@ def set_num_ctx(value) -> int:
             f"Context size must be between {NUM_CTX_MIN} and {NUM_CTX_MAX}.")
     global _num_ctx
     with _lock:
-        _num_ctx = value
+        if not workspace.put("num_ctx", value):
+            _num_ctx = value
     return value
 
 
@@ -1532,27 +1580,34 @@ def system_prefix(info: dict = None, enabled: bool = True) -> list:
 # * Ollama and a generic OpenAI server -- nothing per request exists. Said so on
 #   the stress plan rather than pretended.
 #
-# A count, not a flag, and process-wide, like servertime.suspend_metrics: the
-# agentic steps of one job run on threads of their own.
+# A count, not a flag, and per WORKSPACE: one user's stress test makes its own
+# requests uncacheable and nobody else's. The agentic steps and stress jobs of a
+# run are on threads of their own, which `workspace.bind` puts in the run's
+# workspace.
 _bypass_lock = threading.Lock()
 _bypassed = 0
+workspace.field("bypassed", lambda: 0, fresh=True)
+
+
+def _add_bypass(step: int):
+    global _bypassed
+    with _bypass_lock:
+        value = max(0, workspace.get("bypassed", _bypassed) + step)
+        if not workspace.put("bypassed", value):
+            _bypassed = value
 
 
 def bypass_prefix_cache():
     """Make every request uncacheable until `restore_prefix_cache`."""
-    global _bypassed
-    with _bypass_lock:
-        _bypassed += 1
+    _add_bypass(1)
 
 
 def restore_prefix_cache():
-    global _bypassed
-    with _bypass_lock:
-        _bypassed = max(0, _bypassed - 1)
+    _add_bypass(-1)
 
 
 def prefix_cache_bypassed() -> bool:
-    return _bypassed > 0
+    return workspace.get("bypassed", _bypassed) > 0
 
 
 def cache_bypass_effect(kind: str) -> str:
@@ -1565,7 +1620,7 @@ def cache_bypass_effect(kind: str) -> str:
 
 
 def _cache_bypass_fields(kind: str) -> dict:
-    if not _bypassed:
+    if not prefix_cache_bypassed():
         return {}
     if kind == "vllm":
         return {"cache_salt": secrets.token_urlsafe(32)}

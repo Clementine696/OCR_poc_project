@@ -37,6 +37,7 @@ FILES = [
     "app.py",
     "config.py",
     "settings.py",
+    "workspace.py",
     "prompts.py",
     "backends.py",
     "grounding.py",
