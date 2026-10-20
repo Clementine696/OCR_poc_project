@@ -1661,6 +1661,21 @@ Completed, stopped, failed and interrupted runs are retained across refreshes an
 Earlier runs cannot be recovered because they were not saved.
 Use **Current run** in the same Stress test tab to return to the controls and current report.
 
+Agentic extraction reports **Agentic chat context** separately from the summed tokens per file.
+Each step sends the transcript and its own question in an independent request; previous step
+replies are not added as chat history. The table shows input/output token distributions per step.
+Expand **Inspect each job** and choose a file to see every request, including schema rescue,
+grounding retries, and context-overflow retries: input, output, used total (input + output),
+reply cap, context limit, usage percentage, and HTTP status. Fields-only extraction also shows
+these records under each step's **Chat context** details.
+
+Counts come from each response's usage, including cached input. No additional tokenization
+or metrics requests are made to collect them. vLLM's context limit comes from the served
+model's `max_model_len`; the UI context picker does not override it. Other backends may show
+a **requested** context limit instead. Missing figures stay blank, and chunk counts from an
+aborted stream are not presented as exact tokens. Records are saved in Stress test History
+and its JSON download. Older History entries cannot recover measurements that were not saved.
+
 History lives in `OCR_LOG_DIR/run_history.sqlite3` and stays separate from the accuracy
 ranking CSV. No per-job run-log row, transcript or page image is written by this feature.
 The database is runtime data and is excluded from Git and deployment packages.

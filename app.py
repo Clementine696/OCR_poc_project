@@ -940,7 +940,80 @@ def _timed_post(url: str, payload: dict, status: dict):
     return res
 
 
+_agentic_chat_context = threading.local()
+
+
+def _chat_measurement(payload, status, response=None, error=None, seconds=None):
+    """One physical chat request. Counts come from its reply, never /metrics.
+
+    No prompts or replies are retained here. A missing usage count is unknown,
+    not zero, and a vLLM window is its served max_model_len, not our UI picker.
+    """
+    body = {}
+    if response is not None and response.status_code == 200:
+        try:
+            body = response.json()
+        except (ValueError, TypeError):
+            pass
+    body = body if isinstance(body, dict) else {}
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    timings = body.get("timings") if isinstance(body.get("timings"), dict) else {}
+    def count(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    sent = count(usage.get("prompt_tokens", body.get("prompt_eval_count")))
+    output = count(usage.get("completion_tokens", body.get("eval_count")))
+    computed, cached = count(timings.get("prompt_n")), count(timings.get("cache_n"))
+    if sent is None and computed is not None and cached is not None:
+        sent = computed + cached
+    if output is None:
+        output = count(timings.get("predicted_n"))
+    # A loop-aborted stream may contain only a count of text chunks. Those are
+    # not tokenizer tokens, so do not present that fallback as measured usage.
+    if body.get("loop_aborted") and usage.get("prompt_tokens") is None:
+        output = None
+    options = payload.get("options") or {}
+    if status.get("kind") in ("vllm", "openai"):
+        window = backends.model_window(status)
+        if window is None:
+            known = backends.known(status.get("url")) or {}
+            window = backends.model_window({**known, "model": status.get("model")})
+        source = "server"
+    else:
+        window = options.get("num_ctx") or payload.get("n_ctx")
+        source = "requested"
+    window = count(window) or None
+    used = sent + output if sent is not None and output is not None else None
+    return {
+        "in_tokens": sent, "out_tokens": output, "used_tokens": used,
+        "reply_cap": count(payload.get("max_tokens", payload.get("max_completion_tokens",
+                                                                 options.get("num_predict")))),
+        "context_limit": window, "context_source": source if window else None,
+        "used_pct": round(100 * used / window, 2) if used is not None and window else None,
+        "seconds": round(seconds, 3) if seconds is not None else None,
+        "http_status": response.status_code if response is not None else None,
+        "schema": bool(payload.get("format") or
+                       (payload.get("response_format") or {}).get("type") == "json_schema"),
+        "error": str(error)[:200] if error else "",
+    }
+
+
 def _post_once(url: str, payload: dict, status: dict):
+    chats = getattr(_agentic_chat_context, "requests", None)
+    if chats is None:
+        return _post_dispatch(url, payload, status)
+    began, response, error = time.perf_counter(), None, None
+    try:
+        response = _post_dispatch(url, payload, status)
+        return response
+    except Exception as err:
+        error = err
+        raise
+    finally:
+        chats.append({"request": len(chats) + 1, **_chat_measurement(
+            payload, status, response, error, time.perf_counter() - began)})
+
+
+def _post_dispatch(url: str, payload: dict, status: dict):
     with _watched() as progress:
         batcher = _batcher_for(url, status)
         if batcher is not None:
@@ -2863,8 +2936,16 @@ def _warm_step(warmed, *args):
 
 def _run_step(step: dict, prefix: str, question: str, status: dict, source):
     """`_run_step_asked`, its requests named after the step for the stall alert."""
-    with _asking(f"step {step['id']}"):
-        return _run_step_asked(step, prefix, question, status, source)
+    previous = getattr(_agentic_chat_context, "requests", None)
+    chats = _agentic_chat_context.requests = []
+    try:
+        with _asking(f"step {step['id']}"):
+            outcome = _run_step_asked(step, prefix, question, status, source)
+        if chats:
+            outcome[0]["chats"] = chats
+        return outcome
+    finally:
+        _agentic_chat_context.requests = previous
 
 
 def _run_step_asked(step: dict, prefix: str, question: str, status: dict, source):
@@ -7083,6 +7164,15 @@ def _stress_classify_body(pack: dict, rec: dict, live: _StressLive, cancel,
                model_classified=by_model, status="ok")
 
 
+def _agentic_chats(result):
+    """Numeric request records across every document, without prompt/raw text."""
+    for document in result.get("documents") or [result]:
+        for step in document.get("steps") or []:
+            for chat in step.get("chats") or []:
+                yield {**chat, "step": step["id"], "title": step.get("title", ""),
+                       "keys": step.get("keys") or [], "document": document.get("document", 1)}
+
+
 def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 live: _StressLive) -> dict:
     """One job of the queue, start to finish. Returns its record; never raises."""
@@ -7158,6 +7248,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 served = result.get("server_time") or {}
                 rec["extract_in"] = served.get("in_tokens")
                 rec["extract_out"] = served.get("out_tokens")
+                chats = list(_agentic_chats(result))
+                if chats:
+                    rec["agentic_chats"] = [{**chat, "job": job, "case": case_id} for chat in chats]
                 if log:
                     logged = True
                     if row is not None:
