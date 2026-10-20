@@ -400,6 +400,21 @@ def report(records: list, wall: float, mode: str, concurrency: int) -> dict:
         a, b = out["ocr"]["busy_seconds"], out["extract"]["busy_seconds"]
         out["stage_share"] = {"ocr": round(a / (a + b), 4) if a + b else None,
                               "extract": round(b / (a + b), 4) if a + b else None}
+    chats = [chat for record in attempted for chat in record.get("agentic_chats") or []]
+    if chats:
+        groups = {}
+        for chat in chats:
+            groups.setdefault(chat["step"], []).append(chat)
+        out["agentic_context"] = {
+            "requests": chats,
+            "steps": [{"step": step, "title": group[0].get("title", ""),
+                       "keys": group[0].get("keys") or [], "requests": len(group),
+                       "tokens": io_spread([(c.get("in_tokens"), c.get("out_tokens")) for c in group]),
+                       "used": distribution(c.get("used_tokens") for c in group),
+                       "context_limits": sorted({c["context_limit"] for c in group if c.get("context_limit")}),
+                       "used_pct": distribution(c.get("used_pct") for c in group)}
+                      for step, group in groups.items()],
+        }
     if mode == "classify":
         exp = total("docs_expected", ok)
         pages = total("pages")

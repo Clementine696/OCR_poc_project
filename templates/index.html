@@ -4794,6 +4794,9 @@ function stepList(steps) {
           // are gated on the same test as their button: a panel left open by an
           // earlier run whose button this one does not offer would have no way
           // to be closed again.
+          + (s.chats && s.chats.length ? '<li class="raw-row"><details><summary>Chat context ('
+              + s.chats.length + ' request(s))</summary>'
+              + agenticChatTable(s.chats.map(chat => ({...chat, step: s.id}))) + '</details></li>' : '')
           + (openAsk && askable ? '<li class="raw-row"><div class="step-raw">'
               + '<div class="step-raw-head">shared prefix'
               + (stepPrefixText()
@@ -13139,6 +13142,66 @@ function stPaint() {
   }
   stOut.innerHTML = stReportHtml(stState || {}, stSnapshot, stOut);
   stWireChart();
+  stWireChatContext(stOut, (stState || {}).report);
+}
+
+function chatToken(value) {
+  return value === null || value === undefined ? '—' : Number(value).toLocaleString();
+}
+
+function agenticChatTable(chats) {
+  return '<div class="an-grid"><table class="queue chat-context-table"><tr>'
+    + '<th>Document / Step</th><th>Request</th><th>Input</th><th>Output</th><th>Used total</th>'
+    + '<th>Reply cap</th><th>Context limit</th><th>Used %</th><th>Status</th></tr>'
+    + chats.map(chat => '<tr><td title="' + esc((chat.keys || []).join(', ')) + '">'
+      + (chat.document ? '#' + chat.document + ' · ' : '') + esc(chat.step || '') + '</td>'
+      + '<td class="n">' + chatToken(chat.request) + (chat.schema ? ' · schema' : '') + '</td>'
+      + ['in_tokens', 'out_tokens', 'used_tokens', 'reply_cap'].map(key =>
+        '<td class="n">' + chatToken(chat[key]) + '</td>').join('')
+      + '<td class="n">' + chatToken(chat.context_limit)
+      + (chat.context_source ? ' <small>(' + esc(chat.context_source) + ')</small>' : '') + '</td>'
+      + '<td class="n">' + (chat.used_pct == null ? '—' : chatToken(chat.used_pct) + '%') + '</td>'
+      + '<td title="' + esc(chat.error || '') + '">' + (chat.error ? 'Failed'
+        : chat.http_status ? 'HTTP ' + chat.http_status : '—') + '</td></tr>').join('')
+    + '</table></div>';
+}
+
+function stChatContextHtml(context) {
+  const requests = context.requests || [];
+  const jobs = new Map(requests.map(chat => [chat.job, chat.case]));
+  const spread = d => d ? [d.min, d.mean, d.max].map(chatToken).join(' / ') : '—';
+  return '<h3 class="st-h">Agentic chat context</h3>'
+    + '<p class="note">Each step sends its own transcript and question, without a conversation '
+    + 'history from previous steps. Input includes the cached prompt. Used total is input + output; '
+    + 'Reply cap is the requested output budget, not the context window. Limits marked server '
+    + 'come from model metadata; requested limits come from the request. Missing usage is —.</p>'
+    + '<div class="an-grid"><table class="queue"><tr><th>Step</th><th>Chats</th>'
+    + '<th>Input: min / mean / max</th><th>Output: min / mean / max</th>'
+    + '<th>Peak used total</th><th>Context limit(s)</th><th>Peak used %</th></tr>'
+    + (context.steps || []).map(step => '<tr><td title="' + esc((step.keys || []).join(', '))
+      + '"><b>' + esc(step.step) + '</b><br>' + esc(step.title || '') + '</td>'
+      + '<td class="n">' + step.requests + '</td><td class="n">' + spread(step.tokens.in)
+      + '</td><td class="n">' + spread(step.tokens.out) + '</td><td class="n">'
+      + chatToken(step.used.max) + '</td><td class="n">'
+      + ((step.context_limits || []).map(chatToken).join(' / ') || '—')
+      + '</td><td class="n">' + (step.used_pct.max == null ? '—'
+        : chatToken(step.used_pct.max) + '%') + '</td></tr>').join('') + '</table></div>'
+    + '<details class="chat-context-jobs"><summary>Inspect each job — ' + requests.length
+    + ' chat request(s)</summary><label class="field">Job / file<select data-chat-job>'
+    + [...jobs].map(([job, name]) => '<option value="' + job + '">#' + job + ' · '
+      + esc(name || '') + '</option>').join('') + '</select></label><div data-chat-rows></div></details>';
+}
+
+function stWireChatContext(host, report) {
+  const context = report && report.agentic_context;
+  const select = host.querySelector('[data-chat-job]');
+  if (!context || !select) return;
+  const paint = () => {
+    host.querySelector('[data-chat-rows]').innerHTML = agenticChatTable(
+      context.requests.filter(chat => String(chat.job) === select.value));
+  };
+  select.addEventListener('change', paint);
+  paint();
 }
 
 function stReportHtml(s, snapshot, host) {
@@ -13286,6 +13349,10 @@ function stReportHtml(s, snapshot, host) {
         + tokenRows.map(([label, d]) => '<tr><td>' + esc(label) + '</td><td class="n">'
           + tokCell(d, 'in') + '</td><td class="n">' + tokCell(d, 'out') + '</td></tr>').join('')
         + '</table>';
+    }
+    if (r.agentic_context) html += stChatContextHtml(r.agentic_context);
+    else if (plan && plan.extract_mode === 'agentic') {
+      html += '<p class="note">Per-chat context usage was not recorded for this run.</p>';
     }
     if (r.errors && r.errors.length) {
       html += '<h3 class="st-h">Errors</h3><table class="queue">' + r.errors.map(e =>
@@ -13875,6 +13942,7 @@ function historyRender(item) {
     monitor_samples_total: result.monitor_samples_total}, null, host)
     + (!result.report ? '<p class="note">No final report was saved for this run.</p>' : '');
   stWireChart(host, result.report);
+  stWireChatContext(host, result.report);
   root.querySelector('.history-json').textContent = JSON.stringify(item, null, 2);
 }
 
