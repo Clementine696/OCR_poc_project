@@ -204,8 +204,29 @@
   }
   /* The controls follow the result down the page: the side pane stays in view while
      a long transcript is being read. */
-  .side { position: sticky; top: 18px; max-height: calc(100vh - 36px); overflow-y: auto; }
+  .side { position: sticky; top: 18px; max-height: var(--side-height, calc(100dvh - 36px));
+    display: flex; flex-direction: column; overflow: hidden; }
+  .side-scroll { min-height: 0; overflow-y: auto; }
+  .test-actions { flex-shrink: 0; margin: 14px -18px -18px; padding: 12px 18px;
+    border-top: 1px solid var(--border); background: var(--panel); }
+  .test-action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .test-action-row button { white-space: nowrap; }
+  .test-action-row .primary { flex: 1; }
+  .test-status { display: inline-flex; align-items: center; gap: 6px; font-size: .76rem;
+    margin-bottom: 8px; color: var(--muted); }
+  .test-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .test-status[data-state="running"] { color: var(--accent); }
+  .test-status[data-state="stopping"] { color: var(--warn); }
+  .test-status[data-state="completed"] { color: var(--ok); }
+  .test-status[data-state="failed"] { color: var(--danger); }
   @media (max-width: 1080px) { .side { position: static; max-height: none; } }
+  @media (max-width: 1080px) {
+    body.has-test-actions { padding-bottom: var(--run-actions-space, 150px); }
+    .side-scroll { overflow: visible; }
+    .test-actions { position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
+      margin: 0; padding: 10px 18px max(12px, env(safe-area-inset-bottom));
+      box-shadow: 0 -4px 18px rgba(0,0,0,.12); }
+  }
   .side-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px; margin-bottom: 14px; }
   .side-tabs button { min-width: 0; padding: 8px 10px; font-size: .84rem;
@@ -760,6 +781,14 @@
   .st-metrics-box { margin-top: 16px; border: 1px solid var(--border); border-radius: 10px;
     padding: 10px 12px; }
   .st-metrics-head { font-size: .8rem; }
+  .st-advanced { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .st-advanced > summary { cursor: pointer; padding: 10px 12px; font-size: .82rem; font-weight: 600; }
+  .st-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 10px; }
+  .st-advanced-body { padding: 0 12px 12px; border-top: 1px solid var(--border); }
+  .st-settings-title { font-size: .78rem; margin: 16px 0 8px; color: var(--muted); }
+  #stSetup > .row { margin-top: 12px; }
+  #stFilesField > .row { margin-top: 8px; }
+  #stFiles { max-height: 120px; }
   .st-check { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
     color: var(--muted); }
   .st-plan { font-size: .8rem; color: var(--muted); margin: 10px 0 0; line-height: 1.5; }
@@ -1514,6 +1543,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
 
   <div class="grid">
     <div class="card side">
+      <div class="side-scroll">
       <div class="side-tabs" id="sideTabs">
         <button type="button" data-pane="source" class="on">Workspace</button>
         <!-- Pass 1 alone against a document's transcript ground truth, the
@@ -1942,10 +1972,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </label>
         </div>
 
-        <div class="row">
-          <button id="rtRun" class="primary">Run random test</button>
-          <button id="rtStop" class="ghost-sm" disabled>Stop</button>
-        </div>
         <p class="note" id="rtScopeNote"></p>
 
         <p class="note">Every round is a <b>real run</b> and appends its own row
@@ -1965,21 +1991,14 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button type="button" data-st-view="history" aria-pressed="false">History</button>
         </div>
         <div id="stSetup">
-        <p class="note">A benchmark of the <b>server</b>: a queue of jobs worked
-          by as many concurrent requests as you set, against the reading and
-          extraction models selected in the Workspace. Documents are drawn the
-          way the random test draws them. Only the final metrics and scores are
-          shown and saved to <b>History</b>. Per-job accuracy logging is optional.
-          Errors, loops, token caps and stalls are flagged as they happen.</p>
-
         <div class="row">
           <label class="field" style="flex:1;min-width:210px">
-            What each job runs
+            Mode
             <select id="stMode">
-              <option value="ocr">OCR only &mdash; read the pages, score the transcript</option>
-              <option value="extract">Extract only &mdash; pass 2 from the ground truth</option>
-              <option value="classify">Classify 100+ pages &mdash; split and type a long file</option>
-              <option value="full">Full pipeline &mdash; read, then extract (stages timed apart)</option>
+              <option value="ocr">OCR only</option>
+              <option value="extract">Extract only</option>
+              <option value="classify">Classify 100+ pages</option>
+              <option value="full">Full pipeline</option>
             </select>
           </label>
         </div>
@@ -1994,6 +2013,27 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             Queue (jobs)
             <input id="stJobs" type="number" min="1" max="5000" value="20">
           </label>
+        </div>
+        <div class="rt-ex" id="stFilesField">
+          <span class="rt-ex-label">Files to test &mdash; untick any files to skip</span>
+          <div class="row">
+            <button type="button" class="ghost-sm" id="stFilesAll">Select all</button>
+            <button type="button" class="ghost-sm" id="stFilesNone">Clear selection</button>
+            <span class="note" id="stFileCount" aria-live="polite"></span>
+          </div>
+          <div class="rt-files" id="stFiles">
+            {% for c in cases|sort(attribute='id') %}
+            <label class="rt-chip"><input type="checkbox" value="{{ c.id }}"
+              data-field-truth="{{ '1' if c.field_truth else '0' }}" checked>
+              <span>{{ c.id }} &middot; {{ c.pdf }}</span></label>
+            {% endfor %}
+          </div>
+        </div>
+        <details class="st-advanced" id="stAdvanced">
+          <summary>Advanced settings</summary>
+          <div class="st-advanced-body">
+        <h3 class="st-settings-title">Run settings</h3>
+        <div class="row">
           <label class="field" style="flex:1;min-width:90px"
                  title="jobs run first at the same concurrency and left out of every figure -- loads the model and warms its caches">
             Warm-up
@@ -2045,24 +2085,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <input id="stSeed" type="text" placeholder="e.g. 1787218747">
           </label>
         </div>
-        <div class="rt-ex" id="stFilesField">
-          <span class="rt-ex-label">Files to test &mdash; untick any files to skip</span>
-          <div class="row">
-            <button type="button" class="ghost-sm" id="stFilesAll">Select all</button>
-            <button type="button" class="ghost-sm" id="stFilesNone">Clear selection</button>
-            <span class="note" id="stFileCount" aria-live="polite"></span>
-          </div>
-          <div class="rt-files" id="stFiles">
-            {% for c in cases|sort(attribute='id') %}
-            <label class="rt-chip"><input type="checkbox" value="{{ c.id }}"
-              data-field-truth="{{ '1' if c.field_truth else '0' }}" checked>
-              <span>{{ c.id }} &middot; {{ c.pdf }}</span></label>
-            {% endfor %}
-          </div>
-          <p class="note">Jobs, including warm-up, use only the selected benchmark files.
-            The draw strategy applies within this selection. Classification builds
-            its long files from the selected transcripts.</p>
-        </div>
         <div class="row" id="stLockRow">
           <label class="field" style="flex:1;min-width:150px">
             Lock document
@@ -2079,23 +2101,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </label>
         </div>
 
-        <!-- vLLM's Prometheus endpoint. Offered only when the selected server
-             says it IS vLLM; on a local llama-server or Ollama nothing is ever
-             requested, and the server refuses the route as well. -->
-        <div class="st-metrics-box" id="stMetricsBox">
-          <div class="st-metrics-head">
-            <b>Server /metrics</b>
-            <span id="stMetricsState" class="muted-inline"></span>
-          </div>
-          <div class="row" style="margin-top:8px">
-            <button id="stFetchMetrics" class="ghost-sm" disabled>Fetch /metrics now</button>
-            <label class="st-check">
-              <input id="stSample" type="checkbox" disabled> sample during the test, every
-              <input id="stEvery" type="number" min="1" max="600" value="5" style="width:56px"> s
-            </label>
-          </div>
-        </div>
-
+        <h3 class="st-settings-title">Cache and batching</h3>
         <!-- Prompt cache: a stress run repeats a few pages and one prompt, so the
              server answers most of each prompt from cache. Ticked, every request
              is sent uncacheable: a random cache_salt on vLLM, cache_prompt off on
@@ -2114,6 +2120,24 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
                   title="Send the requests that are in flight at the same moment as one vLLM /v1/chat/completions/batch request, up to the concurrency per batch. Requests are grouped only with others that share every setting but the conversation. Replies do not stream, so time to first token and per-request decode speed are not measured, and a looping reply runs to its token cap (it is still flagged as looped). vLLM only.">Batch requests: off</button>
           <span class="muted-inline" id="stBatchNote" style="font-size:.78rem"></span>
         </div>
+        <h3 class="st-settings-title">Metrics and logging</h3>
+        <!-- vLLM's Prometheus endpoint. Offered only when the selected server
+             says it IS vLLM; on a local llama-server or Ollama nothing is ever
+             requested, and the server refuses the route as well. -->
+        <div class="st-metrics-box" id="stMetricsBox">
+          <div class="st-metrics-head">
+            <b>Server /metrics</b>
+            <span id="stMetricsState" class="muted-inline"></span>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button id="stFetchMetrics" class="ghost-sm" disabled>Fetch /metrics now</button>
+            <label class="st-check">
+              <input id="stSample" type="checkbox" disabled> sample during the test, every
+              <input id="stEvery" type="number" min="1" max="600" value="5" style="width:56px"> s
+            </label>
+          </div>
+        </div>
+
         <!-- Off by default: a stress job's timings were taken under the load of
              the others. On, each measured job is one ordinary run-log row tagged
              with the run and its concurrency, so the "Run kind" chips can keep
@@ -2123,16 +2147,24 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <input id="stSaveLog" type="checkbox"> Save each job to the run log
           <span class="muted-inline" style="font-weight:400" id="stSaveLogNote">&mdash; rows are tagged as stress runs</span>
         </label>
-        <div class="row">
-          <button id="stRun" class="primary">Run stress test</button>
-          <button id="stStop" class="ghost-sm" disabled>Stop</button>
-        </div>
         <label class="st-check" style="margin-top:10px">
           <input id="stHistoryMonitor" type="checkbox" checked> Save monitor snapshots to History
         </label>
         <p class="note">On vLLM, records KV cache, VRAM and throughput at the sampling interval above,
           plus the final reading. Keeps the latest 300 snapshots per run.</p>
+        <h3 class="st-settings-title">About this test</h3>
         <p class="note" id="stModeNote"></p>
+        <p class="note">A benchmark of the <b>server</b>: a queue of jobs worked
+          by as many concurrent requests as you set, against the reading and
+          extraction models selected in the Workspace. Documents are drawn the
+          way the random test draws them. Only the final metrics and scores are
+          shown and saved to <b>History</b>. Per-job accuracy logging is optional.
+          Errors, loops, token caps and stalls are flagged as they happen.</p>
+        <p class="note">Jobs, including warm-up, use only the selected benchmark files.
+            The draw strategy applies within this selection. Classification builds
+            its long files from the selected transcripts.</p>
+          </div>
+        </details>
         </div>
         <div id="stHistoryPanel" hidden>
         <h2>Stress test history</h2>
@@ -2237,6 +2269,35 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           there is nothing to feed pass 2 here.</p>
         {% endif %}
       </div>
+      </div><!-- /side-scroll -->
+      <div class="test-actions" id="testActions" hidden>
+        <div id="sourceActions" hidden>
+          <span class="test-status" id="readStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row" id="sourceActionButtons"></div>
+        </div>
+        <div id="ocrActions" hidden>
+          <span class="test-status" id="ocStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row" id="ocrActionButtons"></div>
+        </div>
+        <div id="fieldsActions" hidden>
+          <span class="test-status" id="fxStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row" id="fieldsActionButtons"></div>
+        </div>
+        <div id="randomActions" hidden>
+          <span class="test-status" id="rtStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row">
+            <button id="rtRun" type="button" class="primary">Run random test</button>
+            <button id="rtStop" type="button" class="ghost-sm" disabled>Stop</button>
+          </div>
+        </div>
+        <div id="stressActions" hidden>
+          <span class="test-status" id="stStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row">
+            <button id="stRun" type="button" class="primary">Run stress test</button>
+            <button id="stStop" type="button" class="ghost-sm" disabled>Stop</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- The random test's plan and results, in the Result card's place (moved
@@ -2247,14 +2308,13 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
          read by hand an hour ago. The controls stay in the side pane, because
          that is where the run is decided.
 
-         `Clear` puts the Result card back. Nothing is lost by it -- every round
-         is a real run and is in the run log below. -->
+         `Clear results` empties this view. Each completed round remains in the run log. -->
     <div class="card" id="rtCard" hidden>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">Random test</h2>
         <span id="rtNote" class="muted-inline" style="font-size:.8rem"></span>
         <button id="rtStop2" class="ghost-sm" style="margin-left:auto" disabled>Stop</button>
-        <button id="rtClear" class="ghost-sm">Clear</button>
+        <button id="rtClear" class="ghost-sm">Clear results</button>
       </div>
       <div id="rtOut"></div>
     </div>
@@ -2267,7 +2327,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <h2 style="margin:0">Stress test</h2>
         <span id="stNote" class="muted-inline" style="font-size:.8rem"></span>
         <button id="stStop2" class="ghost-sm" style="margin-left:auto" disabled>Stop</button>
-        <button id="stClear" class="ghost-sm">Clear</button>
+        <button id="stClear" class="ghost-sm">Clear results</button>
       </div>
       <div id="stOut"></div>
     </div>
@@ -2878,6 +2938,7 @@ const runNote = document.getElementById('runNote');
    was no error anywhere to say why. A tab and its pane are one thing; naming
    them in two places means one of them is eventually forgotten. */
 function showPane(name) {
+  selectedPane = name;
   [...sideTabs.querySelectorAll('button[data-pane]')].forEach(b => {
     const on = b.dataset.pane === name;
     b.classList.toggle('on', on);
@@ -2892,38 +2953,88 @@ function showPane(name) {
   if (scOpen) paintSchema();
   if (historyOpen) historyLoad();
   else if (stressPaneOpen) stPaint();
+  else if (name === 'random') rtPaint();
 }
 
 /* One pane, so nothing moves between panes any more. `paintPanes` and
    `syncEngineTab` went with the second tab: the engine is a control INSIDE the
    workspace now, and a control cannot disagree with the tab it sits in. */
 
-/* Which full-width card owns the main column. Three things want it and only one
-   can have it: the Result card (with Compare, which holds that same read's page
-   images), the Random test's round table, and the Doc types reference.
-
-   **One function decides, rather than each caller hiding what it displaces.**
-   The alternative was tried on the Random test and is what `rtShowing` used to
-   do alone -- and with a third contender it stops working: opening Doc types
-   mid-test and going back would have left the round table hidden, because
-   nothing would have put it back.
-
-   `var`, and only ids inside, because `showPane` is defined long before the
-   card elements' own consts are -- a `let` read from here at parse time is a
-   temporal-dead-zone throw, which takes the whole inline script down with it. */
-var scOpen = false, historyOpen = false, rtWanted = false, stWanted = false;
-var stressPaneOpen = false, stressView = 'run';
+/* The selected menu owns the main column. Background run updates may repaint
+   their report, but cannot replace the user's current view. Keep each report
+   in its card so returning to its tab restores it without clearing the run.
+   `var` and element IDs allow early callers before the card consts exist. */
+var scOpen = false, historyOpen = false;
+var selectedPane = 'source', stressPaneOpen = false, stressView = 'run', stRunning = false;
 function paintMain() {
   const el = id => document.getElementById(id);
-  const st = !scOpen && !historyOpen && (stWanted || stressPaneOpen);
-  const rt = !scOpen && !historyOpen && !st && rtWanted;
+  const st = stressPaneOpen && !historyOpen;
+  const rt = selectedPane === 'random';
   el('historyCard').hidden = !historyOpen;
   el('schemaCard').hidden = !scOpen;
   el('stCard').hidden = !st;
   el('rtCard').hidden = !rt;
   el('resultCard').hidden = scOpen || historyOpen || rt || st;
   el('compareCard').hidden = scOpen || historyOpen || rt || st;
+  let hasActions = false;
+  for (const name of ['source', 'ocr', 'fields', 'random', 'stress']) {
+    const group = el(name + 'Actions');
+    group.hidden = name !== selectedPane || !group.querySelector('button');
+    if (!group.hidden) hasActions = true;
+  }
+  el('testActions').hidden = !hasActions;
+  document.body.classList.toggle('has-test-actions', hasActions);
 }
+
+function setTestStatus(prefix, state) {
+  const status = document.getElementById(prefix + 'Status');
+  status.dataset.state = state;
+  status.textContent = {ready: 'Ready', running: 'Running', stopping: 'Stopping',
+    completed: 'Completed', stopped: 'Stopped', failed: 'Failed'}[state];
+}
+
+function setReadStatus(state) {
+  setTestStatus('read', state);
+  setTestStatus('oc', state);
+}
+
+// Move the existing document buttons, preserving their handlers and the
+// server-rendered absence of controls when benchmark cases are unavailable.
+for (const [pane, ids] of Object.entries({source: ['run', 'stop', 'clear'],
+    ocr: ['ocRun', 'ocStop'], fields: ['fxRun']})) {
+  const target = document.getElementById(pane + 'ActionButtons');
+  for (const id of ids) {
+    const button = document.getElementById(id);
+    if (!button) continue;
+    const row = button.parentElement;
+    target.appendChild(button);
+    if (!row.children.length) row.remove();
+  }
+}
+document.getElementById('clear').textContent = 'Clear workspace';
+
+// Keep the footer inside the visible sidebar even while the page header or
+// global monitor occupies space above it. On narrow screens CSS docks it.
+const sideCard = document.querySelector('.side');
+let sideSizeFrame = null;
+function sizeSidebar() {
+  if (sideSizeFrame !== null) return;
+  sideSizeFrame = requestAnimationFrame(() => {
+    sideSizeFrame = null;
+    const top = Math.max(18, sideCard.getBoundingClientRect().top);
+    sideCard.style.setProperty('--side-height', Math.max(180, innerHeight - top - 18) + 'px');
+    const actionHeight = document.getElementById('testActions').getBoundingClientRect().height;
+    document.body.style.setProperty('--run-actions-space', (actionHeight + 18) + 'px');
+  });
+}
+window.addEventListener('resize', sizeSidebar);
+window.addEventListener('scroll', sizeSidebar, {passive: true});
+const sideSizeObserver = new ResizeObserver(sizeSidebar);
+sideSizeObserver.observe(document.querySelector('.page-head'));
+sideSizeObserver.observe(document.getElementById('monCard'));
+sideSizeObserver.observe(document.getElementById('testActions'));
+sizeSidebar();
+paintMain();
 sideTabs.addEventListener('click', e => {
   const btn = e.target.closest('button[data-pane]');
   if (btn) showPane(btn.dataset.pane);
@@ -8888,15 +8999,12 @@ function rtPaintScope() {
    was a fifty-row table stacked above a Result card still showing a document
    somebody read by hand an hour ago. Compare goes with the Result card, since
    it holds that same read's page images. */
-function rtShowing(on) {
-  rtWanted = on;
-  // Whichever run was started last owns the column.
-  if (on) stWanted = false;
-  paintMain();
-}
 function rtPaint() {
-  rtShowing(!!rtRows.length);
-  if (!rtRows.length) { rtOut.innerHTML = ''; return; }
+  paintMain();
+  if (!rtRows.length) {
+    rtOut.innerHTML = '<p class="note">Run a random test to see its rounds here.</p>';
+    return;
+  }
   const body = rtRows.map(r => {
     const p = r.plan, out = r.result || {};
     const cls = r.error ? ' class="rt-bad"' : (r.pending ? ' class="rt-now"' : '');
@@ -9022,7 +9130,8 @@ function rtThroughputCells(out) {
    lies about what it will do. */
 function rtBusy(on) {
   rtRunning = on;
-  if (on) rtStopping = false;
+  if (on) { rtStopping = false; setTestStatus('rt', 'running'); }
+  rtClear.disabled = on;
   rtPaintSequence();
   // A Stop already asked for is not a Stop that can be asked for again: the
   // request is in, and a live-looking button would invite a second one that
@@ -9034,8 +9143,8 @@ function rtBusy(on) {
   if (rtExtractEndpoint) rtExtractEndpoint.disabled = on;
   // One sweep at a time: the server refuses the second with a 409 anyway.
   if (typeof stRun !== 'undefined' && stRun) stPaintFiles();
-  // The two share one card, so they cannot share the screen: a read started
-  // mid-test would stream into a Result card the next round event hides again.
+  // Reads and sweeps share server settings, so do not start a workspace read
+  // while a sweep is changing those settings between rounds.
   // `paintServer` owns this button otherwise and puts it back on its own terms.
   if (on) runBtn.disabled = true; else paintServer();
 }
@@ -9047,16 +9156,17 @@ async function rtStart() {
   rtContinuous = false;
   rtPaint();
   rtBusy(true);
+  rtStop.disabled = rtStop2.disabled = true;
   // Same reason as the Read button: the rounds below are judged by this floor,
   // so it is pushed before the first one rather than whenever the box lost
   // focus.
-  await pushReadFloor(rtReadFloorInp || readFloorInp);
-  await ensureSampling();
   rtNote.classList.remove('err');
   rtNote.textContent = 'Planning…';
-  rtShowing(true);
+  paintMain();
   rtAbort = new AbortController();
   try {
+    await pushReadFloor(rtReadFloorInp || readFloorInp);
+    await ensureSampling();
     const res = await fetch('/api/randomtest/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       signal: rtAbort.signal,
@@ -9080,6 +9190,7 @@ async function rtStart() {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || ('HTTP ' + res.status));
     }
+    rtStop.disabled = rtStop2.disabled = rtStopping;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -9149,7 +9260,9 @@ async function rtStart() {
           // The server says where it stopped. Nothing to paint: `done` follows
           // immediately and writes the one summary line a run gets.
           rtStopping = true;
+          setTestStatus('rt', 'stopping');
         } else if (ev.event === 'done') {
+          setTestStatus('rt', ev.stopped ? 'stopped' : 'completed');
           rtNote.textContent = 'Seed ' + ev.seed + ' — ' + ev.completed
             + (ev.continuous ? '' : '/' + ev.total) + ' round(s) '
             + (ev.stopped ? 'run before stopping' : 'completed')
@@ -9171,6 +9284,7 @@ async function rtStart() {
       }
     }
   } catch (err) {
+    setTestStatus('rt', 'failed');
     if (err.name === 'AbortError') {
       // Only reached when the server could not be told to stop -- an ordinary
       // Stop now ends with the stream's own `done`. Hanging up frees the page
@@ -9185,6 +9299,8 @@ async function rtStart() {
       rtNote.classList.add('err');
     }
   } finally {
+    if (['running', 'stopping'].includes(document.getElementById('rtStatus').dataset.state))
+      setTestStatus('rt', 'failed');
     rtAbort = null;
     rtBusy(false);
     // Drop rows that never ran -- on a stop or a failure, a "queued" row that
@@ -9204,6 +9320,7 @@ if (rtRun) {
   const stop = async () => {
     if (!rtAbort || rtStopping) return;
     rtStopping = true;
+    setTestStatus('rt', 'stopping');
     rtStop.disabled = rtStop2.disabled = true;
     rtNote.classList.remove('err');
     // The bound, measured rather than guessed: a read notices between tokens,
@@ -9226,7 +9343,12 @@ if (rtRun) {
   };
   rtStop.addEventListener('click', stop);
   rtStop2.addEventListener('click', stop);
-  rtClear.addEventListener('click', () => { rtRows = []; rtPaint(); });
+  rtClear.addEventListener('click', () => {
+    if (rtRunning) return;
+    rtRows = []; rtNote.textContent = ''; rtNote.classList.remove('err');
+    setTestStatus('rt', 'ready');
+    rtPaint();
+  });
 
   // Painted on change and once at load: the caveat belongs beside the choice,
   // not in the results of a run that already made it.
@@ -12158,7 +12280,10 @@ window.addEventListener('paste', e => {
 }));
 
 clearBtn.addEventListener('click', () => {
-  if (controller) controller.abort();
+  if (controller || fxBusy) return;
+  setReadStatus('ready');
+  setTestStatus('fx', 'ready');
+  if (fxNote) fxNote.textContent = '';
   text = ''; fileInput.value = '';
   // The folder picker was left selected here, so a "cleared" page would still
   // run whatever was chosen in it.
@@ -12181,7 +12306,9 @@ copyBtn.addEventListener('click', async () => {
   copyBtn.textContent = 'Copied';
   setTimeout(() => copyBtn.textContent = 'Copy', 1200);
 });
-stopBtn.addEventListener('click', () => { if (controller) controller.abort(); });
+stopBtn.addEventListener('click', () => {
+  if (controller) { setReadStatus('stopping'); controller.abort(); }
+});
 
 /* ---------- streaming run ---------- */
 /* ---------- one read driver, two buttons ----------
@@ -12201,7 +12328,7 @@ stopBtn.addEventListener('click', () => { if (controller) controller.abort(); })
    `extract=0`, which the route already understands -- it is what a read-only
    random-test round sends. */
 async function startRead(opts) {
-  if (rtRows.length) { rtRows = []; rtPaint(); }
+  if (rtRows.length) { rtRows = []; setTestStatus('rt', 'ready'); rtPaint(); }
   // The read floor on screen, before the read that will be judged by it. The
   // change handler has almost always sent it already; this makes "the floor this
   // run used" the one the reader is looking at rather than the one that happened
@@ -12393,7 +12520,9 @@ async function startRead(opts) {
       }
     }
     paint();
+    setReadStatus('completed');
   } catch (err) {
+    setReadStatus(err.name === 'AbortError' ? 'stopped' : 'failed');
     stopTicker();
     pagebar.textContent = '';
     if (err.name === 'AbortError') {
@@ -12420,6 +12549,8 @@ async function startRead(opts) {
    looking at is a control lying about what it will do. `paintServer` owns the
    Workspace button's enabled state otherwise, so it is asked rather than set. */
 function readBusy(on) {
+  if (on) setReadStatus('running');
+  clearBtn.disabled = on;
   if (on) { runBtn.disabled = true; if (ocRun) ocRun.disabled = true; }
   else { paintServer(); paintOcrOnly(); }
   stopBtn.disabled = !on;
@@ -12498,11 +12629,14 @@ if (ocRun) {
     if (!ocCase.value) return;
     startRead({ case: ocCase.value, detail: ocDetail.value, extract: false });
   });
-  ocStop.addEventListener('click', () => { if (controller) controller.abort(); });
+  ocStop.addEventListener('click', () => {
+    if (controller) { setReadStatus('stopping'); controller.abort(); }
+  });
 }
 
 function paintFieldsOnly() {
   if (!fxRun) return;
+  clearBtn.disabled = fxBusy || !!controller;
   // Vision is deliberately NOT required, unlike the workspace's Run button:
   // pass 2 sends text and gets text back, so a model that cannot read a page can
   // still be measured on the form -- and measuring exactly that is what this
@@ -12556,6 +12690,7 @@ async function runFieldsOnly() {
   const id = fxCase.value;
   if (!id || fxBusy) return;
   fxBusy = true; paintFieldsOnly();
+  setTestStatus('fx', 'running');
   fxNote.classList.remove('err');
   fxNote.textContent = 'Extracting from ' + id + '.md …';
 
@@ -12563,6 +12698,7 @@ async function runFieldsOnly() {
   if (t.error) {
     fxNote.textContent = t.error; fxNote.classList.add('err');
     fxBusy = false; paintFieldsOnly();
+    setTestStatus('fx', 'failed');
     return;
   }
 
@@ -12595,7 +12731,8 @@ async function runFieldsOnly() {
   const r = await extractInto({ case: id, from_truth: true }) || {};
   fxBusy = false; paintFieldsOnly();
   fxNote.classList.toggle('err', !!r.error);
-  if (r.error) { fxNote.textContent = r.error; return; }
+  if (r.error) { setTestStatus('fx', 'failed'); fxNote.textContent = r.error; return; }
+  setTestStatus('fx', 'completed');
   const o = (r.field_score || {}).overall || {};
   fxNote.textContent = modeLabel(r) + ' · ' + r.seconds + 's · ' + (r.model || '')
     + (o.expected
@@ -12884,7 +13021,7 @@ function stPaintMode() {
   stEl('stLockRow').style.display = m === 'classify' ? 'none' : '';
   stEl('stStrategyField').style.display = m === 'classify' ? 'none' : '';
   // Classification writes no row, so the box is not offered there.
-  const busy = !stStop.disabled;
+  const busy = stRunning;
   stEl('stSaveLog').disabled = m === 'classify' || busy;
   stEl('stSaveLogNote').textContent = m === 'classify'
     ? '— not for classification: a glued file is no benchmark case'
@@ -12906,7 +13043,7 @@ function stPaintBatch() {
     ? extractInfo.kind === 'vllm' : readVllm;
   const m = mode.value;
   const ok = m === 'ocr' ? readVllm : m === 'full' ? (readVllm || extractVllm) : extractVllm;
-  const busy = !!document.getElementById('stStop') && !document.getElementById('stStop').disabled;
+  const busy = stRunning;
   if (!ok && !busy) stBatchOn = false;
   btn.disabled = !ok || busy;
   btn.classList.toggle('on', stBatchOn);
@@ -12929,7 +13066,7 @@ function stPaintServer() {
   const sample = document.getElementById('stSample');
   if (!btn) return;
   const vllm = server && server.kind === 'vllm';
-  const busy = !!document.getElementById('stStop') && !document.getElementById('stStop').disabled;
+  const busy = stRunning;
   const extractVllm = !!(extractInfo && extractInfo.separate && extractInfo.kind === 'vllm');
   btn.disabled = !(vllm || extractVllm) || busy;
   sample.disabled = !(vllm || extractVllm) || busy;
@@ -12956,12 +13093,6 @@ function stPaintServer() {
   stPaintBatch();
 }
 
-function stShowing(on) {
-  stWanted = on;
-  if (on) rtWanted = false;
-  paintMain();
-}
-
 function showStressView(view) {
   stressView = view;
   historyOpen = stressPaneOpen && view === 'history';
@@ -12977,7 +13108,9 @@ function showStressView(view) {
 }
 
 function stBusy(on) {
-  if (on) stStopping = false;
+  stRunning = on;
+  if (on) { stStopping = false; setTestStatus('st', 'running'); }
+  stClear.disabled = on;
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
   stEl('stSaveLog').disabled = on || stMode.value === 'classify';
@@ -13151,7 +13284,7 @@ function stAlertsHtml(alerts) {
 }
 
 function stPaint() {
-  stShowing(!!(stState || stSnapshot));
+  paintMain();
   if (!stState && !stSnapshot) {
     stOut.innerHTML = '<p class="note">Run a stress test to see its report here, or open History to review a saved run.</p>';
     return;
@@ -13467,6 +13600,7 @@ async function stStart() {
           stNote.textContent = (ev.phase === 'warmup' ? 'Warming up — ' : 'Running — ')
             + ev.done + '/' + ev.total;
         } else if (ev.event === 'done') {
+          setTestStatus('st', ev.stopped ? 'stopped' : 'completed');
           stState.report = ev.report;
           stState.monitor_samples = ev.monitor_samples;
           stState.monitor_samples_total = ev.monitor_samples_total;
@@ -13489,10 +13623,13 @@ async function stStart() {
       if (now - lastPaint > 300) { lastPaint = now; stPaint(); }
     }
   } catch (err) {
+    setTestStatus('st', 'failed');
     stNote.textContent = err.name === 'AbortError'
       ? 'Hung up on the test; the server may still be running it.' : err.message;
     stNote.classList.add('err');
   } finally {
+    if (['running', 'stopping'].includes(stEl('stStatus').dataset.state))
+      setTestStatus('st', 'failed');
     if (stState) stState.draining = 0;
     stAbort = null;
     stBusy(false);
@@ -13515,15 +13652,21 @@ if (stRun) {
   const stop = async () => {
     if (!stAbort || stStopping) return;
     stStopping = true;
+    setTestStatus('st', 'stopping');
     stStop.disabled = stStop2.disabled = true;
     stNote.textContent = 'Stopping — no new job starts, reads in flight are hung up…';
-    try { await fetch('/api/stress/stop', { method: 'POST' }); } catch { stAbort.abort(); }
+    try {
+      const res = await fetch('/api/stress/stop', { method: 'POST' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+    } catch { if (stAbort) stAbort.abort(); }
   };
   stStop.addEventListener('click', stop);
   stStop2.addEventListener('click', stop);
   stClear.addEventListener('click', () => {
     if (stAbort) return;
     stState = null; stSnapshot = null; stNote.textContent = '';
+    stNote.classList.remove('err');
+    setTestStatus('st', 'ready');
     stPaint();
   });
   stFetchBtn.addEventListener('click', async () => {
@@ -13543,7 +13686,7 @@ if (stRun) {
     } catch (err) {
       stNote.textContent = err.message;
       stNote.classList.add('err');
-      stShowing(true);
+      paintMain();
     } finally {
       stPaintServer();
       stPaint();
