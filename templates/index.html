@@ -755,7 +755,8 @@
   .lv-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
   .lv-chip { font-size: .74rem; border: 1px solid var(--border); border-radius: 999px;
              padding: 3px 10px; cursor: pointer; user-select: none;
-             background: var(--card); }
+             background: var(--card); color: var(--text); max-width: 100%;
+             white-space: normal; overflow-wrap: anywhere; text-align: left; }
   .lv-chip .n { color: var(--muted); font-size: .68rem; margin-left: 4px; }
   .lv-chip.inc { border-color: var(--accent); background: var(--accent-soft);
                  font-weight: 600; }
@@ -767,7 +768,39 @@
   table.queue th.lv-th:hover { color: var(--text); }
   table.queue th.lv-on { color: var(--text); }
   .lv-arrow { font-size: .6rem; margin-left: 4px; }
-  .lv-panel { margin-top: 4px; }
+  .lv-panel { margin-top: 4px; min-width: 0; overflow-x: auto; }
+  .log-groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 8px; margin-top: 18px; }
+  .log-groups button { white-space: normal; min-width: 0; }
+  #logTabs { flex-wrap: wrap; }
+  #logTabs[hidden], #logTabs button[hidden] { display: none; }
+  .lv-main-facets { display: grid; gap: 4px 18px;
+                   grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+  .log-filter-details { margin-top: 14px; border: 1px solid var(--border);
+                        border-radius: 10px; }
+  .log-filter-details > summary { padding: 10px 12px; cursor: pointer; font-size: .83rem; }
+  .log-filter-body { padding: 0 12px 12px; }
+  .log-filter-body .lv-bar { margin-top: 6px; }
+  .lv-filter-help { margin-top: 14px; font-size: .78rem; color: var(--muted); }
+  .lv-filter-help summary { cursor: pointer; }
+  .lv-applied { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;
+                font-size: .74rem; color: var(--muted); }
+  .lv-applied > span { border: 1px solid var(--border); border-radius: 6px;
+                       padding: 4px 8px; overflow-wrap: anywhere; max-width: 100%; }
+  .lv-applied > .active { border-color: var(--accent); background: var(--accent-soft);
+                          color: var(--text); }
+  .run-detail td { white-space: normal; background: var(--bg); }
+  .run-detail dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+                   gap: 12px 20px; margin: 8px 0 14px; }
+  .run-detail dt { color: var(--muted); font-size: .72rem; }
+  .run-detail dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: .8rem; }
+  .run-detail pre { max-height: 360px; overflow: auto; white-space: pre-wrap;
+                    overflow-wrap: anywhere; font-size: .75rem; }
+  @media (max-width: 600px) {
+    .log-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .run-detail dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #lvPipe { flex-wrap: wrap; }
+  }
   #logTabs button { flex: none; padding: 6px 12px; font-size: .8rem; }
   .lv-seg button { flex: none; padding: 5px 9px; font-size: .76rem; border-radius: 6px; }
   #lvEmpty:not(:empty) { margin-top: 12px; padding: 12px 14px; border-radius: 10px;
@@ -2495,19 +2528,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <button id="runRefresh" class="ghost-sm" style="margin-left:auto">Refresh</button>
       <a id="runDownload" class="ghost-sm" href="/api/runs.csv" download>Download CSV</a>
     </div>
-    <!-- The view every table below is compiled under. **Neither knob writes
-         anything and neither hides a row from the log**: the raw rows are stored
-         and shown whatever these say, and what moves is only what gets averaged.
-         A read that scored 20% still ran, still went to pass 2, and is still in
-         the CSV -- what a floor above 20% decides is that the field score it
-         produced describes the read rather than the extractor. -->
-    <div class="lv-bar">
-      <!-- Which passes a row is a record of. **Not a model filter, and it cannot
-           be one**: "read no page" is a property of the run, and the column that
-           would have to say so holds the EXTRACTING model on those rows. Turning
-           off every reading model to see the extraction half therefore emptied
-           the card instead — the fields-only rows were being matched on a pass
-           they never ran. This is that question asked directly. -->
+    <div class="lv-bar log-filter-toolbar" aria-label="Summary filters">
       <label class="lv-num" title="which passes a row is a record of. Some runs are
 half a pipeline on purpose — a read-only round never extracts, a fields-only round
 is fed the ground truth and never reads — and each half is worth looking at alone.">Pipeline
@@ -2518,6 +2539,16 @@ is fed the ground truth and never reads — and each half is worth looking at al
           <button data-pipe="extract" title="runs that extracted from a transcript they did not read — usually fed the ground truth">Extract only</button>
         </div>
       </label>
+      <span class="sp"></span>
+      <button id="lvReset" type="button" class="ghost-sm">Reset filters</button>
+    </div>
+    <div id="lvFilters">
+      <div id="lvMainFacets" class="lv-main-facets"></div>
+      <details id="lvAdvancedFilters" class="log-filter-details">
+        <summary>Advanced filters <span id="lvAdvancedCount" class="muted-inline"></span></summary>
+        <div class="log-filter-body">
+          <div class="lv-bar">
+
       <label class="lv-num" title="transcript accuracy under which a field score in
 the log is not averaged: pass 2 can only map the values pass 1 gave it, so a score
 over a broken transcript is the read's mistake wearing the extractor's name. This
@@ -2542,48 +2573,55 @@ failures are one document — from every table except the Errors one, where they
 highlighted. Dominated by a pairing, not itself hard.">
         <input type="checkbox" id="errDomToggle"> Drop single-source failures
       </label>
-      <button id="lvApply" class="ghost-sm">Apply</button>
-      <button id="lvReset" class="ghost-sm">Reset</button>
-      <span id="lvNote" class="muted-inline"></span>
-    </div>
-    <!-- Include/exclude per model, document and shape. Filled from the whole
-         log, never from what survived the filter, so a value just excluded is
-         still there to be put back. -->
-    <div id="lvFilters"></div>
-    <!-- Shown only when the filter matches nothing. An empty card is not
-         self-explanatory, and the fix is always "undo one of these". -->
-    <div id="lvEmpty"></div>
-
-    <div class="seg" id="logTabs" style="margin-top:14px">
-      <button data-panel="present" class="on" title="the six tables worth showing, at presentation size: which model reads best, which extracts best, what each costs, and what raising Detail buys. Shows everything unless you exclude models with the chips or the toggle.">Summary</button>
-      <button data-panel="rank">Full rank</button>
-      <button data-panel="ocr">Best reading</button>
-      <button data-panel="extract">Best extraction</button>
-      <button data-panel="case">Per document</button>
-      <button data-panel="weak" title="what each model and each document is WEAK at, rather than how good it is: the transcript score split into Thai, English and numerals, and the field score split into the individual keys. Every other tab averages over both.">Weak spots</button>
-      <button data-panel="types" title="every run grouped by the KIND of page rather than by the document or the setting: which document type is read and extracted well, and which model is best at each. Every other tab on this card averages that axis away.">Model × type</button>
-      <button data-panel="analysis">Time × Doc × Accuracy</button>
-      <button data-panel="error">Errors</button>
-      <button data-panel="trend" title="accuracy and error rate over TIME, one small chart per model or per document, over every run the filters match (not the recent-runs window). The code, config and server changed under the same model names, so this shows whether a model or a document got better or worse.">Trend</button>
-      <button data-panel="tokens" title="tokens sent (in) and generated (out) per document, per pass, per model. Compiled from the log on every refresh, so a new model appears as soon as it has run.">Tokens</button>
-      <button data-panel="raw">Raw data</button>
-    </div>
-
-    <!-- The presentation summary: six tables, one colour scale, one error
-         column each, and a bias that is on by default and named. The one view
-         on this card meant to be SHOWN rather than argued from -- which is why
-         it is the tab that opens, and why the bias toggle lives on it rather
-         than in the bar above: it changes this tab and nothing else. -->
-    <div class="lv-panel" id="panelPresent">
-      <div class="lv-bar">
         <label class="lv-check" title="drop by rule instead of by hand: models
 this log disqualifies for that pass, failures that came entirely from one pairing,
 and runs whose clock was a robust outlier in its own cell. Everything dropped is
 named below. OFF — the default — shows every model and every run the filters
 matched.">
-          <input type="checkbox" id="presBias"> Exclude weak models
+          <input type="checkbox" id="presBias"> Exclude weak models (Overview only)
         </label>
-      </div>
+      <button id="lvApply" class="ghost-sm">Apply</button>
+          </div>
+          <div id="lvExtraFacets"></div>
+          <details class="lv-filter-help">
+            <summary>How the filters work</summary>
+            <div id="lvFilterHelp"></div>
+          </details>
+          <p id="lvNote" class="note"></p>
+        </div>
+      </details>
+    </div>
+    <div id="lvApplied" class="lv-applied" role="status" aria-live="polite"></div>
+    <div id="lvEmpty"></div>
+
+    <div class="seg log-groups" id="logGroups" aria-label="Run log sections">
+      <button type="button" data-log-group="overview" class="on" aria-pressed="true">Overview</button>
+      <button type="button" data-log-group="compare" aria-pressed="false">Compare models</button>
+      <button type="button" data-log-group="history" aria-pressed="false">Run history</button>
+      <button type="button" data-log-group="advanced" aria-pressed="false">Advanced analysis</button>
+    </div>
+    <p class="note" id="logViewNote"></p>
+    <div class="seg" id="logTabs" style="margin-top:14px">
+      <button type="button" data-panel="present" data-group="overview" class="on" title="the six tables worth showing, at presentation size: which model reads best, which extracts best, what each costs, and what raising Detail buys. Shows everything unless you exclude models with the chips or the toggle.">Overview</button>
+      <button type="button" data-panel="rank" data-group="compare">Full rank</button>
+      <button type="button" data-panel="ocr" data-group="compare">Best reading</button>
+      <button type="button" data-panel="extract" data-group="compare">Best extraction</button>
+      <button type="button" data-panel="case" data-group="advanced">Per document</button>
+      <button type="button" data-panel="weak" data-group="advanced" title="what each model and each document is WEAK at, rather than how good it is: the transcript score split into Thai, English and numerals, and the field score split into the individual keys. Every other tab averages over both.">Weak spots</button>
+      <button type="button" data-panel="types" data-group="advanced" title="every run grouped by the KIND of page rather than by the document or the setting: which document type is read and extracted well, and which model is best at each. Every other tab on this card averages that axis away.">Model × type</button>
+      <button type="button" data-panel="analysis" data-group="advanced">Time × Doc × Accuracy</button>
+      <button type="button" data-panel="error" data-group="advanced">Errors</button>
+      <button type="button" data-panel="trend" data-group="advanced" title="accuracy and error rate over TIME, one small chart per model or per document, over every run the filters match (not the recent-runs window). The code, config and server changed under the same model names, so this shows whether a model or a document got better or worse.">Trend</button>
+      <button type="button" data-panel="tokens" data-group="advanced" title="tokens sent (in) and generated (out) per document, per pass, per model. Compiled from the log on every refresh, so a new model appears as soon as it has run.">Tokens</button>
+      <button type="button" data-panel="raw" data-group="history">Run history</button>
+    </div>
+
+    <!-- The presentation summary: six tables, one colour scale, one error
+         column each, and a bias that is on by default and named. The one view
+         on this card meant to be SHOWN rather than argued from -- which is why
+         it is the panel that opens. The bias toggle in Advanced filters is
+         labelled Overview only because it changes this panel and nothing else. -->
+    <div class="lv-panel" id="panelPresent">
       <div id="presentSum"></div>
     </div>
     <!-- Best and worst per model and per document, for each pass, ranked on
@@ -2677,6 +2715,7 @@ matched.">
          deleted from -- which is the one operation on this card that changes the
          file. -->
     <div class="lv-panel" id="panelRaw" hidden>
+      <p class="note" id="rawScope"></p>
       <div class="lv-bar">
         <span id="rawSel" class="muted-inline">Nothing selected.</span>
         <span class="sp"></span>
@@ -6400,6 +6439,14 @@ const lvApply = document.getElementById('lvApply');
 const lvReset = document.getElementById('lvReset');
 const lvNote = document.getElementById('lvNote');
 const lvFilters = document.getElementById('lvFilters');
+const lvMainFacets = document.getElementById('lvMainFacets');
+const lvExtraFacets = document.getElementById('lvExtraFacets');
+const lvFilterHelp = document.getElementById('lvFilterHelp');
+const lvApplied = document.getElementById('lvApplied');
+const lvAdvancedCount = document.getElementById('lvAdvancedCount');
+const logGroups = document.getElementById('logGroups');
+const logViewNote = document.getElementById('logViewNote');
+const rawScope = document.getElementById('rawScope');
 const lvPipe = document.getElementById('lvPipe');
 const lvEmpty = document.getElementById('lvEmpty');
 const errDomToggle = document.getElementById('errDomToggle');
@@ -6629,6 +6676,10 @@ function runRow(r) {
       + esc(r.status || '') + '</span>'
       + (r.error ? '<br><span style="color:var(--danger);font-size:.72rem">'
                    + esc(r.error) + '</span>' : '') + '</td>'
+    + '<td><button type="button" class="ghost-sm" data-run-detail="' + Number(r._row)
+      + '" aria-expanded="' + (rawExpanded === runIdentity(r)) + '" aria-label="'
+      + logAttr('Details for ' + (r.file || 'run') + ' at ' + (r.timestamp || 'unknown time'))
+      + '">' + (rawExpanded === runIdentity(r) ? 'Close' : 'Details') + '</button></td>'
     + '</tr>';
 }
 
@@ -9399,6 +9450,9 @@ let logData = null;
 let logView = {window: null, min_read_pct: null};
 let logFilters = {include: {}, exclude: {}};
 let rawPicked = new Set();
+let rawExpanded = null;
+let currentLogGroup = 'overview';
+const lastLogPanel = {overview: 'present', compare: 'rank', history: 'raw', advanced: 'case'};
 let logBusy = false;
 
 /* The axes worth filtering on, in the user's own terms: model, sol, mode. The
@@ -9515,35 +9569,42 @@ function lvActive() {
                           || (logFilters.exclude[f.field] || []).length);
 }
 
+function logAttr(value) {
+  return esc(String(value)).replace(/"/g, '&quot;');
+}
+
 function paintFilters() {
   const facets = (logData && logData.facets) || {};
+  const primary = new Set(['model', 'extract_model', 'extract_mode']);
   const blocks = LV_FIELDS.map(f => {
     const values = facets[f.field] || [];
-    if (!values.length) return '';
-    return '<div class="lv-field"><b title="' + esc(f.hint) + '">' + esc(f.label)
+    if (!values.length) return null;
+    return {field: f.field, html: '<div class="lv-field"><b title="' + logAttr(f.hint) + '">' + esc(f.label)
       + '</b><div class="lv-chips">'
       + values.map(v => {
           const at = lvState(f.field, v.value);
-          return '<span class="lv-chip' + (at ? ' ' + at : '')
-            + '" data-field="' + esc(f.field) + '" data-value="' + esc(v.value)
-            + '" title="' + esc(v.value) + ' — ' + v.runs + ' row(s) in the log. '
+          return '<button type="button" class="lv-chip' + (at ? ' ' + at : '')
+            + '" aria-label="' + logAttr(f.label + ': ' + lvChipLabel(f.field, v.value)
+              + (at === 'inc' ? ' (included)' : at === 'exc' ? ' (excluded)' : ' (any)'))
+            + '" data-field="' + logAttr(f.field) + '" data-value="' + logAttr(v.value)
+            + '" title="' + logAttr(v.value) + ' — ' + v.runs + ' row(s) in the log. '
             + (at === 'inc' ? 'Kept. Click to drop it.'
                : at === 'exc' ? 'Dropped. Click to clear.'
                : 'Click to keep only this, again to drop it.') + '">'
             + esc(lvChipLabel(f.field, v.value)) + '<span class="n">' + v.runs
-            + '</span></span>';
+            + '</span></button>';
         }).join('')
-      + '</div></div>';
-  }).filter(Boolean).join('');
-  if (!blocks) { lvFilters.innerHTML = ''; return; }
-  lvFilters.innerHTML = blocks
-    + '<p class="note" style="margin-top:8px">Click a chip to keep <b>only</b> '
+      + '</div></div>'};
+  }).filter(Boolean);
+  lvMainFacets.innerHTML = blocks.filter(b => primary.has(b.field)).map(b => b.html).join('');
+  lvExtraFacets.innerHTML = blocks.filter(b => !primary.has(b.field)).map(b => b.html).join('');
+  lvFilterHelp.innerHTML = '<p class="note" style="margin-top:8px">Click a chip to keep <b>only</b> '
     + 'that value, again to <b>drop</b> it, again to clear. Chips are counted '
     + 'over the whole log, never over what survived the filter, so a value you '
     + 'have just dropped is still here to put back. <b>A dropped row is absent '
     + 'from every table</b> — not hidden but uncounted: it is out of the run '
     + 'counts, the failure rates and the window, exactly as if it had not been '
-    + 'run. The Raw data panel is never filtered, because a row nobody can see '
+    + 'run. The Run history panel is never filtered, because a row nobody can see '
     + 'is a row nobody can delete. <b>Reading model is blank on a run that read '
     + 'no page</b> — a fields-only run carries the model that extracted, not one '
     + 'that read — so those runs are not in that picker at all. To see one half '
@@ -9664,13 +9725,14 @@ function lvInForce() {
 }
 
 function paintEmpty(t) {
+  lvEmpty.hidden = currentLogGroup === 'history';
   if (t.matched !== 0) { lvEmpty.innerHTML = ''; return; }
   const forced = lvInForce();
-  lvEmpty.innerHTML = '<b>No runs match.</b> Every table below is empty because '
+  lvEmpty.innerHTML = '<b>No runs match the summary filters.</b> The summary tables are empty because '
     + 'nothing in the log got past the filter'
     + (forced.length ? ' — in force: ' + forced.join(' &middot; ') : '')
-    + '. The log itself is untouched (' + t.logged + ' rows) and the <b>Raw data</b> '
-    + 'panel still shows it. Clear a chip above, or press <b>Reset</b>.';
+    + '. The log itself is untouched (' + t.logged + ' rows) and the <b>Run history</b> '
+    + 'panel still shows it. Clear a chip above, or press <b>Reset filters</b>.';
 }
 
 function paintLogControls() {
@@ -9716,6 +9778,22 @@ function paintLogControls() {
   lvNote.innerHTML = bits.join(' &middot; ')
     + (moved ? ' &middot; <b>not the server default</b> (' + d.window + ' runs, '
                + Number(d.min_read_pct).toFixed(0) + '%)' : '');
+  const applied = lvInForce();
+  if (t.min_read_pct) applied.push('Read floor: <b>' + esc(String(t.min_read_pct)) + '%</b>');
+  if (t.window) applied.push('Runs averaged: <b>' + esc(String(t.window)) + '</b> per group');
+  if (errDropSingle) applied.push('Drop single-source failures');
+  if (presBiased) applied.push('Exclude weak models <b>(Overview only)</b>');
+  lvApplied.innerHTML = '<span>' + (t.matched ?? 0) + ' / ' + (t.logged ?? 0)
+    + ' rows match summary filters</span>'
+    + (applied.length ? applied.map(x => '<span class="active">' + x + '</span>').join('')
+       : '<span>No summary filters · all runs averaged</span>');
+  const primary = new Set(['model', 'extract_model', 'extract_mode']);
+  const extraCount = LV_FIELDS.filter(f => !primary.has(f.field)).reduce((n, f) => n
+    + (logFilters.include[f.field] || []).length + (logFilters.exclude[f.field] || []).length, 0)
+    + (t.min_read_pct ? 1 : 0) + (t.window ? 1 : 0)
+    + (errDropSingle ? 1 : 0) + (presBiased ? 1 : 0);
+  lvAdvancedCount.textContent = extraCount ? '· ' + extraCount + ' active' : '';
+  paintLogScope();
 }
 
 /* ---------- raw rows ---------- */
@@ -9724,9 +9802,8 @@ function lvNum(v) {
   const n = Number(v);
   return isNaN(n) ? null : n;
 }
-/* Header labels and sortable values for the log itself. The CELLS come from
-   `runRow`, which is unchanged -- this names what each column is worth so the
-   sort and the display cannot describe different things. */
+/* Header labels and sortable values for the log itself. Values correspond to
+   runRow; the selection and details controls are deliberately not sortable. */
 const RAW_COLS = [
   {key: 'pick', label: '', sortable: false, cls: 'pick'},
   {key: 'when', label: 'When', n: true, value: r => r.timestamp || ''},
@@ -9742,15 +9819,39 @@ const RAW_COLS = [
    title: 'grounded: found on the page. fields: correct against the field ground '
         + 'truth, where there is one',
    value: r => lvNum(r.grounded_pct)},
-  {key: 'status', label: 'Status', value: r => r.status || ''}
+  {key: 'status', label: 'Status', value: r => r.status || ''},
+  {key: 'details', label: 'Details', sortable: false}
 ];
 
+function runIdentity(r) {
+  return JSON.stringify([r._row, r.timestamp, r.file]);
+}
+
+function runDetails(r, jsonOpen) {
+  const fields = [
+    ['Timestamp', r.timestamp], ['Document', r.file], ['Run type', r.run_type],
+    ['Logged model', r.model], ['Extraction model', r.extract_model],
+    ['Extraction shape', r.extract_mode], ['Detail', r.detail], ['Status', r.status],
+    ['Reading time (s)', r.seconds], ['Extraction time (s)', r.extract_seconds],
+    ['Reading output tokens', r.tokens], ['Extraction output tokens', r.extract_tokens]
+  ].filter(([, value]) => value !== undefined && value !== null && value !== '');
+  return '<tr class="run-detail"><td colspan="' + RAW_COLS.length + '">'
+    + '<b>Saved run details</b><p class="note">Only values stored in this log row are shown. '
+    + 'Full Stress test settings and reports are in Stress test → History.</p><dl>'
+    + fields.map(([label, value]) => '<div><dt>' + esc(label) + '</dt><dd>'
+      + esc(String(value)) + '</dd></div>').join('') + '</dl>'
+    + '<details' + (jsonOpen ? ' open' : '') + '><summary>All saved values (JSON)</summary><pre>'
+    + esc(JSON.stringify(r, null, 2)) + '</pre></details></td></tr>';
+}
+
 function paintRunRows() {
+  const jsonOpen = runBody.querySelector('.run-detail details')?.open || false;
   const rows = (logData && logData.runs) || [];
   runBody.innerHTML = rows.length
     ? '<table class="queue">' + lvHead('raw', RAW_COLS)
-      + lvSorted('raw', rows, RAW_COLS).map(runRow).join('') + '</table>'
-    : '';
+      + lvSorted('raw', rows, RAW_COLS).map(r => runRow(r)
+        + (rawExpanded === runIdentity(r) ? runDetails(r, jsonOpen) : '')).join('') + '</table>'
+    : '<p class="note">No runs have been logged yet.</p>';
   const n = rawPicked.size;
   rawSel.textContent = n ? n + ' row(s) selected — deleting archives them to '
                            + 'logs/runs.deleted.csv'
@@ -9758,6 +9859,16 @@ function paintRunRows() {
   rawDelete.disabled = !n || logBusy;
   rawNone.disabled = !n || logBusy;
 }
+
+runBody.addEventListener('click', ev => {
+  const button = ev.target.closest ? ev.target.closest('button[data-run-detail]') : null;
+  if (!button) return;
+  const row = ((logData && logData.runs) || []).find(r => r._row === Number(button.dataset.runDetail));
+  if (!row) return;
+  rawExpanded = rawExpanded === runIdentity(row) ? null : runIdentity(row);
+  paintRunRows();
+  runBody.querySelector('button[data-run-detail="' + Number(row._row) + '"]')?.focus({preventScroll: true});
+});
 
 runBody.addEventListener('change', ev => {
   const box = ev.target.closest ? ev.target.closest('input[data-pick]') : null;
@@ -9818,17 +9929,52 @@ rawDelete.addEventListener('click', async () => {
    hit, where a fourth tab left every pane hidden with the button highlighted and
    no error anywhere. A tab and its pane are one thing; naming them in two places
    means one is eventually forgotten. */
-logTabs.addEventListener('click', ev => {
-  const btn = ev.target.closest ? ev.target.closest('button[data-panel]') : null;
-  if (!btn) return;
-  logTabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
-  const want = btn.dataset.panel;
+function paintLogScope() {
+  const t = (logData && logData.totals) || {};
+  const rows = (logData && logData.runs) || [];
+  const history = currentLogGroup === 'history';
+  logViewNote.textContent = history
+    ? 'Individual logged runs. Summary filters above do not apply here.'
+    : 'Aggregated results using the summary filters above. Open Run history to inspect individual runs.';
+  rawScope.textContent = 'Showing the latest ' + rows.length + ' of ' + (t.logged ?? rows.length)
+    + ' logged rows (up to 50). Summary filters do not hide these rows. Download CSV for the complete log.';
+  lvEmpty.hidden = history;
+  runStats.hidden = history;
+}
+
+function showLogPanel(want) {
+  const selected = logTabs.querySelector('button[data-panel="' + want + '"]');
+  if (!selected) return;
+  currentLogGroup = selected.dataset.group;
+  lastLogPanel[currentLogGroup] = want;
+  let count = 0;
   logTabs.querySelectorAll('button[data-panel]').forEach(b => {
     const name = b.dataset.panel;
+    const active = name === want;
+    b.hidden = b.dataset.group !== currentLogGroup;
+    if (!b.hidden) count++;
+    b.classList.toggle('on', active);
+    b.setAttribute('aria-pressed', String(active));
     const el = document.getElementById('panel' + name[0].toUpperCase() + name.slice(1));
-    if (el) el.hidden = name !== want;
+    if (el) el.hidden = !active;
   });
+  logTabs.hidden = count < 2;
+  logGroups.querySelectorAll('button[data-log-group]').forEach(b => {
+    const active = b.dataset.logGroup === currentLogGroup;
+    b.classList.toggle('on', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
+  paintLogScope();
+}
+logGroups.addEventListener('click', ev => {
+  const button = ev.target.closest ? ev.target.closest('button[data-log-group]') : null;
+  if (button) showLogPanel(lastLogPanel[button.dataset.logGroup]);
 });
+logTabs.addEventListener('click', ev => {
+  const button = ev.target.closest ? ev.target.closest('button[data-panel]') : null;
+  if (button) showLogPanel(button.dataset.panel);
+});
+showLogPanel(lastLogPanel[currentLogGroup]);
 
 lvFilters.addEventListener('click', ev => {
   const chip = ev.target.closest ? ev.target.closest('.lv-chip') : null;
@@ -10472,7 +10618,7 @@ function tmPass(key, pass, labels, unit, noun, title, hint, t) {
           : forced.length
           ? '<p class="note"><b>Nothing left to place against a document type.</b> '
             + 'In force: ' + forced.join(' &middot; ')
-            + '. Clear a chip above, or press <b>Reset</b>.</p>'
+            + '. Clear a chip above, or press <b>Reset filters</b>.</p>'
           : '<p class="note">No run in view could be placed against a document '
             + 'type. The type comes from the benchmark manifest for a fixture and '
             + 'from the run&rsquo;s own classification otherwise, so an upload '

@@ -1923,13 +1923,35 @@ Pick **Light** for projecting or screenshotting — it is what the Summary panel
 shown in. Light is a soft grey ground with an off-white card rather than white-on-white, so it
 does not glare on a projector.
 
-### Reading the card: ten panels, sortable, filterable
+### Reading the card: four groups, twelve panels
 
-The card is twelve panels, and only the last of them is the log:
+The Run log stays at the bottom of the page. Its twelve existing panels are grouped as:
+
+| Group | Panels |
+|---|---|
+| **Overview** | the presentation summary (opens by default) |
+| **Compare models** | Full rank, Best reading, Best extraction |
+| **Run history** | the latest 50 unfiltered log rows, with per-row **Details** and saved JSON |
+| **Advanced analysis** | Per document, Weak spots, Model × type, Time × Doc × Accuracy, Errors, Trend, Tokens |
+
+Switching groups remembers the last panel used in each group. Refreshing results preserves
+that selection. Full Stress test settings and reports remain under **Stress test → History**.
+
+All existing filters remain available. Pipeline, Reading model, Extraction model and
+Extraction shape are shown directly. **Advanced filters** contains Document, Reading engine,
+quantisation, engine versions, Detail, Hardware, Start, Run kind, Outcome, Read floor,
+Runs averaged, Drop single-source failures, and Exclude weak models (Overview only).
+Active filters remain visible as badges when Advanced filters is closed; **Reset filters**
+resets the whole summary view. Chip behaviour is unchanged: click to include, again to
+exclude, again to clear. Run history explicitly ignores the summary filters, and **Download
+CSV** exports the complete log. Details show values actually saved in each row; they do not
+reconstruct settings that were not logged.
+
+The twelve panels retain their calculations:
 
 | Panel | |
 |---|---|
-| **Summary** | the six tables worth showing, at presentation size, with two banner cards above them. Opens by default |
+| **Overview** | the six tables worth showing, at presentation size, with two banner cards above them. Opens by default |
 | **Full rank** | best and worst per model and per document, for each pass. The chips above it are each document's best score |
 | **Best reading** | pass 1 per setting — which model, backend, Detail and profile to read a page with |
 | **Best extraction** | pass 2 per setting — which model and shape to extract fields with |
@@ -1940,7 +1962,7 @@ The card is twelve panels, and only the last of them is the log:
 | **Errors** | what is failing, ranked on the failures rather than folded into an accuracy |
 | **Trend** | accuracy and error rate over **time**, one small chart per model or per document, for either pass, by day, by week, or by **run number** (every N consecutive runs of that model or document — runs 1–10, 11–20, …; N is editable, default 10). Over every run the filters match — not the recent-runs window — so a model whose results moved as the code, config or server changed shows it |
 | **Tokens** | tokens **in** (prompt, page image included) and **out** (generated) per document, for reading (per Detail) and extraction (per shape, every pass-2 request of the file, classify included), **by model** (each document counted once) or **by document**. Compiled from the log on every refresh, so a model you run shows up as soon as its run is logged. Extraction input exists only for runs from 2026-10-15 on |
-| **Raw data** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
+| **Run history** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
 
 **Every column sorts**, including the one each table is ranked by. Click a header to sort
 descending, again for ascending. The highlighted row stays the best by the table's own
@@ -1948,7 +1970,7 @@ ranking however you sort it, so re-ordering never re-labels the winner. Rows wit
 sort — *not scored*, *no complete run* — go last in both directions: no score is not a low
 score.
 
-#### The Summary panel
+#### The Overview panel
 
 Built for showing — projected, or read from across a room — so everything on it is a size up
 from the rest of the card. Two banner cards, then six numbered tables.
@@ -2062,7 +2084,7 @@ means and the window, exactly as if it had not been run — which is the only re
 which the question above has an answer. The chip counts are taken over the **whole** log
 rather than over what survived, so a value you have just dropped is still there to put back.
 
-**The Raw data panel is never filtered.** It is the log, and a row nobody can see is a row
+**The Run history panel is never filtered.** It is the log, and a row nobody can see is a row
 nobody can delete. If a filter matches nothing, a banner says so and names what is in force —
 the tables go empty, the log does not.
 
@@ -2117,7 +2139,7 @@ changed, so the tables always report the rule you are looking at.
 
 #### Deleting a run
 
-Tick rows in **Raw data** and press **Delete selected**. That is the one control on this card
+Tick rows in **Run history** and press **Delete selected**. That is the one control on this card
 that changes the file: the rows leave `runs.csv` and therefore every table, every mean and
 every count.
 
