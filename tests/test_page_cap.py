@@ -208,7 +208,7 @@ class RunLogTests(unittest.TestCase):
                           "model_quant", "inference_engine",
                           "extract_quant", "extract_inference_engine",
                           "in_tokens", "out_tokens", "extract_in_tokens", "extract_out_tokens",
-                          "stress_run", "stress_concurrency"])
+                          "stress_run", "stress_concurrency", "extract_extras"])
 
     def test_a_failed_status_still_wins(self):
         self.assertTrue(runlog._incomplete(

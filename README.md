@@ -2755,6 +2755,14 @@ not part of what makes a setting: a setting whose runs were made on more than on
 or engine version lists each, most recent first (`Q8_0 / Q4_K_M`). Where no run says, the cell
 shows the backend alone.
 
+The Summary extraction tables also separate **Extra fields on** and **Extra fields off**.
+The **Single against agentic** table has one row per model, shape, and Extra fields setting,
+with separate accuracy, time, error rate, and run counts. The best-extractor card names the
+setting too. Time-outlier checks and recent-run windows keep the two settings separate.
+New CSV rows record the switch in `extract_extras` (`1` on, `0` off). Older rows without
+this column are treated as **on**, matching how those runs were made; zero extra values
+found does not mean extraction was switched off.
+
 All four are also filter chips on the run-log card (**Reading quant**, **Reading engine
 version**, **Extraction quant**, **Extraction engine version**), and the same field names work
 in `POST /api/runs/query`. The reading pair is blank on a fields-only run and the extraction
