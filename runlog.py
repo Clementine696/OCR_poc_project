@@ -617,6 +617,9 @@ COLUMNS = [
     # how the `stress` filter tells them apart.
     "stress_run",
     "stress_concurrency",
+    # Whether pass 2 requested other_fields: 1 on, 0 off. Older rows have no
+    # marker; the user confirmed those runs used Extra fields on.
+    "extract_extras",
 ]
 
 # servertime.FIELDS, spelled out: this module cannot import servertime (it
@@ -845,7 +848,7 @@ def _pct(value):
 # not a measurement of either.
 FIX_COLUMNS = ("fix_moved", "fix_strays", "fix_stray_removals", "fix_removals",
                "fix_values_removed", "fix_cells_read", "fix_cells_agent", "fix_cells")
-EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode",
+EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode", "extract_extras",
                    "extract_steps", "other_fields",
                    "grounded_pct", "ungrounded", "fields_missing",
                    "p1_present", "p1_absent", "p2_present", "p2_absent",
@@ -890,6 +893,8 @@ def _extract_cells(summary: dict) -> dict:
     """
     extracted = (summary or {}).get("extracted") or {}
     cells = _extract_cells_of(summary, extracted)
+    cells["extract_extras"] = (int(extracted["extras"])
+                               if isinstance(extracted.get("extras"), bool) else "")
     if extracted.get("extras") is False:
         # `other_fields` was not asked for, so its count is blank rather than
         # 0: nobody looked, which is not the same as finding none.
@@ -5034,6 +5039,16 @@ def _pres_weak(grouped: list) -> dict:
     return out
 
 
+def extract_extras_of(row: dict) -> bool:
+    """Extra fields requested, with legacy runs treated as on per the user.
+
+    Counts cannot answer this: an enabled run may legitimately find zero.
+    Only the stored switch distinguishes off from on.
+    """
+    return str(row.get("extract_extras", "")).strip().lower() not in (
+        "0", "false", "off")
+
+
 def _pres_points(rows: list, pass_: str) -> list:
     """One point per run of `pass_`, with the number, the clock and the knobs.
 
@@ -5093,6 +5108,7 @@ def _pres_points(rows: list, pass_: str) -> list:
             failed = _extract_incomplete(row)
             points.append({
                 "model": model, "case": case, "detail": "", "mode": mode,
+                "extras": extract_extras_of(row),
                 "failed": failed,
                 "quant": row.get("extract_quant") or "",
                 "engine": row.get("extract_inference_engine") or "",
@@ -5240,21 +5256,26 @@ def presentation(rows: list = None, bias: bool = True,
     blocks = {}
     for pass_ in ("ocr", "extract"):
         points = _pres_points(rows, pass_)
+        model_key = ((lambda p: p["model"]) if pass_ == "ocr" else
+                     (lambda p: (p["model"], p["extras"])))
         if bias:
             # Grouped once unbiased to decide, then again below over what is
             # left. The first grouping is thrown away -- it exists only so the
             # rule sees the same figures the reader would have.
-            weak[pass_] = _pres_weak(_pres_group(points, lambda p: p["model"]))
+            weak[pass_] = _pres_weak(_pres_group(points, model_key))
+            if pass_ == "extract":
+                for (model, extras), entry in weak[pass_].items():
+                    entry.update(model=model, extras=extras)
         if bias and weak[pass_]:
             # 2. Models the log disqualifies for THIS pass. Per pass, because
             # this project has a model that reads best and extracts second
             # worst, and one with no vision at all that ranks near the top of
             # the form -- a single list of "good models" would be wrong about
             # both.
-            kept = [p for p in points if p["model"] not in weak[pass_]]
+            kept = [p for p in points if model_key(p) not in weak[pass_]]
             steps.append({"rule": "weak_model", "pass": pass_,
                           "dropped": len(points) - len(kept),
-                          "models": sorted(weak[pass_])})
+                          "models": sorted({e["model"] for e in weak[pass_].values()})})
             points = kept
         if bias:
             # 3. Time outliers, per cell and robustly -- a cold model load or a
@@ -5266,7 +5287,7 @@ def presentation(rows: list = None, bias: bool = True,
             # was in question.
             cell = ((lambda p: (p["model"], p["case"], p["detail"]))
                     if pass_ == "ocr" else
-                    (lambda p: (p["model"], p["case"], p["mode"])))
+                    (lambda p: (p["model"], p["case"], p["mode"], p["extras"])))
             marked = [dict(p) for p in points]
             flagged = _flag_time_outliers(marked, cell=cell)
             if flagged:
@@ -5286,10 +5307,11 @@ def presentation(rows: list = None, bias: bool = True,
         return out
 
     models = ranked(ocr, lambda p: p["model"])
-    ex_models = ranked(ext, lambda p: p["model"])
-    shapes = [{**e, "model": e["key"][0], "mode": e["key"][1]}
-              for e in ranked(ext, lambda p: (p["model"], p["mode"]))]
-    for entry in models + ex_models:
+    ex_models = [{**e, "model": e["key"][0], "extras": e["key"][1]}
+                 for e in ranked(ext, lambda p: (p["model"], p["extras"]))]
+    shapes = [{**e, "model": e["key"][0], "mode": e["key"][1], "extras": e["key"][2]}
+              for e in ranked(ext, lambda p: (p["model"], p["mode"], p["extras"]))]
+    for entry in models:
         entry["model"] = entry["key"]
     for entry in models + ex_models + shapes:
         entry["cost"] = _pres_cost(entry)

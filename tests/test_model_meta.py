@@ -128,7 +128,8 @@ class RowTests(unittest.TestCase):
         self.assertEqual(cells["extract_inference_engine"], "")
 
     def test_the_columns_are_appended_and_re_extracted(self):
-        tail = runlog.COLUMNS[-10:-6]  # four token and two stress columns came after these
+        start = runlog.COLUMNS.index("model_quant")
+        tail = runlog.COLUMNS[start:start + 4]
         self.assertEqual(tail, ["model_quant", "inference_engine",
                                 "extract_quant", "extract_inference_engine"])
         self.assertIn("extract_quant", runlog.EXTRACT_COLUMNS)
