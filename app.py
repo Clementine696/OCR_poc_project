@@ -52,6 +52,7 @@ import stress
 import tables
 import validate
 import verify
+import vllmbatch
 import workspace
 
 # Prompt text and tunables live outside this file so either can be read, edited
@@ -773,71 +774,86 @@ def stream_page(image: Image.Image, stats: dict = None,
     first_at = None
     timings, usage, pieces = {}, {}, 0
     collected, looped = [], False
-    with backends.http_post(
-        chat_url(), status,
-        json=payload,
-        stream=True,
-        # No read timeout: this is the streaming path, where the gap between
-        # tokens is the only thing a timeout could measure and a slow first
-        # token is normal. The client disconnecting is what ends it.
-        timeout=(GEN_CONNECT_TIMEOUT, None),
-    ) as res:
-        if cancel is not None:
-            cancel.attach(res)
-        if res.status_code != 200:
-            detail = res.text[:300].strip()
-            if res.status_code == 500 and status["kind"] == "llama.cpp":
+    # "Batch requests" on a stress run: this page is one conversation of a
+    # vLLM /batch request (vllmbatch.py). Nothing streams, so there is no first
+    # token to time and nothing for the loop guard to cut -- the finished text
+    # is tested below instead.
+    batcher = _batcher_for(chat_url(), status)
+    if batcher is not None:
+        body = _await_batched(batcher, chat_url(), payload, cancel)
+        usage = body.get("usage") or {}
+        piece = (((body.get("choices") or [{}])[0].get("message") or {})
+                 .get("content") or "")
+        if piece:
+            pieces = 1
+            collected.append(piece)
+            yield piece
+    else:
+        with backends.http_post(
+            chat_url(), status,
+            json=payload,
+            stream=True,
+            # No read timeout: this is the streaming path, where the gap between
+            # tokens is the only thing a timeout could measure and a slow first
+            # token is normal. The client disconnecting is what ends it.
+            timeout=(GEN_CONNECT_TIMEOUT, None),
+        ) as res:
+            if cancel is not None:
+                cancel.attach(res)
+            if res.status_code != 200:
+                detail = res.text[:300].strip()
+                if res.status_code == 500 and status["kind"] == "llama.cpp":
+                    raise ValueError(
+                        "llama-server rejected the image (HTTP 500). This normally "
+                        "means vision is not enabled -- restart it with "
+                        f"--mmproj <mmproj-...gguf>. Server said: {detail}"
+                    )
+                if res.status_code in (400, 404) and status["kind"] == "ollama":
+                    raise ValueError(
+                        f"Ollama rejected the request for model '{status['model']}' "
+                        f"(HTTP {res.status_code}). Check the model is pulled on "
+                        f"{status['url']} and can read images. Server said: {detail}"
+                    )
                 raise ValueError(
-                    "llama-server rejected the image (HTTP 500). This normally "
-                    "means vision is not enabled -- restart it with "
-                    f"--mmproj <mmproj-...gguf>. Server said: {detail}"
-                )
-            if res.status_code in (400, 404) and status["kind"] == "ollama":
-                raise ValueError(
-                    f"Ollama rejected the request for model '{status['model']}' "
-                    f"(HTTP {res.status_code}). Check the model is pulled on "
-                    f"{status['url']} and can read images. Server said: {detail}"
-                )
-            raise ValueError(
-                f"{status['kind'] or 'model server'} HTTP {res.status_code}: {detail}")
+                    f"{status['kind'] or 'model server'} HTTP {res.status_code}: {detail}")
 
-        # Decode the SSE body as UTF-8 explicitly. requests' decode_unicode=True
-        # falls back to latin-1 for text/event-stream (no charset in the header),
-        # which turns every Thai character into mojibake.
-        for raw in res.iter_lines():
-            if not raw:
-                continue
-            line = raw.decode("utf-8", errors="replace")
-            if not line.startswith("data:"):
-                continue
-            chunk = line[5:].strip()
-            if chunk == "[DONE]":
-                # Read on to the end of the stream rather than break: a
-                # response closed with its last chunk unread closes its
-                # socket, so the keep-alive pool could never reuse it.
-                continue
-            try:
-                obj = json.loads(chunk)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("timings"):
-                timings = obj["timings"]
-            if obj.get("usage"):
-                usage = obj["usage"]
-            # The usage-only final chunk carries no choices at all.
-            choices = obj.get("choices") or [{}]
-            piece = (choices[0].get("delta") or {}).get("content")
-            if piece:
-                if first_at is None:
-                    first_at = time.perf_counter()
-                pieces += 1
-                collected.append(piece)
-                yield piece
-                # Check periodically, not per token -- the scan is O(tail^2).
-                if (guard and pieces % LOOP_CHECK_EVERY == 0
-                        and looks_repetitive("".join(collected))):
-                    looped = True
-                    break
+            # Decode the SSE body as UTF-8 explicitly. requests' decode_unicode=True
+            # falls back to latin-1 for text/event-stream (no charset in the header),
+            # which turns every Thai character into mojibake.
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8", errors="replace")
+                if not line.startswith("data:"):
+                    continue
+                chunk = line[5:].strip()
+                if chunk == "[DONE]":
+                    # Read on to the end of the stream rather than break: a
+                    # response closed with its last chunk unread closes its
+                    # socket, so the keep-alive pool could never reuse it.
+                    continue
+                try:
+                    obj = json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("timings"):
+                    timings = obj["timings"]
+                if obj.get("usage"):
+                    usage = obj["usage"]
+                # The usage-only final chunk carries no choices at all.
+                choices = obj.get("choices") or [{}]
+                piece = (choices[0].get("delta") or {}).get("content")
+                if piece:
+                    if first_at is None:
+                        first_at = time.perf_counter()
+                    pieces += 1
+                    collected.append(piece)
+                    yield piece
+                    # Check periodically, not per token -- the scan is O(tail^2).
+                    if (guard and pieces % LOOP_CHECK_EVERY == 0
+                            and looks_repetitive("".join(collected))):
+                        looped = True
+                        break
 
     finished = time.perf_counter()
     # With the guard down nothing interrupted the stream, so the tail is tested
@@ -845,7 +861,7 @@ def stream_page(image: Image.Image, stats: dict = None,
     # not the detection: a read that cycled the whole way to the token cap is a
     # looped read and has to say so, or it would log `ok` and be averaged as a
     # transcript.
-    if not guard and looks_repetitive("".join(collected)):
+    if (not guard or batcher is not None) and looks_repetitive("".join(collected)):
         looped = True
 
     clock.timings(timings)
@@ -871,7 +887,8 @@ def stream_page(image: Image.Image, stats: dict = None,
             # is llama.cpp's own prompt_ms where it sends one, which EXCLUDES the
             # time the request waited in the server's queue -- exactly the part a
             # stress test with more requests than slots is measuring.
-            ttft_seconds=round((first_at or finished) - started, 3),
+            ttft_seconds=(None if batcher is not None
+                          else round((first_at or finished) - started, 3)),
             new_tokens=new_tokens,
             truncated=new_tokens >= MAX_NEW_TOKENS,
             looped=looped,
@@ -922,6 +939,9 @@ def _timed_post(url: str, payload: dict, status: dict):
 
 def _post_once(url: str, payload: dict, status: dict):
     with _watched() as progress:
+        batcher = _batcher_for(url, status)
+        if batcher is not None:
+            return _batched_post(batcher, url, payload, status)
         if _guards_extraction(url, payload, status):
             return _streamed_post(url, payload, status, progress)
         return _plain_post(url, payload, status)
@@ -940,6 +960,67 @@ def _plain_post(url: str, payload: dict, status: dict):
             pass
         clock.finish()
     return res
+
+
+# The stress test's batcher, while a run with "Batch requests" on holds the
+# sweep guard; None otherwise. Process-wide like the prompt-cache bypass, and for
+# the same reason: the guard means the stress run is the only thing sending.
+# See vllmbatch.py.
+_batcher = None
+
+
+def _batcher_for(url: str, status: dict):
+    """The batcher to send this request through, or None to send it alone.
+
+    vLLM only (`serves_metrics`, the server's own statement), and only the
+    chat endpoint, the one shape vLLM's /batch route takes.
+    """
+    batcher = _batcher
+    if (batcher is None or not backends.serves_metrics(status)
+            or not vllmbatch.batchable(url)):
+        return None
+    return batcher
+
+
+def _send_batch(url: str, body: dict) -> dict:
+    """`send` for a `Batcher` -- one POST to vLLM's batch route, parsed. Only a
+    vLLM server is ever batched, so the request goes on the pooled connection."""
+    res = backends.http_post(url, {"kind": "vllm"}, json=body, timeout=GEN_TIMEOUT)
+    if res.status_code == 404:
+        raise vllmbatch.BatchError(
+            f"{url} answered HTTP 404 -- this vLLM build has no batch route. "
+            "Turn off Batch requests, or update vLLM.", 404)
+    if res.status_code != 200:
+        raise vllmbatch.BatchError(
+            f"vllm batch HTTP {res.status_code}: {res.text[:300].strip()}",
+            res.status_code)
+    try:
+        return res.json()
+    except ValueError:
+        raise vllmbatch.BatchError("the batch reply was not JSON", 502)
+
+
+def _await_batched(batcher, url: str, payload: dict, cancel=None) -> dict:
+    """This request's own reply out of a batch. Raises `BatchError` on failure,
+    and on Stop -- `cancel` hangs the waiter up like a stream."""
+    ticket = batcher.submit(url, payload)
+    if cancel is not None:
+        cancel.attach(ticket)
+    return ticket.result()
+
+
+def _batched_post(batcher, url: str, payload: dict, status: dict):
+    """`_plain_post`, through the batch: the same reply shape, the same tally."""
+    clock = servertime.Clock(status)
+    try:
+        body = _await_batched(batcher, url, payload)
+    except vllmbatch.BatchError as err:
+        _prefilled()
+        return _Reply(err.status_code or 502, text=str(err))
+    _prefilled()
+    clock.body(body)
+    clock.finish()
+    return _Reply(200, body)
 
 
 _OVERFLOW = re.compile(r"maximum context length|max_tokens|max_completion_tokens"
@@ -6687,14 +6768,24 @@ def _stress_config(body: dict) -> dict:
     if not cases:
         raise ValueError("No benchmark case has the ground truth this mode needs.")
 
+    used = []
     if mode in ("ocr", "full"):
         info = llama_status()
         if not info["available"]:
             raise ValueError(info["reason"])
+        used.append(info)
     if mode in ("extract", "classify", "full"):
         info = backends.extract_status()
         if not info["text_available"]:
             raise ValueError(info["text_reason"])
+        used.append(info)
+    # vLLM's /batch route (vllmbatch.py). A server that is not vLLM is sent
+    # its requests one by one as always; a run where none of them is, is refused.
+    vllm_batch = bool(body.get("vllm_batch"))
+    if vllm_batch and not any(backends.serves_metrics(info) for info in used):
+        raise ValueError("Batch requests need a vLLM server; this mode uses "
+                         + " and ".join(f"{i.get('kind') or 'no server'} at {i.get('url')}"
+                                        for i in used) + ".")
 
     return {
         "mode": mode,
@@ -6707,6 +6798,7 @@ def _stress_config(body: dict) -> dict:
         "metrics_every": number("metrics_every", 5, 1, 600),
         "metrics": bool(body.get("metrics")),
         "no_cache": bool(body.get("no_cache")),
+        "vllm_batch": vllm_batch,
         # Classification has no row shape: a glued pack is no benchmark case and
         # its score is a grouping, so nothing is written for it.
         "save_log": bool(body.get("save_log")) and mode != "classify",
@@ -7237,6 +7329,13 @@ def _stress_run(cfg: dict, cancel):
         "no_cache_effect": ({s["kind"]: backends.cache_bypass_effect(s["kind"])
                              for s in (reader, extractor) if s}
                             if cfg.get("no_cache") else {}),
+        # Requests in flight together sent as one /batch request, up to the
+        # concurrency each; the servers named are the ones that take it.
+        "vllm_batch": bool(cfg.get("vllm_batch")),
+        "batch_size": cfg["concurrency"] if cfg.get("vllm_batch") else 0,
+        "batch_servers": ([s["url"] for s in (reader, extractor)
+                           if s and backends.serves_metrics(s)]
+                          if cfg.get("vllm_batch") else []),
     }) + "\n"
 
     began = time.perf_counter()
@@ -7283,6 +7382,9 @@ def _stress_run(cfg: dict, cancel):
         except Exception:                           # noqa: BLE001
             pass
     records, wall, timeline, last = [], 0.0, [], {}
+    batcher = _batcher if cfg.get("vllm_batch") else None
+    if batcher is not None:
+        batcher.reset_counts()        # the warm-up's batches are not the run's
     if not cancel.is_set():
         records, wall, timeline, last, draining = yield from _stress_phase(
             specs[cfg["warmup"]:], cfg, prepared, cancel, "run", targets, bases)
@@ -7291,6 +7393,8 @@ def _stress_run(cfg: dict, cancel):
     report["timeline"] = stress.thin_timeline(timeline)
     report["timeline_columns"] = ["t", *stress.STAGES, "done"]
     report["prepare_seconds"] = prepare_seconds
+    if batcher is not None:
+        report["vllm_batch"] = batcher.summary()
     if targets:
         views, snaps, _ = _stress_sample(targets, bases, wall)
         for t in targets:          # a failed last read falls back to the last sample
@@ -7336,9 +7440,14 @@ def stress_stream():
         # "Bypass prompt cache": every request of the run and its drain is sent
         # uncacheable, so prefill is measured rather than a cache lookup.
         no_cache = bool(cfg.get("no_cache"))
+        global _batcher
         try:
             if no_cache:
                 backends.bypass_prefix_cache()
+            if cfg.get("vllm_batch"):
+                # One batcher for every server the run uses; the group key
+                # keeps each URL's requests apart.
+                _batcher = vllmbatch.Batcher(cfg["concurrency"], _send_batch)
             configuration = {**cfg, "ocr_profile": ocr_profile(),
                              "sampling": ocr_sampling_state(), "loop_guard": loop_guard(),
                              "read_floor": read_floor(), "table_agents": table_agents(),
@@ -7351,6 +7460,9 @@ def stress_stream():
             yield json.dumps({"event": "error",
                               "error": f"{type(err).__name__}: {err}"[:300]}) + "\n"
         finally:
+            if _batcher is not None:
+                _batcher.close()
+                _batcher = None
             if no_cache:
                 backends.restore_prefix_cache()
             servertime.resume_metrics()

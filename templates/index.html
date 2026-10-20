@@ -2088,6 +2088,15 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <input id="stNoCache" type="checkbox"> Bypass the server's prompt cache
           <span class="muted-inline" style="font-weight:400">&mdash; measure full prefill, not cache hits</span>
         </label>
+        <!-- vLLM's /v1/chat/completions/batch: requests in flight together are
+             sent as ONE request holding all their conversations, up to the
+             concurrency each. vLLM only; nothing streams, so time to first
+             token and the mid-reply loop cut are not available. See vllmbatch.py. -->
+        <div class="row" style="margin-top:8px;align-items:center">
+          <button id="stBatch" type="button" class="ghost-sm" aria-pressed="false" disabled
+                  title="Send the requests that are in flight at the same moment as one vLLM /v1/chat/completions/batch request, up to the concurrency per batch. Requests are grouped only with others that share every setting but the conversation. Replies do not stream, so time to first token and per-request decode speed are not measured, and a looping reply runs to its token cap (it is still flagged as looped). vLLM only.">Batch requests: off</button>
+          <span class="muted-inline" id="stBatchNote" style="font-size:.78rem"></span>
+        </div>
         <!-- Off by default: a stress job's timings were taken under the load of
              the others. On, each measured job is one ordinary run-log row tagged
              with the run and its concurrency, so the "Run kind" chips can keep
@@ -12834,7 +12843,33 @@ function stPaintMode() {
     ? '— not for classification: a glued file is no benchmark case'
     : '— rows are tagged as stress runs';
   stEl('stModeNote').textContent = ST_MODE_TEXT[m] || '';
+  stPaintBatch();
   stPaintFiles();
+}
+
+/* The batch toggle follows the servers THIS MODE sends to: only vLLM has the
+   /batch route. Hoisted like stPaintServer, and looks its elements up. */
+var stBatchOn = false;   // var, not let: stPaintBatch can run before this line
+function stPaintBatch() {
+  const btn = document.getElementById('stBatch');
+  const mode = document.getElementById('stMode');
+  if (!btn || !mode) return;
+  const readVllm = !!(server && server.kind === 'vllm');
+  const extractVllm = extractInfo && extractInfo.separate
+    ? extractInfo.kind === 'vllm' : readVllm;
+  const m = mode.value;
+  const ok = m === 'ocr' ? readVllm : m === 'full' ? (readVllm || extractVllm) : extractVllm;
+  const busy = !!document.getElementById('stStop') && !document.getElementById('stStop').disabled;
+  if (!ok && !busy) stBatchOn = false;
+  btn.disabled = !ok || busy;
+  btn.classList.toggle('on', stBatchOn);
+  btn.setAttribute('aria-pressed', String(stBatchOn));
+  btn.textContent = 'Batch requests: ' + (stBatchOn ? 'on' : 'off');
+  document.getElementById('stBatchNote').textContent = !ok
+    ? '— vLLM only; the server this mode uses is not vLLM'
+    : stBatchOn ? '— up to ' + (Number(document.getElementById('stConc').value) || 1)
+        + ' requests per /v1/chat/completions/batch call (the concurrency); no streaming'
+    : '— each request sent on its own, streamed';
 }
 
 /* The metrics controls follow the SERVER, not a setting: only a server that
@@ -12870,6 +12905,7 @@ function stPaintServer() {
         + ' (OCR) and ' + extractInfo.url + ' (extraction); both are watched, side by side';
   }
   if (typeof monState !== 'undefined' && monState && monState.on) { monSync(); paintMon(); }
+  stPaintBatch();
 }
 
 function stShowing(on) {
@@ -12897,6 +12933,7 @@ function stBusy(on) {
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
   stEl('stSaveLog').disabled = on || stMode.value === 'classify';
+  stPaintBatch();
   stStop.disabled = stStop2.disabled = !on || stStopping;
   if (rtRun) rtRun.disabled = on;
   if (on) runBtn.disabled = true; else paintServer();
@@ -13099,6 +13136,8 @@ function stReportHtml(s, snapshot, host) {
       + (plan.no_cache ? ' · prompt cache bypassed ('
           + Object.entries(plan.no_cache_effect || {})
               .map(([k, v]) => esc(k) + ': ' + esc(v)).join('; ') + ')' : '')
+      + (plan.vllm_batch ? ' · <b>batched</b>, up to ' + plan.batch_size
+          + ' per /batch request on ' + (plan.batch_servers || []).map(esc).join(' and ') : '')
       + (plan.save_log ? ' · saving each job to the run log as stress run <b>'
           + esc(plan.run_id) + '</b>' : '')
       + ' · seed ' + plan.seed + '</p>';
@@ -13154,6 +13193,11 @@ function stReportHtml(s, snapshot, host) {
         r.ocr ? stNum(r.ocr.pages_per_second, 3) + ' pages/s'
           : r.classify ? stNum(r.classify.pages_per_second, 2) + ' pages/s' : ''),
     ];
+    if (r.vllm_batch) tiles.push(stTile('Batches', stNum(r.vllm_batch.batches, 0)
+      + '<small> sent</small>', 'mean ' + stNum(r.vllm_batch.mean_size, 1) + ' · largest '
+      + r.vllm_batch.max_size + ' of ' + r.vllm_batch.size + ' requests per batch'
+      + (r.vllm_batch.failed ? ' · ' + r.vllm_batch.failed + ' failed' : ''),
+      r.vllm_batch.failed ? 'st-bad' : ''));
     if (r.ocr) tiles.push(stTile('OCR tokens / s', stNum(r.ocr.tokens_per_second, 1),
       'all requests together; one request decodes at '
       + stNum((r.ocr.decode_tps || {}).p50, 0) + ' (median)'));
@@ -13251,6 +13295,7 @@ function stBody() {
     cases: stSelectedCases(),
     metrics: stSample.checked && !stSample.disabled,
     no_cache: stEl('stNoCache').checked,
+    vllm_batch: stBatchOn && !stEl('stBatch').disabled,
     save_log: stEl('stSaveLog').checked && stMode.value !== 'classify',
     history_monitor: stEl('stHistoryMonitor').checked,
     gpu_url: stEl('monGpu').value.trim(),
@@ -13353,6 +13398,8 @@ if (stRun) {
   stEl('stFilesAll').addEventListener('click', () => selectFiles(true));
   stEl('stFilesNone').addEventListener('click', () => selectFiles(false));
   stMode.addEventListener('change', stPaintMode);
+  stEl('stBatch').addEventListener('click', () => { stBatchOn = !stBatchOn; stPaintBatch(); });
+  stEl('stConc').addEventListener('input', stPaintBatch);
   stRun.addEventListener('click', () => stStart());
   const stop = async () => {
     if (!stAbort || stStopping) return;
@@ -13780,7 +13827,8 @@ function historyRender(item) {
     ['Sample /metrics', cfg.metrics], ['Monitor snapshots', cfg.history_monitor],
     ['Sampling interval (s)', cfg.metrics_every], ['GPU exporter', cfg.gpu_url || 'Default / local'],
     ['Extraction GPU exporter', cfg.gpu_extract_url || 'Default / local'],
-    ['Bypass prompt cache', cfg.no_cache], ['Save per-job accuracy rows', cfg.save_log],
+    ['Bypass prompt cache', cfg.no_cache], ['Batch requests (vLLM /batch)', cfg.vllm_batch ?? false],
+    ['Save per-job accuracy rows', cfg.save_log],
     ['Workspace', cfg.workspace || 'Default'],
     ['Started', historyDate(item.started_at)], ['Finished', historyDate(item.finished_at)]
   ];
