@@ -370,6 +370,9 @@ The ones that matter for a deployment:
 | `OCR_SOLUTION_DIR` | `./solution` | Ground truth. Absent ⇒ accuracy scoring switches off and the page hides its controls. |
 | `MAX_UPLOAD_MB` | `32` | Per-upload size cap. |
 | `MAX_PAGES` | `0` | Pages read per document, **`0` meaning no cap — every page is read**. A positive value caps and **truncates rather than refusing**: the rest of the file is dropped. The page says so under the preview *before* a run, on the result, and above the accuracy bar; the run log records `pages_total` and a truncated read is counted as incomplete rather than scored. Uncapped, a long file is bounded by `MAX_UPLOAD_MB` and by memory — nothing is streamed. |
+| `OCR_PARALLEL` | `1` | On a **vLLM** reading server, read the pages of a long document at once instead of one after another, and join the transcripts back in page order — a 13-page file then takes about as long as its slowest page. The page shows each page whole as it lands rather than token by token. Ignored on llama.cpp, Ollama and a generic OpenAI server, and in the stress test, which sets its own concurrency. `0` turns it off. |
+| `OCR_PARALLEL_MIN_PAGES` | `3` | The fewest pages a document needs before its pages are read at once. |
+| `OCR_PARALLEL_MAX` | `0` | The most pages in flight at once when `OCR_PARALLEL` applies. `0` = every page. |
 | `MAX_JOBS` | `5` | Rendered documents held in memory for the compare view. A 10-page document at `medium` is ~40 MB, so this is a RAM ceiling. |
 | `GEN_READ_TIMEOUT` | `1800` | Raise on slow hardware; a timeout firing mid-generation throws away work the model server is still doing. |
 | `EXTRACT` | `1` | Set `0` to run the OCR pass only. |

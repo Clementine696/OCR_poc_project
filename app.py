@@ -25,7 +25,7 @@ import uuid
 import weakref
 from collections import OrderedDict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 import requests
@@ -98,6 +98,9 @@ from settings import (
     AUTO_SELECT_SERVER,
     AGENTIC_PARALLEL,
     AGENTIC_PARALLEL_MAX,
+    OCR_PARALLEL,
+    OCR_PARALLEL_MAX,
+    OCR_PARALLEL_MIN_PAGES,
     VLLM_FIT_MAX_TOKENS,
     VLLM_FIT_MIN_TOKENS,
     VLLM_PREFIX_WARMUP,
@@ -4768,6 +4771,116 @@ def read_page(image: Image.Image, stats: dict = None,
     return finish_page("".join(parts), stats, profile)
 
 
+def _page_parallelism(pages: int) -> int:
+    """How many pages of one read go to the server at once: 1 means one at a time.
+
+    More than one only for a document of `OCR_PARALLEL_MIN_PAGES` or more, on a
+    server that batches concurrent requests (`backends.parallel_ok`, vLLM), with
+    `OCR_PARALLEL` on. Capped by `OCR_PARALLEL_MAX` where it is set. The server
+    is only asked about once the page count says it could matter, so a short
+    read costs no status lookup it did not already make.
+    """
+    if not (OCR_PARALLEL and pages >= OCR_PARALLEL_MIN_PAGES):
+        return 1
+    if not backends.parallel_ok(llama_status()):
+        return 1
+    return max(1, min(OCR_PARALLEL_MAX or pages, pages))
+
+
+class _Hangup:
+    """Something a one-slot `Cancel` can hang up that stops MANY requests.
+
+    A random test hands its read one `Cancel`, which holds one live request; a
+    read whose pages are in flight together has several. The read attaches this
+    to the round's `Cancel` and gives the pages a `MultiCancel` of their own, so
+    the round's Stop reaches every page.
+    """
+
+    def __init__(self, cancel):
+        self.cancel = cancel
+
+    def close(self):
+        self.cancel.set()
+
+
+def read_pages_at_once(pages, parallel: int, cancel=None, run: dict = None):
+    """Read `pages` `parallel` at a time; yield `(number, text, stats)` in PAGE order.
+
+    The split-and-join that lets a 13-page file take about as long as its
+    slowest page rather than all thirteen (see `OCR_PARALLEL`). Every page goes
+    through `read_page`, exactly as a sequential read sends it, and the results
+    are handed back by page number -- page 3 is yielded only once pages 1 and 2
+    have been -- so the caller joins them in document order whatever order the
+    server finished them in, and the transcript is the one a sequential read
+    gives.
+
+    A page that fails stops the rest: the others are hung up and the error is
+    raised as soon as it is known, rather than after every page before it in
+    the document has finished. So does closing this generator -- the browser's
+    Stop on the streaming route.
+
+    `run`, where given, gets `parallel` and `server`: the server's own timing
+    of the read as one span (`servertime.Batch`), because a /metrics difference
+    around any one page covers its neighbours and the pages themselves carry
+    none.
+    """
+    inner = MultiCancel()
+    if cancel is not None:
+        cancel.attach(_Hangup(inner))
+    batch = servertime.Batch(llama_status())
+
+    def one(page):
+        stats = {}
+        return read_page(page, stats, cancel=inner), stats
+
+    pool = ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="ocr-page")
+    futures = [pool.submit(workspace.bind(batch.run), one, page) for page in pages]
+    complete = False
+    try:
+        pending, ready = set(futures), 0
+        while pending:
+            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in finished:
+                future.result()             # a failed page raises here, at once
+            while ready < len(futures) and futures[ready].done():
+                text, stats = futures[ready].result()
+                ready += 1
+                yield ready, text, stats
+        complete = True
+    finally:
+        if not complete:
+            inner.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        server = batch.close()
+        if run is not None:
+            run.update(parallel=parallel, server=server)
+
+
+def read_all_pages(pages, page_texts: list, all_stats: list, cancel=None,
+                   run: dict = None) -> None:
+    """Read every page into the caller's lists, at once where that is allowed.
+
+    The lists are the caller's so the pages that finished before an error or a
+    Stop are still there to summarise. Sequential exactly as before where
+    `_page_parallelism` says 1, stopping between pages on `cancel`.
+    """
+    parallel = _page_parallelism(len(pages))
+    if parallel > 1:
+        if stop_requested(cancel):
+            return
+        with closing(read_pages_at_once(pages, parallel, cancel, run)) as reads:
+            for _, text, stats in reads:
+                page_texts.append(text)
+                all_stats.append(stats)
+        return
+    for page in pages:
+        if stop_requested(cancel):
+            break
+        stats = {}
+        page_texts.append(read_page(page, stats, cancel=cancel))
+        all_stats.append(stats)
+
+
 # --------------------------------------------------------------------------
 # file loading
 # --------------------------------------------------------------------------
@@ -4929,8 +5042,13 @@ def _page_coverage(job_id, counted):
     return {"pages_total": total, "pages_truncated": max(0, total - counted)}
 
 
-def summarise(all_stats, detail, started, job_id=None):
-    """Roll per-page stats into the totals both endpoints report."""
+def summarise(all_stats, detail, started, job_id=None, run: dict = None):
+    """Roll per-page stats into the totals both endpoints report.
+
+    `run` is what `read_pages_at_once` left for a read whose pages were in
+    flight together: how many at once, and the server's timing of the lot as
+    one span, which stands in for the per-page figures those pages cannot have.
+    """
     tokens = sum(s.get("new_tokens", 0) for s in all_stats)
     decode = sum(s.get("decode_seconds", 0) for s in all_stats)
     models = [s.get("model") for s in all_stats if s.get("model")]
@@ -4986,8 +5104,28 @@ def summarise(all_stats, detail, started, job_id=None):
                        else None),
         "server_timing": served[0].get("server_timing", "") if served else "",
         "server_timed_pages": len(served),
+        **_concurrent_read(run, served),
         "page_stats": all_stats,
     }
+
+
+def _concurrent_read(run: dict, served: list) -> dict:
+    """`summarise`'s fields for a read whose pages went to the server at once.
+
+    Empty for a sequential read. Otherwise `ocr_parallel`, and -- where no page
+    carried a server time of its own and the batch could be attributed -- the
+    batch's figures in place of the per-page sums, `server_timed_pages` being
+    the requests it covers.
+    """
+    if not run or (run.get("parallel") or 1) <= 1:
+        return {}
+    out = {"ocr_parallel": run["parallel"]}
+    server = run.get("server") or {}
+    if not served and server.get("server_seconds") is not None:
+        out.update({name: server.get(name) for name in servertime.FIELDS})
+        out.update(server_timing=server.get("source") or "",
+                   server_timed_pages=server.get("requests") or 0)
+    return out
 
 
 # Two concurrent runs of the same case would otherwise interleave their writes to
@@ -6479,15 +6617,10 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     pages, detail, job_id, case = prepare_input(data, detail, case, source)
 
     started = time.perf_counter()
-    page_texts, all_stats = [], []
+    page_texts, all_stats, run = [], [], {}
     cancelled = False
     try:
-        for page in pages:
-            if stop_requested(cancel):
-                break
-            stats = {}
-            page_texts.append(read_page(page, stats, cancel=cancel))
-            all_stats.append(stats)
+        read_all_pages(pages, page_texts, all_stats, cancel, run)
     except Exception:                               # noqa: BLE001
         # A hung-up request raises wherever it was blocked -- mid-prefill, most
         # of the time. If WE are the ones who hung up, that is the stop landing
@@ -6502,7 +6635,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
         # then logged and dropped. `evaluate_if_known` is deliberately not run:
         # scoring half a document against the whole ground truth would report a
         # stop as a bad read.
-        partial = summarise(all_stats, detail, started, job_id)
+        partial = summarise(all_stats, detail, started, job_id, run)
         log_run(partial, source, status="cancelled")
         raise SweepCancelled(f"{case_id} was stopped part-way through")
 
@@ -6512,7 +6645,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     else:
         text = page_texts[0]
 
-    payload = summarise(all_stats, detail, started, job_id)
+    payload = summarise(all_stats, detail, started, job_id, run)
     payload["truth"] = evaluate_if_known(case, text)
     if extract and EXTRACT and text.strip():
         payload["extracted"] = extract_fields(
@@ -7760,22 +7893,19 @@ def ocr():
         return jsonify(error=str(err)), 400
 
     started = time.perf_counter()
-    page_texts, all_stats = [], []
+    page_texts, all_stats, run = [], [], {}
     try:
-        for page in pages:
-            stats = {}
-            page_texts.append(read_page(page, stats))
-            all_stats.append(stats)
+        read_all_pages(pages, page_texts, all_stats, run=run)
     except ValueError as err:
-        log_run(summarise(all_stats, detail, started, job_id), source, error=err)
+        log_run(summarise(all_stats, detail, started, job_id, run), source, error=err)
         return jsonify(error=str(err)), 400
     except requests.RequestException as err:
-        log_run(summarise(all_stats, detail, started, job_id), source, error=err)
+        log_run(summarise(all_stats, detail, started, job_id, run), source, error=err)
         return jsonify(error=f"model server connection failed: {err}"), 502
 
     text = join_page_texts(page_texts)
 
-    payload = summarise(all_stats, detail, started, job_id)
+    payload = summarise(all_stats, detail, started, job_id, run)
     payload["truth"] = evaluate_if_known(case, text)
     if EXTRACT and request.form.get("extract", "1") != "0" and text.strip():
         payload["extracted"] = extract_fields(
@@ -7823,36 +7953,60 @@ def ocr_stream():
         return jsonify(error=str(err)), 400
     want_extract = request.form.get("extract", "1") != "0"
 
+    def page_started(index, page):
+        return json.dumps(
+            {
+                "event": "page",
+                "page": index,
+                "total": len(pages),
+                "resolution": f"{page.width}x{page.height}",
+                # Sent per page so the compare view can show the source
+                # image while that page is still being transcribed.
+                "job": job_id,
+            }
+        ) + "\n"
+
+    def page_finished(index, stats):
+        yield json.dumps({"event": "page_done", "page": index, **stats}) + "\n"
+        if stats.get("truncated"):
+            yield json.dumps({"event": "truncated", "page": index}) + "\n"
+        if stats.get("looped"):
+            yield json.dumps({"event": "looped", "page": index}) + "\n"
+
     def generate():
         started = time.perf_counter()
-        collected, all_stats = [], []
+        collected, all_stats, run = [], [], {}
         summary = {}
         try:
-            for index, page in enumerate(pages, 1):
-                yield json.dumps(
-                    {
-                        "event": "page",
-                        "page": index,
-                        "total": len(pages),
-                        "resolution": f"{page.width}x{page.height}",
-                        # Sent per page so the compare view can show the source
-                        # image while that page is still being transcribed.
-                        "job": job_id,
-                    }
-                ) + "\n"
-                parts, stats = [], {}
-                for batch in batch_tokens(stream_page(page, stats),
-                                          STREAM_FLUSH_MS / 1000):
-                    parts.extend(batch)
-                    yield json.dumps({"event": "token", "text": "".join(batch),
-                                      "n": len(batch)}) + "\n"
-                collected.append(finish_page("".join(parts), stats))
-                all_stats.append(stats)
-                yield json.dumps({"event": "page_done", "page": index, **stats}) + "\n"
-                if stats.get("truncated"):
-                    yield json.dumps({"event": "truncated", "page": index}) + "\n"
-                if stats.get("looped"):
-                    yield json.dumps({"event": "looped", "page": index}) + "\n"
+            parallel = _page_parallelism(len(pages))
+            if parallel > 1:
+                # Every page is in flight at once, so there is no one page whose
+                # tokens could stream: interleaved, they would splice pages into
+                # each other on screen. Each page arrives whole instead, in page
+                # order, as the same page/token/page_done events a sequential
+                # read sends -- the page needs nothing new to assemble it.
+                yield json.dumps({"event": "pages_parallel", "total": len(pages),
+                                  "parallel": parallel, "job": job_id}) + "\n"
+                with closing(read_pages_at_once(pages, parallel, run=run)) as reads:
+                    for index, page_text, stats in reads:
+                        yield page_started(index, pages[index - 1])
+                        yield json.dumps({"event": "token", "text": page_text,
+                                          "n": stats.get("new_tokens") or 1}) + "\n"
+                        collected.append(page_text)
+                        all_stats.append(stats)
+                        yield from page_finished(index, stats)
+            else:
+                for index, page in enumerate(pages, 1):
+                    yield page_started(index, page)
+                    parts, stats = [], {}
+                    for batch in batch_tokens(stream_page(page, stats),
+                                              STREAM_FLUSH_MS / 1000):
+                        parts.extend(batch)
+                        yield json.dumps({"event": "token", "text": "".join(batch),
+                                          "n": len(batch)}) + "\n"
+                    collected.append(finish_page("".join(parts), stats))
+                    all_stats.append(stats)
+                    yield from page_finished(index, stats)
 
             if len(collected) > 1:
                 text = "\n\n".join(
@@ -7860,7 +8014,7 @@ def ocr_stream():
                 )
             else:
                 text = collected[0] if collected else ""
-            summary = summarise(all_stats, detail, started, job_id)
+            summary = summarise(all_stats, detail, started, job_id, run)
             summary["truth"] = evaluate_if_known(case, text)
             yield json.dumps(
                 {"event": "done", "text": text, "pages": collected, **summary}
@@ -7897,11 +8051,11 @@ def ocr_stream():
             yield json.dumps({"event": "logged"}) + "\n"
         except GeneratorExit:
             # The browser hung up -- Stop, or a closed tab. Still worth a row.
-            log_run(summary or summarise(all_stats, detail, started, job_id),
+            log_run(summary or summarise(all_stats, detail, started, job_id, run),
                     source, status="cancelled")
             raise
         except Exception as err:  # surface failures inside the stream body
-            log_run(summary or summarise(all_stats, detail, started, job_id),
+            log_run(summary or summarise(all_stats, detail, started, job_id, run),
                     source, error=err)
             yield json.dumps({"event": "error", "error": str(err)}) + "\n"
 
