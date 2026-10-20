@@ -12204,7 +12204,7 @@ async function startRead(opts) {
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '', painted = 0;
+    let buffer = '', painted = 0, readParallel = 0;
 
     for (;;) {
       const { value, done } = await reader.read();
@@ -12215,9 +12215,18 @@ async function startRead(opts) {
       for (const line of lines) {
         if (!line.trim()) continue;
         const msg = JSON.parse(line);
-        if (msg.event === 'page') {
-          pagebar.innerHTML = '<span class="spin"></span> Reading page ' + msg.page
-            + ' of ' + msg.total + ' (' + msg.resolution + ')…';
+        if (msg.event === 'pages_parallel') {
+          // Every page is in flight at once; each arrives whole, in page order.
+          readParallel = msg.parallel;
+          job = msg.job;
+          pagebar.innerHTML = '<span class="spin"></span> Reading ' + msg.total
+            + ' pages at once (' + msg.parallel + ' in flight)…';
+        } else if (msg.event === 'page') {
+          pagebar.innerHTML = '<span class="spin"></span> ' + (readParallel
+            ? 'Read page ' + msg.page + ' of ' + msg.total + ' · ' + readParallel
+              + ' pages at once…'
+            : 'Reading page ' + msg.page + ' of ' + msg.total
+              + ' (' + msg.resolution + ')…');
           if (msg.page > 1) text += '\n\n--- page ' + msg.page + ' ---\n';
           job = msg.job;
           curPage = msg.page - 1;
