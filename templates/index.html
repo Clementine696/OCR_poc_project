@@ -16,6 +16,35 @@
    not the sessionStorage, so the tab it is opened in takes a new one rather
    than sharing someone else's. A DUPLICATED tab copies sessionStorage too; the
    tab it was copied from answers on the channel below and the copy re-keys. */
+/* ---- served under a path (2026-10-20) ----
+   Deployed behind nginx at a sub-path (`host:3000/OCR/` proxied to the app),
+   every root-absolute `/api/...` on this page went to `host:3000/api/...` --
+   outside the app, so the run-log poll (`/api/runs/stat`) and everything else
+   missed it. The page is always the app's root, so its own path IS the base:
+   "" when served at `/`, "/OCR" at `/OCR/`. `appUrl` puts it in front of a
+   root-absolute path, and the fetch wrapper below does it for every fetch, so
+   the page's many `fetch('/api/...')` calls stay as written.
+
+   The header's "App path" control overrides it for this browser
+   (localStorage `ocrAppBase`), for a proxy that serves the page at one path and
+   the API at another. Only a path on this site: another origin would need CORS
+   the app does not send. A stored value that is not a path is ignored. */
+window.OCR_BASE_AUTO = location.pathname.replace(/\/+$/, "");
+window.OCR_BASE = (function () {
+  var stored = null;
+  try { stored = localStorage.getItem("ocrAppBase"); } catch (e) { /* auto */ }
+  return stored !== null && /^(\/[^\s?#]*[^\s?#\/])?$/.test(stored)
+    ? stored : window.OCR_BASE_AUTO;
+})();
+window.appUrl = function (path) {
+  return typeof path === "string" && path.charAt(0) === "/" && path.charAt(1) !== "/"
+    ? window.OCR_BASE + path : path;
+};
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll('a[href^="/api/"]').forEach(function (a) {
+    a.setAttribute("href", window.appUrl(a.getAttribute("href")));
+  });
+});
 (function () {
   var KEY = "ocrWorkspace", HEADER = "X-OCR-Workspace";
   var valid = function (v) { return typeof v === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(v); };
@@ -40,6 +69,7 @@
   window.OCR_WORKSPACE = id;
   var realFetch = window.fetch.bind(window);
   window.fetch = function (input, init) {
+    if (typeof input === "string") input = window.appUrl(input);
     try {
       var target = new URL(typeof input === "string" ? input : input.url, location.href);
       if (target.origin === location.origin) {
@@ -181,6 +211,17 @@
   .page-head { display: flex; align-items: flex-start; gap: 16px;
     flex-wrap: wrap; justify-content: space-between; }
   .theme-seg button { padding: 5px 12px; font-size: .78rem; }
+  .head-tools { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .app-base { position: relative; font-size: .78rem; }
+  .app-base summary { cursor: pointer; color: var(--muted); list-style: none; }
+  .app-base summary::-webkit-details-marker { display: none; }
+  .app-base-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+    width: 260px; padding: 10px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
+  .app-base-pop input { width: 100%; box-sizing: border-box; }
+  .app-base-row { display: flex; gap: 6px; }
+  .app-base-msg { margin: 0; color: var(--muted); min-height: 1em; }
+  .app-base-msg.err { color: var(--danger); }
   h1 { font-size: 1.4rem; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 0.9rem; }
   .sub code { background: var(--accent-soft); padding: 2px 6px; border-radius: 5px; }
@@ -1442,11 +1483,28 @@
          choice and not the absence of one: a two-way switch would silently
          freeze the page on whichever theme the OS happened to be showing the
          first time anybody pressed it. -->
-    <div class="seg theme-seg" id="themeSeg" title="the page background. Auto
+    <div class="head-tools">
+      <div class="seg theme-seg" id="themeSeg" title="the page background. Auto
 follows your desktop; Light is the one to pick for projecting or screenshotting.">
-      <button data-theme="auto">Auto</button>
-      <button data-theme="light">Light</button>
-      <button data-theme="dark">Dark</button>
+        <button data-theme="auto">Auto</button>
+        <button data-theme="light">Light</button>
+        <button data-theme="dark">Dark</button>
+      </div>
+      <!-- Where this page sends its requests. Worked out from the page's own
+           address unless set here; see OCR_BASE in the <head>. -->
+      <details class="app-base" id="appBase">
+        <summary title="Where this page sends its requests -- the path the app is
+served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"></code></summary>
+        <div class="app-base-pop">
+          <label for="appBaseInput">Path the app is served under on this site</label>
+          <input id="appBaseInput" type="text" placeholder="/OCR" spellcheck="false" autocomplete="off">
+          <div class="app-base-row">
+            <button type="button" class="ghost-sm" id="appBaseApply">Apply</button>
+            <button type="button" class="ghost-sm" id="appBaseAuto">Auto</button>
+          </div>
+          <p class="app-base-msg" id="appBaseMsg"></p>
+        </div>
+      </details>
     </div>
   </header>
 
@@ -3063,7 +3121,7 @@ function paintLayout() {
   /* The image is the one the model was sent, straight from the job cache, so a
      box drawn at its own coordinates lands where the model put it. The viewBox
      is set from the image's natural size once it loads, for the same reason. */
-  const src = '/api/page/' + job + '/' + layPage;
+  const src = appUrl('/api/page/' + job + '/' + layPage);
   layPageSrc = src;
   layNat = null;
   const boxes = blocks.map((b, i) => {
@@ -4382,10 +4440,10 @@ function segPagesHtml(g) {
     return '<div class="grp-page">'
       + '<div class="grp-pn"><span>Page ' + n + (n === g.pages[0] ? ' · opens' : '') + '</span>'
       + '<span class="grp-badge ' + cls + '">' + esc(word) + '</span></div>'
-      + (job ? '<a href="/api/page/' + encodeURIComponent(job) + '/' + (n - 1)
+      + (job ? '<a href="' + appUrl('/api/page/' + encodeURIComponent(job) + '/' + (n - 1))
                + '" target="_blank" rel="noopener" title="Open this page full size">'
-               + '<img loading="lazy" alt="Page ' + n + '" src="/api/page/'
-               + encodeURIComponent(job) + '/' + (n - 1) + '"></a>' : '')
+               + '<img loading="lazy" alt="Page ' + n + '" src="'
+               + appUrl('/api/page/' + encodeURIComponent(job) + '/' + (n - 1)) + '"></a>' : '')
       + '<div class="grp-why">' + esc(why || '') + '</div>'
       + (head ? '<details data-page="' + n + '"' + (segOpenHeads.has(n) ? ' open' : '')
                 + '><summary>Text the grouping read</summary><pre>' + esc(head)
@@ -10742,6 +10800,64 @@ themeSeg.addEventListener('click', ev => {
 
 applyTheme(storedTheme());
 
+/* ---------- app path ----------
+   Where the page sends its requests; see OCR_BASE in the <head>. A new path is
+   asked for /api/runs/stat (one stat() call -- /api/health would probe the model
+   server) before it is kept, so a typo cannot leave the page
+   talking to nothing -- the stored value is only ever one that answered. Applying
+   reloads, because everything already on screen was fetched from the old one. */
+(function () {
+  const box = document.getElementById('appBase');
+  const now = document.getElementById('appBaseNow');
+  const input = document.getElementById('appBaseInput');
+  const msg = document.getElementById('appBaseMsg');
+  const shown = base => base || '/';
+  const say = (text, err) => { msg.textContent = text; msg.classList.toggle('err', !!err); };
+  let stored = null;
+  try { stored = localStorage.getItem('ocrAppBase'); } catch { /* auto */ }
+  now.textContent = shown(OCR_BASE) + (stored === null ? ' (auto)' : '');
+  input.value = shown(OCR_BASE);
+
+  function normalise(raw) {
+    let text = (raw || '').trim();
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
+      const url = new URL(text);
+      if (url.origin !== location.origin)
+        throw new Error(`Only a path on this site (${location.origin}) -- `
+          + 'another address would need CORS, which the app does not send.');
+      text = url.pathname;
+    }
+    if (/[\s?#]/.test(text)) throw new Error('A path has no spaces, ? or #.');
+    text = '/' + text.replace(/^\/+|\/+$/g, '');
+    return text === '/' ? '' : text;
+  }
+
+  document.getElementById('appBaseApply').addEventListener('click', async () => {
+    let base;
+    try { base = normalise(input.value); } catch (err) { say(err.message, true); return; }
+    say(`Checking ${shown(base)} ...`);
+    try {
+      const res = await fetch(location.origin + base + '/api/runs/stat');
+      const body = res.ok ? await res.json() : null;
+      if (!body || !('size' in body)) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      say(`No app answered at ${shown(base)} (${err.message}). Nothing changed.`, true);
+      return;
+    }
+    try { localStorage.setItem('ocrAppBase', base); } catch {
+      say('This browser will not store it (private mode?).', true); return;
+    }
+    location.reload();
+  });
+
+  document.getElementById('appBaseAuto').addEventListener('click', () => {
+    try { localStorage.removeItem('ocrAppBase'); } catch { /* already auto */ }
+    location.reload();
+  });
+
+  box.addEventListener('toggle', () => { if (box.open) { say(''); input.focus(); } });
+})();
+
 /* The run-mode and worker controls went with the queue itself: with nothing
    running batches in-process there is no pool to size. */
 
@@ -11124,7 +11240,7 @@ function paintCompare() {
     cmpPrev.disabled = cmpPage === 0;
     cmpNext.disabled = cmpPage >= total - 1;
 
-    const src = `/api/page/${job}/${cmpPage}`;
+    const src = appUrl(`/api/page/${job}/${cmpPage}`);
     if (cmpImg.getAttribute('src') !== src) cmpImg.src = src;
     cmpOpen.href = src;
     cmpDl.href = src;

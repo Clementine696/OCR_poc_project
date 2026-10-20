@@ -304,6 +304,29 @@ watches its own progress. Nothing one tab changes moves another.
 Device placement, threads and quantization belong to the model server. This app has no
 CPU/GPU control.
 
+### Behind a reverse proxy at a sub-path
+
+Served at a path such as `http://host:3000/OCR/`, the page works out where to send its
+requests from its own address, so every call goes to `/OCR/api/...`. The proxy can pass
+the path on either way:
+
+```nginx
+location /OCR/ {
+    proxy_pass http://127.0.0.1:18000/;   # trailing slash: nginx strips /OCR
+    proxy_buffering off;                  # the reads stream; do not hold them back
+    proxy_read_timeout 1800s;             # a long read is legitimate
+    client_max_body_size 32m;             # MAX_UPLOAD_MB
+}
+```
+
+Without the trailing slash on `proxy_pass`, nginx passes `/OCR/api/...` through unchanged.
+In that case, start the app with `URL_PREFIX=/OCR`.
+
+**App path** in the page header shows the path in use (`/OCR (auto)`) and can override it
+for this browser, for a proxy that serves the page at one path and the API at another. A
+new path is checked against `/api/runs/stat` before it is kept, so a wrong one is
+refused rather than saved. **Auto** goes back to working it out from the address.
+
 ### Without the page: `test.py`
 
 `test.py` runs a read, an extraction, or both from the command line. It loads the app in

@@ -167,3 +167,9 @@ PORT = env_int("PORT", 5000, minimum=1, maximum=65535)
 # set is taken as meant: if it is in use the app says so and exits.
 PORT_FIXED = bool((os.environ.get("PORT") or "").strip())
 PORT_TRIES = env_int("PORT_TRIES", 10, minimum=1, maximum=100)
+# The path a reverse proxy serves the app under, e.g. /OCR, for a proxy that
+# passes the path on unchanged (nginx `proxy_pass http://host:port;` with no
+# trailing slash). A request under it is answered as if the prefix were not
+# there; one without it still works. Unneeded when the proxy strips the prefix
+# itself -- the page works out its own base either way.
+URL_PREFIX = ("/" + os.environ.get("URL_PREFIX", "").strip().strip("/")).rstrip("/")

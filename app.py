@@ -190,6 +190,24 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
 
+class _StripPrefix:
+    """Answer `URL_PREFIX/...` as `/...` -- see `config.URL_PREFIX`."""
+
+    def __init__(self, wsgi, prefix: str):
+        self.wsgi, self.prefix = wsgi, prefix
+
+    def __call__(self, environ, start_response):
+        path = environ.get("PATH_INFO", "")
+        if path == self.prefix or path.startswith(self.prefix + "/"):
+            environ["SCRIPT_NAME"] = environ.get("SCRIPT_NAME", "") + self.prefix
+            environ["PATH_INFO"] = path[len(self.prefix):] or "/"
+        return self.wsgi(environ, start_response)
+
+
+if config.URL_PREFIX:
+    app.wsgi_app = _StripPrefix(app.wsgi_app, config.URL_PREFIX)
+
+
 @app.before_request
 def _enter_workspace():
     """Put this request in its browser tab's workspace -- see `workspace`.
