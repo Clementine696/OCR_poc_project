@@ -181,6 +181,17 @@
   .page-head { display: flex; align-items: flex-start; gap: 16px;
     flex-wrap: wrap; justify-content: space-between; }
   .theme-seg button { padding: 5px 12px; font-size: .78rem; }
+  .page-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #monToggle { padding: 5px 12px; font-size: .78rem; }
+  #monToggle.on { background: var(--accent-soft); border-color: var(--accent); }
+  .monitor-card { margin-bottom: 18px; }
+  .monitor-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .monitor-settings { margin-top: 10px; }
+  .monitor-gpus { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+  #stMon { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); }
+  #stMon .mon-server { min-width: 0; overflow-wrap: anywhere; }
+  #stMon .mon-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  @media (max-width: 600px) { #stMon .mon-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   h1 { font-size: 1.4rem; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 0.9rem; }
   .sub code { background: var(--accent-soft); padding: 2px 6px; border-radius: 5px; }
@@ -1460,6 +1471,9 @@
       <p class="sub">Full-page transcription via <span id="subKind">{{ server.kind or 'no server' }}</span> ·
         <code id="subUrl">{{ server.url }}</code></p>
     </div>
+    <div class="page-actions">
+    <button type="button" id="monToggle" disabled aria-pressed="false"
+            aria-expanded="false" aria-controls="monCard">Start live monitor</button>
     <!-- Three states in one control, because "follow the desktop" is a real
          choice and not the absence of one: a two-way switch would silently
          freeze the page on whichever theme the OS happened to be showing the
@@ -1470,7 +1484,33 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <button data-theme="light">Light</button>
       <button data-theme="dark">Dark</button>
     </div>
+    </div>
   </header>
+
+  <section class="card monitor-card" id="monCard" aria-labelledby="monTitle" hidden>
+    <div class="monitor-head">
+      <h2 id="monTitle" style="margin:0">Live monitor</h2>
+      <label class="st-check">Refresh every
+        <input id="monEvery" type="number" min="1" max="60" value="2" style="width:56px"> s
+      </label>
+      <span class="note">Available across all tabs · vLLM servers</span>
+    </div>
+    <details class="monitor-settings">
+      <summary>GPU exporter settings</summary>
+      <p class="note">vLLM does not report VRAM. Use a DCGM or nvidia_gpu_exporter /metrics URL.
+        Leave blank to use GPU metrics from the vLLM scrape, or nvidia-smi when the server runs on this machine.
+        These URLs also apply to saved Stress test monitor snapshots.</p>
+      <div class="monitor-gpus">
+        <label class="field">VRAM from a GPU exporter
+          <input id="monGpu" type="text" placeholder="http://gpu-box:9400/metrics">
+        </label>
+        <label class="field" id="monGpuExtractRow" style="display:none">VRAM of the extraction server's GPU
+          <input id="monGpuExtract" type="text" placeholder="http://extract-box:9400/metrics">
+        </label>
+      </div>
+    </details>
+    <div id="stMon"></div>
+  </section>
 
   <div class="grid">
     <div class="card side">
@@ -2054,29 +2094,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
               <input id="stEvery" type="number" min="1" max="600" value="5" style="width:56px"> s
             </label>
           </div>
-          <!-- The live monitor: /metrics read on a timer, on its own, whether or
-               not a stress test is running. vLLM only, like everything in this
-               box; the OCR (reading) server and the extraction server are each
-               watched in a pane of their own when both are vLLM. -->
-          <div class="row" style="margin-top:8px">
-            <button id="monToggle" class="ghost-sm" disabled>Start live monitor</button>
-            <label class="st-check">refresh every
-              <input id="monEvery" type="number" min="1" max="60" value="2" style="width:56px"> s
-            </label>
-          </div>
-          <label class="field" style="margin-top:8px">
-            VRAM from a GPU exporter
-            <span class="muted-inline" style="font-weight:400">&mdash; vLLM does not report VRAM.
-              A DCGM or nvidia_gpu_exporter /metrics URL; blank uses what the vLLM scrape
-              carries, or nvidia-smi when the server runs on this machine</span>
-            <input id="monGpu" type="text" placeholder="http://gpu-box:9400/metrics">
-          </label>
-          <label class="field" id="monGpuExtractRow" style="margin-top:8px;display:none">
-            VRAM of the extraction server's GPU
-            <span class="muted-inline" style="font-weight:400">&mdash; the same, for the
-              extraction server; the box above is the OCR server's</span>
-            <input id="monGpuExtract" type="text" placeholder="http://extract-box:9400/metrics">
-          </label>
         </div>
 
         <!-- Prompt cache: a stress run repeats a few pages and one prompt, so the
@@ -2252,7 +2269,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <button id="stStop2" class="ghost-sm" style="margin-left:auto" disabled>Stop</button>
         <button id="stClear" class="ghost-sm">Clear</button>
       </div>
-      <div id="stMon"></div>
       <div id="stOut"></div>
     </div>
 
@@ -12927,6 +12943,7 @@ function stPaintServer() {
   const monVllm = vllm || !!(extractInfo && extractInfo.separate && extractInfo.kind === 'vllm');
   if (monBtn) {
     monBtn.disabled = !monVllm;
+    monBtn.title = monVllm ? 'Show live server metrics on any tab' : 'Live monitor requires a vLLM server';
     if (!monVllm && typeof monState !== 'undefined' && monState && monState.on) monSet(false);
     if (monVllm && !vllm) document.getElementById('stMetricsState').textContent =
       '— the reading server is not vLLM; the live monitor and the stress sampler watch the '
@@ -13134,8 +13151,7 @@ function stAlertsHtml(alerts) {
 }
 
 function stPaint() {
-  // The live monitor keeps the card up on its own, with or without a report.
-  stShowing(!!(stState || stSnapshot || (typeof monState !== 'undefined' && monState.on)));
+  stShowing(!!(stState || stSnapshot));
   if (!stState && !stSnapshot) {
     stOut.innerHTML = '<p class="note">Run a stress test to see its report here, or open History to review a saved run.</p>';
     return;
@@ -13656,13 +13672,15 @@ function monSet(on) {
   monState.on = on;
   monEach(p => clearTimeout(p.timer));
   monToggleBtn.textContent = on ? 'Stop live monitor' : 'Start live monitor';
+  monToggleBtn.classList.toggle('on', on);
+  monToggleBtn.setAttribute('aria-pressed', String(on));
+  monToggleBtn.setAttribute('aria-expanded', String(on));
+  stEl('monCard').hidden = !on;
   if (on) {
     monState.panes = {};
-    stShowing(true);
     monSync();
   }
   paintMon();
-  if (!on) stPaint();
 }
 
 /* One series per tile, so no legend: the tile label names it. The line is the
@@ -13710,9 +13728,10 @@ function paintMon() {
   const panes = Object.values(monState.panes)
     .sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
   const exRow = stEl('monGpuExtractRow');
-  if (exRow) exRow.style.display = monTargets().length > 1 ? '' : 'none';
+  if (exRow) exRow.style.display = monTargets().some(t => t.key === 'extract') ? '' : 'none';
   if (!monState.on && !panes.some(p => p.last)) { monOut.innerHTML = ''; return; }
-  monOut.innerHTML = panes.map(p => monPaneHtml(p, panes.length > 1)).join('');
+  monOut.innerHTML = panes.map(p => '<section class="mon-server">'
+    + monPaneHtml(p, panes.length > 1) + '</section>').join('');
 }
 
 function monPaneHtml(p, many, on = monState.on) {

@@ -1752,9 +1752,11 @@ requested** — the route refuses with `409` as well.
 
 ### Live monitor
 
-**Start live monitor** (same box, vLLM only) reads `/metrics` every few seconds — 2 by default,
-set beside the button — whether or not a stress test is running, and shows it at the top of the
-Stress test card with a line of the recent readings under each figure.
+**Start live monitor** is in the top-right page menu beside the theme selector (vLLM only).
+It reads `/metrics` every few seconds — 2 by default — whether or not a stress test is running.
+Its own panel below the page header stays available across all tabs without replacing their
+results. Set the refresh interval and GPU exporter URLs in that panel; **Stop live monitor**
+stops polling and hides the panel. Each figure includes a line of recent readings.
 
 The polling is throttled at both ends. The server scrapes one vLLM at most once per
 `MONITOR_MIN_INTERVAL` seconds (default 2) and hands the last reading to any call inside that
