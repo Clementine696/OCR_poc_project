@@ -13,6 +13,7 @@ Accepts any raster format Pillow can open, plus PDFs (PyMuPDF), HEIC/HEIF
 """
 
 import base64
+import gzip
 import io
 import json
 import os
@@ -262,6 +263,31 @@ def _enter_workspace():
     workspace, which is how every caller other than the page has always run.
     """
     workspace.enter(request.headers.get(workspace.HEADER) or request.args.get("ws"))
+
+
+@app.after_request
+def _gzip_json(response):
+    """Compress a JSON reply for a client that accepts it.
+
+    Added 2026-10-21, at the user's request: *save time and data transfer of
+    log retriving*. The run-log card's payload is ~0.3-0.9 MB of JSON and
+    compresses about 11x (295 KB -> 25 KB in 4 ms). Only whole JSON replies:
+    a stream (the ndjson reads) has to reach the page line by line, and
+    anything already encoded is left alone, so a proxy in front can still
+    compress whatever this does not.
+    """
+    if (response.status_code != 200 or response.mimetype != "application/json"
+            or response.is_streamed or response.direct_passthrough
+            or "Content-Encoding" in response.headers
+            or "gzip" not in request.headers.get("Accept-Encoding", "").lower()):
+        return response
+    body = response.get_data()
+    if len(body) < 1024:
+        return response
+    response.set_data(gzip.compress(body, compresslevel=6))
+    response.headers["Content-Encoding"] = "gzip"
+    response.vary.add("Accept-Encoding")
+    return response
 
 # Prepared page images, kept so the browser can show the source beside the text.
 # In memory, so MAX_JOBS is a RAM ceiling rather than a history depth -- see
@@ -8311,25 +8337,30 @@ def _runs_payload(limit: int, window=None, min_read_pct=None,
     Nothing here writes: a view is a way of reading the file, and the file is the
     same afterwards. That is what makes any threshold safe to try.
 
-    **The window is the newest N rows that match the filters, not N of each
-    group** (2026-10-21, at the user's request: *100 latest run thats match all
-    condition*). Every table used to be compiled over every matching row and
-    trimmed per group afterwards, so the card cost the same at a window of 100
-    as at 0 -- 4.4 s on a 52k-row log, and growing with the file. Cut here,
-    before anything is compiled, every table on the card (the trend included)
-    covers the same `recent` rows and the cost follows the window rather than
-    the log. 0 is still the whole log.
+    **The window is the newest N rows OF EACH MODEL that match the filters**
+    (2026-10-21, at the user's request: *100 latest run thats match all
+    condition*, then *make it 100 per model*). Every table used to be compiled
+    over every matching row and trimmed per group afterwards, so the card cost
+    the same at a window of 100 as at 0 -- 4.4 s on a 52k-row log, and growing
+    with the file. Cut here, before anything is compiled, every table on the
+    card (the trend included) covers the same `recent` rows and the cost follows
+    the window rather than the log. Per model, so a model that has not run
+    lately is not pushed off the card by one that has; with one model picked it
+    is simply that model's newest N. 0 is still the whole log.
     """
     everything = runlog.read(limit=10 ** 6)
     matched = runlog.filter_rows(everything, include=include, exclude=exclude)
     size = SUMMARY_RUNS if window is None else window
-    recent = matched[:size] if size else matched
+    recent = runlog.recent_by(matched, runlog.model_key, size) if size else matched
     # A percentage on the wire and a fraction in the setting. Named for its unit
     # because the log's own column is a percentage and the setting is not --
     # `runlog._field_trusted` carries the same warning, and getting it wrong
     # trusts everything or nothing.
     floor = None if min_read_pct is None else max(0.0, min(min_read_pct, 100.0)) / 100.0
-    with runlog.view(window=window, min_read=floor):
+    # Window 0 inside: the cut above is the window, and the tables' own
+    # per-setting and per-document windows on top of it would trim a document
+    # run by many models back to its newest N across all of them.
+    with runlog.view(window=0, min_read=floor):
         if drop_single_source:
             # The toggle's own words: exclude single-source failures from every
             # table BUT the errors one. So the ranking, standouts, reading,
@@ -8349,6 +8380,7 @@ def _runs_payload(limit: int, window=None, min_read_pct=None,
         # window and the drop are separate figures reported beside it.
         totals["matched"] = len(matched)
         totals["in_window"] = len(recent)
+        totals["window"] = size or None
         # The presentation summary, compiled over the same filtered rows under
         # the same view -- so the card's chips reach it like every other table.
         #
@@ -8379,7 +8411,7 @@ def _runs_payload(limit: int, window=None, min_read_pct=None,
         "runs": everything[:limit],
         "columns": runlog.COLUMNS,
         "totals": totals,
-        "facets": runlog.facets(everything),
+        "facets": runlog.log_facets(),
         # What the process would have used, so the page can say which of its
         # controls is at the server's own default and which the reader moved.
         "defaults": {"window": SUMMARY_RUNS,

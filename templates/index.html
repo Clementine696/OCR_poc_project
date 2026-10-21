@@ -2572,10 +2572,10 @@ a figure never written is not here to recover. 0 averages every score in the
 file.">Read floor
         <span><input id="lvFloor" type="number" min="0" max="100" step="5"><span class="u"> %</span></span>
       </label>
-      <label class="lv-num" title="how many of the newest runs that match the filters
+      <label class="lv-num" title="how many of each model's newest runs that match the filters
 every table covers. Only those rows are compiled, so a smaller number is a faster
 card. 0 is the whole log.">Runs averaged
-        <span><input id="lvWindow" type="number" min="0" step="5"><span class="u"> latest</span></span>
+        <span><input id="lvWindow" type="number" min="0" step="5"><span class="u"> per model</span></span>
       </label>
       <!-- Applies on its own change (like Pipeline), not via Apply: it is a
            run-level narrowing, and it changes every table except the raw log and
@@ -6718,9 +6718,9 @@ let logWindow = null, logRows = 0;
 function windowNote(what) {
   if (!logWindow) return '';
   return '<span class="cs-of" title="each ' + what + ' is summarised over its runs '
-    + 'among the latest ' + logWindow + ' that match the filters'
+    + 'among each model\'s latest ' + logWindow + ' that match the filters'
     + ' — the count on each row is what it actually covers">'
-    + ' &middot; latest ' + logWindow + ' runs</span>';
+    + ' &middot; latest ' + logWindow + ' per model</span>';
 }
 function paintBests(t) {
   logWindow = t.window || null;
@@ -6729,7 +6729,7 @@ function paintBests(t) {
   const cases = Object.keys(logBests).sort();
   if (!cases.length) { runBest.innerHTML = ''; return; }
   runBest.innerHTML = '<span title="'
-      + (logWindow ? 'the best score each document reached in the latest '
+      + (logWindow ? 'the best score each document reached in each model\'s latest '
                      + logWindow + ' matching runs, under any setting'
                    : 'the best score each document has ever reached')
       + '">Best' + (logWindow ? ' recently' : ' ever') + ', any setting:</span>'
@@ -6958,8 +6958,8 @@ function paintStandouts(t) {
     + 'fixture every model reads badly may be the hardest page here, or its '
     + 'hand-written ground truth may be wrong.'
     + (logWindow
-        ? ' Every row on this card covers <b>the latest ' + logWindow + ' runs that '
-          + 'match the filters</b> (Runs averaged). The count beside each row is what '
+        ? ' Every row on this card covers <b>each model\'s latest ' + logWindow
+          + ' runs that match the filters</b> (Runs averaged). The count beside each row is what '
           + 'it actually covers, which is often fewer. A mean taken across a change '
           + 'to the scorer, the schema or the presets describes a build nobody is '
           + 'running; set Runs averaged to 0 to compile the whole log. The CSV keeps '
@@ -8015,7 +8015,7 @@ function legacyNote(t) {
     + '2026-09-04 &mdash; an edit distance, which charged text the page does not '
     + 'print. It is recall of the ground truth now, so those rows read '
     + '<b>lower</b> than the same transcript would score today. Nothing was reset: '
-    + 'each table covers only the latest matching runs, so these leave as '
+    + 'each table covers only each model&rsquo;s latest matching runs, so these leave as '
     + 'new ones arrive and this note goes with them. Until then, treat a rise in a '
     + 'mean that mixes the two as the metric moving rather than the model.</p>';
 }
@@ -8668,7 +8668,7 @@ function prEnvCard(env) {
    this tab has no prose by rule, and `prHead` escapes its hint. */
 function prHead(n, text, hint, what) {
   const note = logWindow
-    ? ' Figures cover each ' + (what || 'model') + "'s runs among the latest "
+    ? ' Figures cover each ' + (what || 'model') + "'s runs among each model's latest "
       + logWindow + ' that match the filters — the run count on each row is what it '
       + 'actually covers.'
     : '';
@@ -9773,8 +9773,8 @@ function paintLogControls() {
     bits.push('<b>' + t.matched + ' of ' + t.logged + ' rows</b> match the filter');
   else if (t.logged !== undefined)
     bits.push(t.logged + ' rows in the log');
-  bits.push(t.window ? 'tables over the latest ' + (t.in_window ?? t.window)
-                       + ' matching run' + ((t.in_window ?? t.window) === 1 ? '' : 's')
+  bits.push(t.window ? 'tables over each model\'s latest ' + t.window + ' matching runs ('
+                       + (t.in_window ?? '?') + ' in all)'
                      : 'every run, no window');
   bits.push(t.min_read_pct
     ? 'field scores from reads under ' + Number(t.min_read_pct).toFixed(0)
@@ -10922,7 +10922,7 @@ function paintTrend(t) {
     + entries.map((e, i) => card('c' + i, isModel ? csModel(e.k) : e.k, e.k, e.b, false)).join('')
     + '</div>'
     + '<p class="note">' + (logWindow
-        ? '<b>The latest ' + logWindow + ' runs the filters match</b>, like every tab '
+        ? '<b>Each model\'s latest ' + logWindow + ' runs the filters match</b>, like every tab '
           + '— set Runs averaged to 0 to see the whole history. '
         : '<b>Every run the filters match, over its whole history.</b> ')
     + 'Each point is '
@@ -11019,8 +11019,8 @@ function paintLog() {
 function paintRunStats(t) {
   const rows = (logData && logData.runs) || [];
   runStats.title = t.window
-    ? 'Every summary on this card covers the latest ' + t.window + ' runs that '
-      + 'match the filters. Each row prints how many it actually covers.'
+    ? 'Every summary on this card covers each model\'s latest ' + t.window + ' runs '
+      + 'that match the filters. Each row prints how many it actually covers.'
     : 'Every summary on this card covers every run in this view.';
   runStats.textContent = [
     // Counted over each document's own window, the same rule the tables use --
@@ -11030,7 +11030,7 @@ function paintRunStats(t) {
     // Counted apart from reads: a re-extraction is a row, but it is not another
     // document read, and every other figure on this line is read against `runs`.
     t.extracts ? t.extracts + ' re-extract(s)' : null,
-    t.window ? 'latest ' + (t.in_window ?? t.window) + ' matching' : null,
+    t.window ? 'latest ' + t.window + ' per model' : null,
     // Said out loud, because every figure on this line is over the filtered rows
     // and the raw table below is not.
     t.matched !== t.logged ? 'filtered to ' + t.matched + ' of ' + t.logged

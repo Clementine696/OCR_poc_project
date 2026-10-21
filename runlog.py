@@ -1644,20 +1644,55 @@ def update_extract(key: dict, summary: dict) -> dict:
 ROW_INDEX = "_row"
 
 
-def _read_all() -> list:
-    """Every row in file order, oldest first, each stamped with `ROW_INDEX`."""
-    if not LOG_PATH.exists():
-        return []
+# The last parse of the log, keyed by the file's path, size and mtime
+# (2026-10-21, at the user's request: *save time and data transfer of log
+# retriving*). The run-log card re-reads the whole CSV on every query, and on a
+# 52k-row log that parse was 0.53 s of a ~1 s request while the file had not
+# changed since the last one. Every writer here appends or rewrites the file, so
+# any write moves the key. One tuple, replaced whole, so a reader on another
+# thread sees an old entry or a new one and never half of each.
+_parsed = (None, (), None)
+
+
+def _stat_key():
+    try:
+        st = LOG_PATH.stat()
+    except OSError:
+        return None
+    return (str(LOG_PATH), st.st_size, st.st_mtime_ns)
+
+
+def _parsed_log():
+    """The cache entry for the log as it is now, parsing it only if it moved."""
+    global _parsed
+    key = _stat_key()
+    if key is None:
+        return None, (), None
+    entry = _parsed
+    if entry[0] == key:
+        return entry
     try:
         with _lock:
+            # Stat again under the lock: the key must describe the bytes parsed.
+            key = _stat_key()
             with LOG_PATH.open("r", newline="", encoding="utf-8-sig") as handle:
                 rows = list(csv.DictReader(handle))
     except Exception:
-        return []
+        return None, (), None
     for i, row in enumerate(rows):
         row.pop(None, None)   # restkey leftovers from an earlier bad append
         row[ROW_INDEX] = i
-    return rows
+    entry = _parsed = (key, tuple(rows), None)
+    return entry
+
+
+def _read_all() -> list:
+    """Every row in file order, oldest first, each stamped with `ROW_INDEX`.
+
+    Fresh dicts on every call, copied from the cached parse: callers are free to
+    edit what they are handed, and the next caller must not see it.
+    """
+    return [dict(row) for row in _parsed_log()[1]]
 
 
 def read(limit: int = 100) -> list:
@@ -1922,6 +1957,22 @@ def filter_rows(rows: list, include: dict = None, exclude: dict = None) -> list:
     return kept
 
 
+def log_facets() -> dict:
+    """`facets` over the whole log, worked out once per version of the file.
+
+    The card asks for it on every query and it never depends on the query --
+    that is its rule -- so it is kept beside the cached parse (0.32 s on a
+    52k-row log, every request). Callers must not edit what they are handed.
+    """
+    global _parsed
+    entry = _parsed_log()
+    if entry[2] is None:
+        entry = (entry[0], entry[1], facets(list(entry[1])))
+        if entry[0] is not None and _parsed[0] == entry[0]:
+            _parsed = entry
+    return entry[2]
+
+
 def facets(rows: list = None) -> dict:
     """Every value each filterable field actually takes, with how many rows hold it.
 
@@ -2069,6 +2120,17 @@ def recent_by(rows: list, key_of, limit: int = None) -> list:
         if seen[key] <= limit:
             kept.append(row)
     return kept
+
+
+def model_key(row):
+    """The model a row is a run OF, for the run-log card's per-model window.
+
+    The reading model, or for a re-extraction (which read nothing) the model
+    that extracted -- kept apart from a reading model of the same name, since
+    the two are separate questions everywhere on the card.
+    """
+    return (FILTER_FIELDS["model"](row)
+            or ("extract", FILTER_FIELDS["extract_model"](row)))
 
 
 def _setting_key(columns):
