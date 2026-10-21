@@ -197,22 +197,60 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
 
-class _StripPrefix:
-    """Answer `URL_PREFIX/...` as `/...` -- see `config.URL_PREFIX`."""
+class _ProxyPrefix:
+    """Answer a request made under any path prefix as if it were made at `/`.
 
-    def __init__(self, wsgi, prefix: str):
-        self.wsgi, self.prefix = wsgi, prefix
+    **Worked out per request, never configured** (2026-10-20): the app sits
+    behind a reverse proxy at a sub-path -- nginx serving `host:3000/OCR/` --
+    and the page builds every request from its own address, so whatever path
+    the page was reached at is the prefix. A proxy that strips the prefix
+    (`proxy_pass http://host:port/;`) sends plain `/api/...` and nothing here
+    happens. One that passes it through sends `/OCR/api/...`, and:
+
+    * `X-Forwarded-Prefix`, where the proxy sends one, is taken first;
+    * otherwise everything before `/api/` is the prefix -- every route but the
+      page itself lives under `/api/`;
+    * otherwise a GET for a path that is no route of this app and ends in `/`
+      (or has no dot in its last part) is the page, served at that prefix.
+
+    The prefix moves to SCRIPT_NAME, where Flask expects a mount point.
+    """
+
+    def __init__(self, flask_app):
+        self.flask_app = flask_app
+        self.wsgi = flask_app.wsgi_app
+
+    def _is_route(self, path: str, method: str) -> bool:
+        try:
+            self.flask_app.url_map.bind("localhost").match(path, method=method)
+            return True
+        except Exception:                           # NotFound, MethodNotAllowed, redirects
+            return False
+
+    def _prefix(self, environ, path: str) -> str:
+        forwarded = (environ.get("HTTP_X_FORWARDED_PREFIX") or "").strip().rstrip("/")
+        if forwarded and (path == forwarded or path.startswith(forwarded + "/")):
+            return forwarded
+        at = path.find("/api/")
+        if at > 0:
+            return path[:at]
+        method = environ.get("REQUEST_METHOD", "GET")
+        last = path.rstrip("/").rsplit("/", 1)[-1]
+        if (method in ("GET", "HEAD") and path != "/" and not self._is_route(path, method)
+                and (path.endswith("/") or "." not in last)):
+            return path.rstrip("/")
+        return ""
 
     def __call__(self, environ, start_response):
-        path = environ.get("PATH_INFO", "")
-        if path == self.prefix or path.startswith(self.prefix + "/"):
-            environ["SCRIPT_NAME"] = environ.get("SCRIPT_NAME", "") + self.prefix
-            environ["PATH_INFO"] = path[len(self.prefix):] or "/"
+        path = environ.get("PATH_INFO", "") or "/"
+        prefix = self._prefix(environ, path)
+        if prefix:
+            environ["SCRIPT_NAME"] = environ.get("SCRIPT_NAME", "") + prefix
+            environ["PATH_INFO"] = path[len(prefix):] or "/"
         return self.wsgi(environ, start_response)
 
 
-if config.URL_PREFIX:
-    app.wsgi_app = _StripPrefix(app.wsgi_app, config.URL_PREFIX)
+app.wsgi_app = _ProxyPrefix(app)
 
 
 @app.before_request

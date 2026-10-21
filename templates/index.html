@@ -16,33 +16,18 @@
    not the sessionStorage, so the tab it is opened in takes a new one rather
    than sharing someone else's. A DUPLICATED tab copies sessionStorage too; the
    tab it was copied from answers on the channel below and the copy re-keys. */
-/* ---- served under a path (2026-10-20) ----
-   Deployed behind nginx at a sub-path (`host:3000/OCR/` proxied to the app),
-   every root-absolute `/api/...` on this page went to `host:3000/api/...` --
-   outside the app, so the run-log poll (`/api/runs/stat`) and everything else
-   missed it. The page is always the app's root, so its own path IS the base:
-   "" when served at `/`, "/OCR" at `/OCR/`. `appUrl` puts it in front of a
-   root-absolute path, and the fetch wrapper below does it for every fetch, so
-   the page's many `fetch('/api/...')` calls stay as written.
-
-   The header's "App path" control overrides it for this browser
-   (localStorage `ocrAppBase`), for a proxy that serves the page at one path and
-   the API at another. Only a path on this site: another origin would need CORS
-   the app does not send. A stored value that is not a path is ignored. */
-window.OCR_BASE_AUTO = location.pathname.replace(/\/+$/, "");
-window.OCR_BASE = (function () {
-  var stored = null;
-  try { stored = localStorage.getItem("ocrAppBase"); } catch (e) { /* auto */ }
-  return stored !== null && /^(\/[^\s?#]*[^\s?#\/])?$/.test(stored)
-    ? stored : window.OCR_BASE_AUTO;
-})();
-window.appUrl = function (path) {
-  return typeof path === "string" && path.charAt(0) === "/" && path.charAt(1) !== "/"
-    ? window.OCR_BASE + path : path;
-};
+/* ---- where the API is (2026-10-20) ----
+   The app is reached through a reverse proxy at a sub-path (nginx serving
+   `host:3000/OCR/`), so no request on this page names a fixed path: the page is
+   always the app's root, and its own address says where the app is. `API` is
+   that path plus `/api` -- "/api" when served at `/`, "/OCR/api" at `/OCR/` --
+   and every request below is built from it. Links in the markup name their
+   endpoint in `data-api` and get their href from it once the page loads. */
+window.OCR_BASE = location.pathname.replace(/\/+$/, "");
+window.API = window.OCR_BASE + "/api";
 document.addEventListener("DOMContentLoaded", function () {
-  document.querySelectorAll('a[href^="/api/"]').forEach(function (a) {
-    a.setAttribute("href", window.appUrl(a.getAttribute("href")));
+  document.querySelectorAll("a[data-api]").forEach(function (a) {
+    a.setAttribute("href", window.API + "/" + a.getAttribute("data-api"));
   });
 });
 (function () {
@@ -69,7 +54,6 @@ document.addEventListener("DOMContentLoaded", function () {
   window.OCR_WORKSPACE = id;
   var realFetch = window.fetch.bind(window);
   window.fetch = function (input, init) {
-    if (typeof input === "string") input = window.appUrl(input);
     try {
       var target = new URL(typeof input === "string" ? input : input.url, location.href);
       if (target.origin === location.origin) {
@@ -211,17 +195,6 @@ document.addEventListener("DOMContentLoaded", function () {
   .page-head { display: flex; align-items: flex-start; gap: 16px;
     flex-wrap: wrap; justify-content: space-between; }
   .theme-seg button { padding: 5px 12px; font-size: .78rem; }
-  .head-tools { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
-  .app-base { position: relative; font-size: .78rem; }
-  .app-base summary { cursor: pointer; color: var(--muted); list-style: none; }
-  .app-base summary::-webkit-details-marker { display: none; }
-  .app-base-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
-    width: 260px; padding: 10px; border: 1px solid var(--border); border-radius: 8px;
-    background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
-  .app-base-pop input { width: 100%; box-sizing: border-box; }
-  .app-base-row { display: flex; gap: 6px; }
-  .app-base-msg { margin: 0; color: var(--muted); min-height: 1em; }
-  .app-base-msg.err { color: var(--danger); }
   .page-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   #monToggle { padding: 5px 12px; font-size: .78rem; }
   #monToggle.on { background: var(--accent-soft); border-color: var(--accent); }
@@ -1581,28 +1554,11 @@ document.addEventListener("DOMContentLoaded", function () {
          choice and not the absence of one: a two-way switch would silently
          freeze the page on whichever theme the OS happened to be showing the
          first time anybody pressed it. -->
-    <div class="head-tools">
-      <div class="seg theme-seg" id="themeSeg" title="the page background. Auto
+    <div class="seg theme-seg" id="themeSeg" title="the page background. Auto
 follows your desktop; Light is the one to pick for projecting or screenshotting.">
-        <button data-theme="auto">Auto</button>
-        <button data-theme="light">Light</button>
-        <button data-theme="dark">Dark</button>
-      </div>
-      <!-- Where this page sends its requests. Worked out from the page's own
-           address unless set here; see OCR_BASE in the <head>. -->
-      <details class="app-base" id="appBase">
-        <summary title="Where this page sends its requests -- the path the app is
-served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"></code></summary>
-        <div class="app-base-pop">
-          <label for="appBaseInput">Path the app is served under on this site</label>
-          <input id="appBaseInput" type="text" placeholder="/OCR" spellcheck="false" autocomplete="off">
-          <div class="app-base-row">
-            <button type="button" class="ghost-sm" id="appBaseApply">Apply</button>
-            <button type="button" class="ghost-sm" id="appBaseAuto">Auto</button>
-          </div>
-          <p class="app-base-msg" id="appBaseMsg"></p>
-        </div>
-      </details>
+      <button data-theme="auto">Auto</button>
+      <button data-theme="light">Light</button>
+      <button data-theme="dark">Dark</button>
     </div>
     </div>
   </header>
@@ -2584,7 +2540,7 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
       <h2 style="margin:0">Run log</h2>
       <span id="runStats" class="muted-inline" style="font-size:.8rem"></span>
       <button id="runRefresh" class="ghost-sm" style="margin-left:auto">Refresh</button>
-      <a id="runDownload" class="ghost-sm" href="/api/runs.csv" download>Download CSV</a>
+      <a id="runDownload" class="ghost-sm" data-api="runs.csv" download>Download CSV</a>
     </div>
     <div class="lv-bar log-filter-toolbar" aria-label="Summary filters">
       <label class="lv-num" title="which passes a row is a record of. Some runs are
@@ -3389,7 +3345,7 @@ function paintLayout() {
   /* The image is the one the model was sent, straight from the job cache, so a
      box drawn at its own coordinates lands where the model put it. The viewBox
      is set from the image's natural size once it loads, for the same reason. */
-  const src = appUrl('/api/page/' + job + '/' + layPage);
+  const src = (API + '/page/' + job + '/' + layPage);
   layPageSrc = src;
   layNat = null;
   const boxes = blocks.map((b, i) => {
@@ -4278,7 +4234,7 @@ async function setMode(next) {
   fldMode.disabled = extractSel.disabled = true;
   if (fxMode) fxMode.disabled = true;
   try {
-    const res = await fetch('/api/extract/mode', {
+    const res = await fetch(API + '/extract/mode', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: next })
     });
@@ -4311,7 +4267,7 @@ function paintExtras() {
 async function setExtras(on) {
   extrasChk.disabled = true;
   try {
-    const res = await fetch('/api/extract/extras', {
+    const res = await fetch(API + '/extract/extras', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ extras: on })
     });
@@ -4342,7 +4298,7 @@ function paintOcrProfile() {
 async function setOcrProfile(next) {
   ocrProfileSel.disabled = true;
   try {
-    const res = await fetch('/api/ocr/profile', {
+    const res = await fetch(API + '/ocr/profile', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile: next })
     });
@@ -4383,7 +4339,7 @@ function paintLoopGuard() {
 async function setLoopGuard(on) {
   loopGuardChk.disabled = true;
   try {
-    const res = await fetch('/api/ocr/loop-guard', {
+    const res = await fetch(API + '/ocr/loop-guard', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ loop_guard: on })
     });
@@ -4434,7 +4390,7 @@ async function pushSampling(payload) {
   let refusal = '';
   [sampTemp, sampTopP, sampTopK, sampReset].forEach(el => { el.disabled = true; });
   try {
-    const res = await fetch('/api/ocr/sampling', {
+    const res = await fetch(API + '/ocr/sampling', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
@@ -4527,7 +4483,7 @@ async function pushReadFloor(box) {
   readFloorInp.disabled = true;
   if (rtReadFloorInp) rtReadFloorInp.disabled = true;
   try {
-    const res = await fetch('/api/ocr/read-floor', {
+    const res = await fetch(API + '/ocr/read-floor', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ min_read_pct: Math.max(0, Math.min(asked, 100)) })
     });
@@ -4738,10 +4694,10 @@ function segPagesHtml(g) {
     return '<div class="grp-page">'
       + '<div class="grp-pn"><span>Page ' + n + (n === g.pages[0] ? ' · opens' : '') + '</span>'
       + '<span class="grp-badge ' + cls + '">' + esc(word) + '</span></div>'
-      + (job ? '<a href="' + appUrl('/api/page/' + encodeURIComponent(job) + '/' + (n - 1))
+      + (job ? '<a href="' + (API + '/page/' + encodeURIComponent(job) + '/' + (n - 1))
                + '" target="_blank" rel="noopener" title="Open this page full size">'
                + '<img loading="lazy" alt="Page ' + n + '" src="'
-               + appUrl('/api/page/' + encodeURIComponent(job) + '/' + (n - 1)) + '"></a>' : '')
+               + (API + '/page/' + encodeURIComponent(job) + '/' + (n - 1)) + '"></a>' : '')
       + '<div class="grp-why">' + esc(why || '') + '</div>'
       + (head ? '<details data-page="' + n + '"' + (segOpenHeads.has(n) ? ' open' : '')
                 + '><summary>Text the grouping read</summary><pre>' + esc(head)
@@ -6354,7 +6310,7 @@ tableViewEl.addEventListener('change', async ev => {
   if (!box) return;
   box.disabled = true;
   try {
-    const res = await fetch('/api/table-agents', {
+    const res = await fetch(API + '/table-agents', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ [box.dataset.agent]: box.checked })
     });
@@ -6390,7 +6346,7 @@ async function extractInto(payload) {
   tabFields.disabled = false;
   paintFields();
   try {
-    const res = await fetch('/api/extract/stream', {
+    const res = await fetch(API + '/extract/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       // The page job id, or the case, names the document in the run-log row
       // this writes.
@@ -9276,7 +9232,7 @@ async function rtStart() {
   try {
     await pushReadFloor(rtReadFloorInp || readFloorInp);
     await ensureSampling();
-    const res = await fetch('/api/randomtest/stream', {
+    const res = await fetch(API + '/randomtest/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       signal: rtAbort.signal,
       // Exclusions go with both shapes: "do not test that model" is a statement
@@ -9442,7 +9398,7 @@ if (rtRun) {
       + 'model for its first token has to finish that wait first, which is '
       + 'slowest at high Detail; an extraction already running finishes.';
     try {
-      const res = await fetch('/api/randomtest/stop', { method: 'POST' });
+      const res = await fetch(API + '/randomtest/stop', { method: 'POST' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
     } catch (err) {
       // The server could not be told. Hang up so the page is usable, and let
@@ -9957,7 +9913,7 @@ rawDelete.addEventListener('click', async () => {
   logBusy = true; rawDelete.disabled = true;
   let out = null;
   try {
-    out = await (await fetch('/api/runs/delete', {
+    out = await (await fetch(API + '/runs/delete', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({rows: rows})
     })).json();
@@ -11115,7 +11071,7 @@ async function refreshRuns() {
   const seq = ++logSeq;
   let data;
   try {
-    data = await (await fetch('/api/runs/query', {
+    data = await (await fetch(API + '/runs/query', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({limit: 50, window: logView.window,
                             min_read_pct: logView.min_read_pct,
@@ -11176,7 +11132,7 @@ async function pollRuns() {
   if (stopBtn && !stopBtn.disabled) return;
   logPolling = true;
   try {
-    const sig = await (await fetch('/api/runs/stat')).json();
+    const sig = await (await fetch(API + '/runs/stat')).json();
     const token = sig.size + ':' + sig.mtime;
     if (logSig === null) { logSig = token; return; }   // first look: adopt, don't repaint
     if (token !== logSig) {
@@ -11237,64 +11193,6 @@ themeSeg.addEventListener('click', ev => {
 });
 
 applyTheme(storedTheme());
-
-/* ---------- app path ----------
-   Where the page sends its requests; see OCR_BASE in the <head>. A new path is
-   asked for /api/runs/stat (one stat() call -- /api/health would probe the model
-   server) before it is kept, so a typo cannot leave the page
-   talking to nothing -- the stored value is only ever one that answered. Applying
-   reloads, because everything already on screen was fetched from the old one. */
-(function () {
-  const box = document.getElementById('appBase');
-  const now = document.getElementById('appBaseNow');
-  const input = document.getElementById('appBaseInput');
-  const msg = document.getElementById('appBaseMsg');
-  const shown = base => base || '/';
-  const say = (text, err) => { msg.textContent = text; msg.classList.toggle('err', !!err); };
-  let stored = null;
-  try { stored = localStorage.getItem('ocrAppBase'); } catch { /* auto */ }
-  now.textContent = shown(OCR_BASE) + (stored === null ? ' (auto)' : '');
-  input.value = shown(OCR_BASE);
-
-  function normalise(raw) {
-    let text = (raw || '').trim();
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
-      const url = new URL(text);
-      if (url.origin !== location.origin)
-        throw new Error(`Only a path on this site (${location.origin}) -- `
-          + 'another address would need CORS, which the app does not send.');
-      text = url.pathname;
-    }
-    if (/[\s?#]/.test(text)) throw new Error('A path has no spaces, ? or #.');
-    text = '/' + text.replace(/^\/+|\/+$/g, '');
-    return text === '/' ? '' : text;
-  }
-
-  document.getElementById('appBaseApply').addEventListener('click', async () => {
-    let base;
-    try { base = normalise(input.value); } catch (err) { say(err.message, true); return; }
-    say(`Checking ${shown(base)} ...`);
-    try {
-      const res = await fetch(location.origin + base + '/api/runs/stat');
-      const body = res.ok ? await res.json() : null;
-      if (!body || !('size' in body)) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      say(`No app answered at ${shown(base)} (${err.message}). Nothing changed.`, true);
-      return;
-    }
-    try { localStorage.setItem('ocrAppBase', base); } catch {
-      say('This browser will not store it (private mode?).', true); return;
-    }
-    location.reload();
-  });
-
-  document.getElementById('appBaseAuto').addEventListener('click', () => {
-    try { localStorage.removeItem('ocrAppBase'); } catch { /* already auto */ }
-    location.reload();
-  });
-
-  box.addEventListener('toggle', () => { if (box.open) { say(''); input.focus(); } });
-})();
 
 /* The run-mode and worker controls went with the queue itself: with nothing
    running batches in-process there is no pool to size. */
@@ -11602,7 +11500,7 @@ async function loadTruth(id) {
   if (truthCache[id] === undefined) {
     truthCache[id] = (async () => {
       try {
-        const res = await fetch('/api/truth/' + encodeURIComponent(id));
+        const res = await fetch(API + '/truth/' + encodeURIComponent(id));
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Ground truth unavailable.');
         return data;
@@ -11678,7 +11576,7 @@ function paintCompare() {
     cmpPrev.disabled = cmpPage === 0;
     cmpNext.disabled = cmpPage >= total - 1;
 
-    const src = appUrl(`/api/page/${job}/${cmpPage}`);
+    const src = (`${API}/page/${job}/${cmpPage}`);
     if (cmpImg.getAttribute('src') !== src) cmpImg.src = src;
     cmpOpen.href = src;
     cmpDl.href = src;
@@ -11950,7 +11848,7 @@ function paintServerKind(sel, info) {
 async function setServerKind(url, kind) {
   setServerNote('Setting server type…');
   try {
-    const res = await fetch('/api/servers/kind', {
+    const res = await fetch(API + '/servers/kind', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: url, kind: kind })
     });
@@ -12007,7 +11905,7 @@ async function switchServer(url, model, extractModel, extractUrl) {
     // Same tri-state: undefined leaves pass 2's server alone, '' puts it back on
     // the reading server, a URL gives it one of its own.
     if (extractUrl !== undefined) body.extract_url = extractUrl;
-    const res = await fetch('/api/servers', {
+    const res = await fetch(API + '/servers', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
@@ -12127,7 +12025,7 @@ async function refreshServer() {
   try {
     // probe=1 bypasses the status cache and re-reads the model list too, which
     // is what "Re-check" is for after starting or stopping a server.
-    const res = await fetch('/api/servers?probe=1', {cache: 'no-store'});
+    const res = await fetch(API + '/servers?probe=1', {cache: 'no-store'});
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not re-check the servers.');
     server = data.server;
@@ -12280,7 +12178,7 @@ function paintCtx() {
 ctxSel.addEventListener('change', async () => {
   const want = ctxSel.value;
   try {
-    const res = await fetch('/api/context', {
+    const res = await fetch(API + '/context', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ num_ctx: Number(want) })
     });
@@ -12316,7 +12214,7 @@ async function mapFile(file) {
   mapChip.textContent = 'Looking for a matching solution…';
   try {
     const sha256 = await sha256Hex(file);
-    const res = await fetch('/api/match', {
+    const res = await fetch(API + '/match', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filename: file.name, sha256 })
     });
@@ -12440,7 +12338,7 @@ async function refreshPrepared() {
   prepBar.classList.add('on');
   prepCap.textContent = 'Preparing this page at ' + detailSel.value + '…';
   try {
-    const res = await fetch('/api/preview', { method: 'POST', body, signal: prepCtl.signal });
+    const res = await fetch(API + '/preview', { method: 'POST', body, signal: prepCtl.signal });
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
       throw new Error(e.error || ('Could not prepare the preview (' + res.status + ').'));
@@ -12622,7 +12520,7 @@ async function startRead(opts) {
   controller = new AbortController();
 
   try {
-    const res = await fetch('/api/ocr/stream', {
+    const res = await fetch(API + '/ocr/stream', {
       method: 'POST', body, signal: controller.signal
     });
     if (!res.ok) {
@@ -13041,7 +12939,7 @@ function paintSchema() {
   scPending = true;
   document.getElementById('scOut').innerHTML =
     '<p class="note">Loading the field requirements…</p>';
-  fetch('/api/schema')
+  fetch(API + '/schema')
     .then(r => r.json())
     .then(d => { scData = d; scPending = false; scRender(); })
     .catch(err => {
@@ -13827,7 +13725,7 @@ async function stStart() {
   stBusy(true);
   stPaint();
   try {
-    const res = await fetch('/api/stress/stream', {
+    const res = await fetch(API + '/stress/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       signal: stAbort.signal, body: JSON.stringify(body)
     });
@@ -13918,7 +13816,7 @@ if (stRun) {
     stStop.disabled = stStop2.disabled = true;
     stNote.textContent = 'Stopping — no new job starts, reads in flight are hung up…';
     try {
-      const res = await fetch('/api/stress/stop', { method: 'POST' });
+      const res = await fetch(API + '/stress/stop', { method: 'POST' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
     } catch { if (stAbort) stAbort.abort(); }
   };
@@ -13936,7 +13834,7 @@ if (stRun) {
     try {
       const snaps = [];
       for (const t of monTargets()) {
-        const res = await fetch('/api/stress/metrics' + (t.key === 'extract' ? '?server=extract' : ''));
+        const res = await fetch(API + '/stress/metrics' + (t.key === 'extract' ? '?server=extract' : ''));
         const data = await res.json();
         if (!res.ok) throw new Error(t.label + ': ' + (data.error || ('HTTP ' + res.status)));
         snaps.push({ label: t.label, data });
@@ -14026,7 +13924,7 @@ async function monTick(p) {
   p.busy = true;
   try {
     const gpu = (p.key === 'extract' ? monGpuExInp : monGpuInp).value.trim();
-    const res = await fetch('/api/monitor?server=' + p.key
+    const res = await fetch(API + '/monitor?server=' + p.key
       + (gpu ? '&gpu=' + encodeURIComponent(gpu) : ''));
     const d = await res.json();
     if (d.min_interval !== undefined) monState.minEvery = d.min_interval;
@@ -14259,7 +14157,7 @@ async function historyLoad() {
   note.textContent = 'Loading…';
   note.classList.remove('err');
   try {
-    const res = await fetch('/api/history?limit=' + historyPageSize + '&offset=' + historyOffset,
+    const res = await fetch(API + '/history?limit=' + historyPageSize + '&offset=' + historyOffset,
       {cache: 'no-store'});
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
@@ -14308,7 +14206,7 @@ async function historySelect(id) {
     button.setAttribute('aria-pressed', String(on));
   });
   try {
-    const res = await fetch('/api/history/' + encodeURIComponent(id), {cache: 'no-store'});
+    const res = await fetch(API + '/history/' + encodeURIComponent(id), {cache: 'no-store'});
     const item = await res.json();
     if (!res.ok) throw new Error(item.error || ('HTTP ' + res.status));
     if (mine !== historyDetailSeq) return;
@@ -14326,7 +14224,7 @@ function historyRender(item) {
   const read = cfg.reader || {}, extract = cfg.extractor || {};
   stEl('historyTitle').textContent = historyDate(item.started_at) + ' · ' + historyLabel(item.status);
   const download = stEl('historyDownload');
-  download.href = appUrl('/api/history/' + encodeURIComponent(item.id) + '?download=1');
+  download.href = (API + '/history/' + encodeURIComponent(item.id) + '?download=1');
   download.hidden = false;
   const value = v => v === undefined || v === null ? '—' : typeof v === 'object'
     ? JSON.stringify(v) : String(v);

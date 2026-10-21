@@ -1,38 +1,52 @@
 """Served under a sub-path: nginx at host:3000/OCR/ in front of the app.
 
-The page works out its own base from its address (`OCR_BASE` in the template),
-so a proxy that strips the prefix needs nothing here. `URL_PREFIX` is for one
-that passes the path through unchanged: `/OCR/api/...` must reach `/api/...`,
-and a request without the prefix must still be answered.
+Nothing is configured for the path. The page builds every request from its own
+address (`API` in the template), and the app takes whatever prefix a request
+arrives under off it (`_ProxyPrefix`), for a proxy that passes the path through
+unchanged. A proxy that strips it sends plain paths, which must still work.
 """
+import re
 import unittest
-
-from werkzeug.test import Client
 
 import app
 
 
 class PrefixTests(unittest.TestCase):
     def setUp(self):
-        self.client = Client(app._StripPrefix(app.app.wsgi_app, "/OCR"))
+        self.client = app.app.test_client()
 
-    def test_a_prefixed_request_reaches_the_route(self):
-        self.assertEqual(self.client.get("/OCR/api/runs/stat").status_code, 200)
-        self.assertEqual(self.client.get("/OCR/").status_code, 200)
-        self.assertEqual(self.client.get("/OCR").status_code, 200)
+    def test_any_prefix_reaches_the_api(self):
+        for prefix in ("/OCR", "/tools/ocr"):
+            res = self.client.get(prefix + "/api/runs/stat")
+            self.assertEqual(res.status_code, 200, prefix)
+            self.assertIn("size", res.get_json())
+
+    def test_the_page_is_served_at_its_prefix(self):
+        for path in ("/OCR/", "/OCR"):
+            res = self.client.get(path)
+            self.assertEqual(res.status_code, 200, path)
+            self.assertIn("window.API", res.get_data(as_text=True))
 
     def test_an_unprefixed_request_still_works(self):
         self.assertEqual(self.client.get("/api/runs/stat").status_code, 200)
+        self.assertEqual(self.client.get("/").status_code, 200)
 
-    def test_only_a_whole_segment_is_a_prefix(self):
-        self.assertEqual(self.client.get("/OCRX/api/runs/stat").status_code, 404)
+    def test_a_forwarded_prefix_is_taken_first(self):
+        res = self.client.get("/OCR/", headers={"X-Forwarded-Prefix": "/OCR"})
+        self.assertEqual(res.status_code, 200)
 
-    def test_the_page_finds_its_own_base(self):
-        page = app.app.test_client().get("/").get_data(as_text=True)
-        self.assertIn('window.OCR_BASE_AUTO = location.pathname.replace(/\\/+$/, "")', page)
-        # ...which the header's App path control may override, per browser.
-        self.assertIn('localStorage.getItem("ocrAppBase")', page)
-        self.assertIn('id="appBaseInput"', page)
+    def test_a_file_is_not_mistaken_for_the_page(self):
+        self.assertEqual(self.client.get("/favicon.ico").status_code, 404)
+
+    def test_a_post_to_an_unknown_path_is_not_the_page(self):
+        self.assertEqual(self.client.post("/OCR/").status_code, 404)
+
+    def test_no_request_on_the_page_names_a_fixed_path(self):
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn('window.OCR_BASE = location.pathname.replace(/\\/+$/, "")', page)
+        self.assertFalse(re.findall(r"fetch\(\s*['\"`]/api/", page))
+        self.assertNotIn('href="/api/', page)
+        self.assertNotIn("appBase", page)       # the App path control is gone
 
 
 if __name__ == "__main__":

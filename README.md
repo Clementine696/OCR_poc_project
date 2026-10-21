@@ -306,9 +306,9 @@ CPU/GPU control.
 
 ### Behind a reverse proxy at a sub-path
 
-Served at a path such as `http://host:3000/OCR/`, the page works out where to send its
-requests from its own address, so every call goes to `/OCR/api/...`. The proxy can pass
-the path on either way:
+Nothing is configured for the path. The page takes it from its own address, so when it is
+served at `http://host:3000/OCR/`, every call goes to `/OCR/api/...`. At `/` the calls go
+to `/api/...`. The proxy can pass the path on either way:
 
 ```nginx
 location /OCR/ {
@@ -319,13 +319,10 @@ location /OCR/ {
 }
 ```
 
-Without the trailing slash on `proxy_pass`, nginx passes `/OCR/api/...` through unchanged.
-In that case, start the app with `URL_PREFIX=/OCR`.
-
-**App path** in the page header shows the path in use (`/OCR (auto)`) and can override it
-for this browser, for a proxy that serves the page at one path and the API at another. A
-new path is checked against `/api/runs/stat` before it is kept, so a wrong one is
-refused rather than saved. **Auto** goes back to working it out from the address.
+Without the trailing slash, nginx passes `/OCR/api/...` through unchanged, and the app
+takes the prefix off each request itself. It uses `X-Forwarded-Prefix` if the proxy sends
+one, and otherwise everything before `/api/`. A request for the page at an unknown path
+ending in `/` is served the page.
 
 ### Without the page: `test.py`
 
