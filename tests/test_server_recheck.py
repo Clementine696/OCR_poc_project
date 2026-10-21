@@ -96,9 +96,16 @@ class RecheckTests(unittest.TestCase):
 
     def test_reader_replacement_drops_missing_reader_choice(self):
         self.models[READER] = ["dots.ocr-new"]
-        result = self.recheck()
+        with mock.patch.object(app, '_ocr_profile', 'typhoon'):
+            result = self.recheck()
+            self.assertEqual(result['ocr_profile'], 'dots')
+            self.assertEqual(app.ocr_profile(), 'dots')
         self.assertEqual(result["server"]["model"], "dots.ocr-new")
         self.assertNotIn(READER, backends._chosen)
+
+    def test_rechecking_same_reader_preserves_manual_profile_override(self):
+        with mock.patch.object(app, '_ocr_profile', 'dots'):
+            self.assertEqual(self.recheck()['ocr_profile'], 'dots')
 
     def test_recheck_only_changes_current_workspace_choices(self):
         ws = workspace.Workspace("recheck-test-tab")

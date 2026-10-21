@@ -274,18 +274,19 @@ OLLAMA_UNLOAD_ON_SWITCH = config.env_bool("OLLAMA_UNLOAD_ON_SWITCH", True)
 # The cost is paid once, at startup, in `preflight` -- never on a polling path,
 # which is the rule this project already has about the model server. It stops at
 # the first endpoint that answers, so the usual case is one probe.
-AUTO_SELECT_SERVER = config.env_bool("AUTO_SELECT_SERVER", True)
+# Fixed benchmark ports are the default now: replacing an offline model must
+# not silently move OCR to the extraction port or a historical endpoint.
+AUTO_SELECT_SERVER = config.env_bool("AUTO_SELECT_SERVER", False)
 
 # A SECOND endpoint for pass 2 (2026-10-01, at the user's request: *connect to 2
 # URLs, one for OCR and another for extraction, via the OpenAI-compatible API, and
-# keep the old one-URL setup for local / Ollama*). Unset -- the default -- is that
-# one-URL setup: both passes go to the active endpoint, exactly as every
-# measurement in CLAUDE.md was taken. Set, pass 2 (extraction, the classify and
+# keep the old one-URL setup for local / Ollama*). Defaults to port 8001;
+# explicitly empty shares the reading endpoint. Pass 2 (extraction, the classify and
 # segment questions, the table agents) goes here instead, while the page images
 # keep going to the reading endpoint. Any server kind this app can probe works on
 # either side -- vLLM, llama-server, Ollama or a generic OpenAI-compatible one.
 # Switchable at runtime from the page's "Extraction server" picker.
-EXTRACT_URL = config.env_str("EXTRACT_URL", "", allow_empty=True)
+EXTRACT_URL = config.env_str("EXTRACT_URL", "http://127.0.0.1:8001", allow_empty=True)
 # Which inference engine each server is, pinned (2026-10-05, at the user's
 # request: *pick the server engine so there is no 404 request*). Comma
 # separated `url=kind`, kind one of llama.cpp / ollama / vllm / openai, e.g.

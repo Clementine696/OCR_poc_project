@@ -60,16 +60,12 @@ def _defaults():
     """Endpoints offered in the picker.
 
     OCR_ENDPOINTS overrides the list entirely (comma separated). Otherwise the
-    two servers this machine actually runs are offered: llama-server on 8080
-    (from LLAMA_URL, and first so it stays the default) and Ollama on 11434.
-    Anything else is reachable through the picker's "Other address" box.
+    OCR starts on port 8000 (overridable by LLAMA_URL). The extraction endpoint
+    is added separately below. Other servers remain available through the picker.
     """
     listed = [u for u in (os.environ.get("OCR_ENDPOINTS") or "").split(",") if u.strip()]
     if not listed:
-        listed = [
-            os.environ.get("LLAMA_URL", "http://127.0.0.1:8080"),
-            "http://127.0.0.1:11434",
-        ]
+        listed = [os.environ.get("LLAMA_URL", "http://127.0.0.1:8000")]
     seen, out = set(), []
     for url in listed:
         url = clean_url(url)
@@ -96,9 +92,9 @@ _chosen = {}
 # Splitting the choice is what lets both be picked on their own evidence.
 _extract_chosen = {}
 # The endpoint pass 2 runs on, or None meaning "the reading endpoint" -- the
-# one-URL setup every measurement in CLAUDE.md was taken under, and still the
-# default (2026-10-01). Set, extraction and every other text request (classify,
-# segment, the table agents) go there while page images keep going to `_active`.
+# one-URL setup. By default pass 2 uses port 8001. Extraction and every other
+# text request (classify, segment, table agents) go there while page images
+# keep going to `_active`.
 #
 # **Stored literally, and "separate" is decided against `_active` at the time of
 # asking** (`extract_separate`). Picking the extraction server as the reading

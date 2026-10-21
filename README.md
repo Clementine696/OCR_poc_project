@@ -250,11 +250,11 @@ is fatal.
 To point at a model server elsewhere, or move the app's own port, without a `.env` at all:
 
 ```powershell
-$env:LLAMA_URL="http://127.0.0.1:11434"; $env:PORT="8000"; python app.py
+$env:LLAMA_URL="http://127.0.0.1:11434"; $env:EXTRACT_URL="http://127.0.0.1:11434"; $env:PORT="8000"; python app.py
 ```
 
 ```bash
-LLAMA_URL=http://127.0.0.1:11434 PORT=8000 python app.py
+LLAMA_URL=http://127.0.0.1:11434 EXTRACT_URL=http://127.0.0.1:11434 PORT=8000 python app.py
 ```
 
 ### Two copies at once
@@ -367,14 +367,14 @@ The ones that matter for a deployment:
 |---|---|---|
 | `OCR_HOST` | `127.0.0.1` | Loopback. Leave it — see [Security](#security). |
 | `PORT` | `5000` | Port to bind. Unset, a second copy steps to the next free port (up to `PORT_TRIES`, 10); set, it is used exactly. |
-| `LLAMA_URL` | `http://127.0.0.1:8080` | Where the model server is listening. |
+| `LLAMA_URL` | `http://127.0.0.1:8000` | Where the OCR model server is listening. |
 | `OCR_ENDPOINTS` | *(unset)* | Comma-separated list offered in the server picker. |
-| `EXTRACT_URL` | *(unset)* | A second server for field extraction (and the other text requests: classification, segmentation, the table agents). Unset, both passes use the reading server — the one-URL setup for local llama-server or Ollama. Set, page images go to the reading server and extraction goes here. Any OpenAI-compatible server works. Changeable in the page's **Extraction server** picker. |
-| `SERVER_KINDS` | *(unset)* | Pin servers to an inference engine: comma-separated `url=kind`, kind one of `llama.cpp`, `ollama`, `vllm`, `openai` — e.g. `http://gpu-box:8000=vllm`. A pinned server is probed with that engine's endpoint only (`/props`, `/api/tags` or `/v1/models`), so it never answers 404 to another engine's probe, and only a `vllm` server is ever asked `/metrics`. Unpinned servers are detected (**Auto**), which remembers what it found; **Re-check** detects again. Also settable per server in the page's **Server type** picker. |
+| `EXTRACT_URL` | `http://127.0.0.1:8001` | Server for field extraction, classification, segmentation and table agents. Set explicitly empty to share the OCR server. Changeable in **Model settings** in the header. |
+| `SERVER_KINDS` | *(unset)* | Pin servers to an inference engine: comma-separated `url=kind`, kind one of `llama.cpp`, `ollama`, `vllm`, `openai` — e.g. `http://gpu-box:8000=vllm`. A pinned server is probed with that engine's endpoint only (`/props`, `/api/tags` or `/v1/models`), so it never answers 404 to another engine's probe, and only a `vllm` server is ever asked `/metrics`. Unpinned servers are detected (**Auto**), which remembers what it found; **Refresh** detects again. Also settable per server in the page's **Server type** picker. |
 | `SERVER_TIMING` | `1` | Record the **server's own** time for each model request, split by phase: prefill, decode, queue and end-to-end latency. Nothing is derived from the app's clock. vLLM: `/metrics` read before and after each request (two extra GETs), the change in `vllm:request_prefill_time_seconds`, `request_decode_time_seconds`, `request_queue_time_seconds` and `e2e_request_latency_seconds`. llama.cpp: its `timings` block (no queue figure). Ollama: native `/api/chat` durations; `/v1` sends none, so most Ollama requests have no server time. A `/metrics` change that spans concurrent requests is left blank. `0` asks nothing extra. |
 | `SERVER_TIMING_METRICS` | `0` | The vLLM half of `SERVER_TIMING`. Off by default, because it reads `/metrics` once before and up to six times after **every** model request. Off, a vLLM request has no server figures and `/metrics` is read only by the stress test's sampler and the live monitor, each on its own interval. `1` to get vLLM's per-request phase times; llama.cpp and Ollama do not need it. |
 | `SERVER_TIMING_WAIT` | `1.0` | Seconds to wait for vLLM to record a just-finished request before leaving it blank. |
-| `AUTO_SELECT_SERVER` | `1` | Probe the configured endpoints and the ones the run log has runs against at startup, and select the first that answers. `0` starts on the first in the list whether or not anything is listening there. |
+| `AUTO_SELECT_SERVER` | `0` | Keep the configured ports through model restarts. Set `1` to probe configured/history endpoints at startup and choose one that answers. |
 | `AUTO_SELECT_MAX_CANDIDATES` | `8` | How many endpoints one auto-select will probe. A dead port costs a pair of connect timeouts. |
 | `AUTO_BEST_MODEL` | `1` | Select each pass's model at startup: the one the run log ranks first for that pass. Both stay changeable in the pickers. `0` starts both passes on the reading model — the one-model setup every figure in `CLAUDE.md` was measured under. |
 | `OLLAMA_SYSTEM` | `You are a helpful assistant.` | System message sent with every Ollama request; it reproduces what Ollama otherwise injects from the served model's Modelfile. Ollama only — llama-server is sent none. Set it empty to send no system message. |
@@ -882,13 +882,14 @@ below.
 
 ### Model server picker
 
-The **Model server** dropdown at the top of the left card switches which server the app
-talks to, without restarting it. Offered by default:
+The header shows the active **OCR** and **Extraction** models and endpoints across all
+tabs. Open **Model settings** to change their servers, model choices and engine types.
+Defaults:
 
 | Endpoint | Usually |
 |---|---|
-| `http://127.0.0.1:8080` | llama-server (the `LLAMA_URL` default) |
-| `http://127.0.0.1:11434` | Ollama's standard port |
+| `http://127.0.0.1:8000` | OCR (`LLAMA_URL`) |
+| `http://127.0.0.1:8001` | Extraction (`EXTRACT_URL`) |
 
 Set the list with `OCR_ENDPOINTS` if your servers listen elsewhere, or type an address
 into the picker.
@@ -902,18 +903,13 @@ vLLM — it is fixed by `--max-model-len` when the server starts — and a page 
 to `MAX_NEW_TOKENS`, so start vLLM with a window that holds a page image plus that many
 tokens.
 
-**The app picks one that is online at startup.** The list above is a constant and the run
-log is a history, and neither says which port has something listening on it today. So
-before it reports on a server, the app probes the configured endpoints and then every
-server `logs/runs.csv` has runs against — most recently used first — and makes the first
-one that answers active. It stops at the first, so the usual case is one probe, and it
-never moves off an endpoint that answers. Startup prints the endpoint it landed on and
-what it tried. `AUTO_SELECT_SERVER=0` turns it off; `AUTO_SELECT_MAX_CANDIDATES` bounds
-how many it will try, since a dead port costs a pair of connect timeouts.
+**Configured ports stay selected by default.** After stopping a model and starting a
+different one on the same port, press **Refresh** beside the two model cards. It probes
+both servers without reusing cached model lists and replaces choices that are no longer
+served. The names in the header update to the returned models; no web app restart is needed.
 
-It happens **at startup only**. Once the app is running the server picker is the way to
-move, and **Re-check** re-probes the endpoint already selected — after starting a model
-server the app did not find at launch, press Re-check, or restart the app.
+`AUTO_SELECT_SERVER=1` optionally selects an online configured/history endpoint at startup;
+`AUTO_SELECT_MAX_CANDIDATES` bounds how many it tries. This runs only at startup.
 
 ### The models are selected for you at startup
 
@@ -1002,11 +998,11 @@ Three things to know about it:
   allowed there. Eviction goes to the same scheduler that is serving the read in flight.
 
 The app never polls the model server. It asks for status when the page renders, when you
-press **Re-check**, and once at startup, and that is all.
+press **Refresh**, and once at startup, and that is all.
 
 ### Server status
 
-The status bar shows a green/red dot, the model name, the server kind, and a **Re-check**
+The status bar shows a green/red dot, the model name, the server kind, and a **Refresh**
 button. When the server is unreachable or cannot see images, the reason is shown and **Read
 document stays disabled**:
 
@@ -2027,7 +2023,7 @@ rate and the prefill, and are labelled as such wherever they appear.
 
 **The card never contacts the model server.** It reports the endpoint *as last seen* and says
 *not probed yet* if nothing has asked — the panel refreshes itself every few seconds, and
-polling a llama.cpp server cancels work in flight. Press **Re-check** beside the server picker
+polling a llama.cpp server cancels work in flight. Press **Refresh** beside the server picker
 to refresh it.
 
 **Colour carries the comparison**, not just the numbers: every figure has a magnitude bar
