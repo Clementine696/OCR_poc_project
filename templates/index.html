@@ -2807,6 +2807,16 @@ const rtExtractEndpoint = document.getElementById('rtExtractEndpoint');
 const rtExtractServerRow = document.getElementById('rtExtractServerRow');
 const rtExtractServerNote = document.getElementById('rtExtractServerNote');
 let pageStats = [], ticker = null, runStart = 0, liveTokens = 0, curPage = -1;
+// Page index -> the Detail a loop retry re-read it at, during a read.
+let pageRetried = {};
+/* The cached page image for page `i` (0-based) of the current job. A page a loop
+   retry re-read is a bigger image under the same URL, and the browser holds page
+   images for an hour, so its Detail goes on the end to fetch the new one. */
+function pageSrc(i) {
+  const d = pageRetried[i] || (pageStats[i] && pageStats[i].loop_retries && pageStats[i].detail);
+  return API + '/page/' + encodeURIComponent(job) + '/' + i
+    + (d ? '?detail=' + encodeURIComponent(d) : '');
+}
 const tabRendered = document.getElementById('tabRendered');
 const tabRaw = document.getElementById('tabRaw');
 const cmpToggle = document.getElementById('cmpToggle');
@@ -3345,7 +3355,7 @@ function paintLayout() {
   /* The image is the one the model was sent, straight from the job cache, so a
      box drawn at its own coordinates lands where the model put it. The viewBox
      is set from the image's natural size once it loads, for the same reason. */
-  const src = (API + '/page/' + job + '/' + layPage);
+  const src = pageSrc(layPage);
   layPageSrc = src;
   layNat = null;
   const boxes = blocks.map((b, i) => {
@@ -4694,10 +4704,10 @@ function segPagesHtml(g) {
     return '<div class="grp-page">'
       + '<div class="grp-pn"><span>Page ' + n + (n === g.pages[0] ? ' · opens' : '') + '</span>'
       + '<span class="grp-badge ' + cls + '">' + esc(word) + '</span></div>'
-      + (job ? '<a href="' + (API + '/page/' + encodeURIComponent(job) + '/' + (n - 1))
+      + (job ? '<a href="' + pageSrc(n - 1)
                + '" target="_blank" rel="noopener" title="Open this page full size">'
                + '<img loading="lazy" alt="Page ' + n + '" src="'
-               + (API + '/page/' + encodeURIComponent(job) + '/' + (n - 1)) + '"></a>' : '')
+               + pageSrc(n - 1) + '"></a>' : '')
       + '<div class="grp-why">' + esc(why || '') + '</div>'
       + (head ? '<details data-page="' + n + '"' + (segOpenHeads.has(n) ? ' open' : '')
                 + '><summary>Text the grouping read</summary><pre>' + esc(head)
@@ -11575,7 +11585,7 @@ function paintCompare() {
     cmpPrev.disabled = cmpPage === 0;
     cmpNext.disabled = cmpPage >= total - 1;
 
-    const src = (`${API}/page/${job}/${cmpPage}`);
+    const src = pageSrc(cmpPage);
     if (cmpImg.getAttribute('src') !== src) cmpImg.src = src;
     cmpOpen.href = src;
     cmpDl.href = src;
@@ -12495,7 +12505,7 @@ async function startRead(opts) {
   await pushReadFloor(readFloorInp);
   await ensureSampling();
   readBusy(true); copyBtn.disabled = true;
-  text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0;
+  text = ''; pageStats = []; pageTexts = []; curPage = -1; cmpPage = 0; pageRetried = {};
   layPage = 0; laySel = null; enableLayout();
   roPage = 0; enableRawOut();
   truth = null; tabAccuracy.disabled = true;
@@ -12558,8 +12568,25 @@ async function startRead(opts) {
           cmpPage = curPage;
           enableCompare();
           if (!compareEl.hidden) paintCompare();
+        } else if (msg.event === 'loop_retry') {
+          // The page looped; the server threw that read away and is streaming it
+          // again one Detail up, so its text so far comes off the transcript.
+          const dropped = pageTexts[curPage] || '';
+          text = text.slice(0, text.length - dropped.length);
+          pageTexts[curPage] = '';
+          pageRetried[curPage] = msg.detail;
+          painted = text.length;
+          paint();
+          if (!compareEl.hidden) paintCompare();
+          pagebar.innerHTML = '<span class="spin"></span> Page ' + msg.page
+            + ' looped — re-reading at ' + esc(msg.detail) + ' (' + msg.resolution + ')…';
         } else if (msg.event === 'page_done') {
           pageStats.push(msg);
+          if (msg.loop_retries && msg.loop_retries.length && !msg.looped) {
+            warn.textContent = 'Page ' + msg.page + ' looped at '
+              + msg.loop_retries.map(a => a.detail).join(', then ')
+              + ' and was re-read at ' + msg.detail + '.';
+          }
           enableLayout();
           enableRawOut();
           if (curMode === 'layout') paintLayout();

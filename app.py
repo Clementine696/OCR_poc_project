@@ -110,6 +110,7 @@ from settings import (
     DEFAULT_DETAIL,
     DETAIL_PRESETS,
     DRY_MULTIPLIER,
+    next_detail,
     resolve_detail,
     EXTRACT,
     EXTRACT_LOOP_MIN_REPEATS,
@@ -157,6 +158,7 @@ from settings import (
     LOOP_DEAD_TAIL_CHARS,
     LOOP_GUARD,
     LOOP_MIN_REPEATS,
+    LOOP_RETRY,
     LOOP_TAIL_CHARS,
     MAX_JOBS,
     MAX_NEW_TOKENS,
@@ -332,6 +334,20 @@ def register_job(pages, context=None):
         while len(_jobs) > JOBS_CEILING:
             _evict_job(next(iter(_jobs)))
     return job_id
+
+
+def replace_job_page(job_id: str, index: int, page) -> None:
+    """Swap one cached page for the image actually read, while the job is held.
+
+    A loop retry reads a bigger image than the one `register_job` cached, and the
+    compare and layout views draw the model's output over the cached one.
+    """
+    buf = io.BytesIO()
+    page.save(buf, format="PNG")
+    with _jobs_lock:
+        pages = _jobs.get(job_id)
+        if pages is not None and 0 <= index < len(pages):
+            pages[index] = buf.getvalue()
 
 
 def job_context(job_id: str) -> dict:
@@ -4912,6 +4928,42 @@ def read_reply(raw: str, profile: str = None) -> str:
     return normalise_output(strip_fence(raw))
 
 
+def loop_retry_page(page, stats: dict):
+    """The page to read again after a looped read, one Detail up -- or None.
+
+    Only a page `prepare_input` tagged can climb: the tag holds the trimmed page
+    before it was scaled, so the retry is rescaled from that rather than enlarged
+    from the smaller image. None when LOOP_RETRY is off, the read did not loop,
+    the page is already at `original`, or the next budget would give back the
+    same image (a page small enough to fit the lower one already).
+    """
+    origin = getattr(page, "_loop_retry", None)
+    if not (LOOP_RETRY and origin and stats.get("looped")):
+        return None
+    higher = next_detail(origin["detail"])
+    if higher is None:
+        return None
+    bigger = fit_pixels(origin["source"], DETAIL_PRESETS[higher])
+    if bigger.size == page.size:
+        return None
+    bigger._loop_retry = dict(origin, detail=higher)
+    replace_job_page(origin["job"], origin["index"], bigger)
+    return bigger
+
+
+def record_retry(stats: dict, was, now) -> None:
+    """Set the looped attempt aside on `stats`, so the retry fills it afresh.
+
+    The page's figures end up describing the read that was kept; what each
+    looped attempt cost is on `loop_retries`, and `detail` says where it ended.
+    """
+    attempts = stats.get("loop_retries", []) + [{
+        "detail": was._loop_retry["detail"],
+        **{key: stats.get(key) for key in ("resolution", "new_tokens", "seconds")}}]
+    stats.clear()
+    stats.update(loop_retries=attempts, detail=now._loop_retry["detail"])
+
+
 def read_page(image: Image.Image, stats: dict = None,
               profile: str = None, cancel=None) -> str:
     """Blocking full-page read.
@@ -4925,12 +4977,23 @@ def read_page(image: Image.Image, stats: dict = None,
     caller is expected to throw the partial away, because half a page is not a
     measurement. A page still in prefill finishes its prefill first -- see
     `Cancel`. Without one this drains to the end exactly as it always has.
+
+    A read that loops is read again one Detail up -- see `loop_retry_page`.
     """
-    parts = []
-    for chunk in stream_page(image, stats, profile, cancel):
-        parts.append(chunk)
+    stats = {} if stats is None else stats
+    while True:
+        parts = []
+        for chunk in stream_page(image, stats, profile, cancel):
+            parts.append(chunk)
+            if cancel is not None and cancel.is_set():
+                break
         if cancel is not None and cancel.is_set():
             break
+        retry = loop_retry_page(image, stats)
+        if retry is None:
+            break
+        record_retry(stats, image, retry)
+        image = retry
     return finish_page("".join(parts), stats, profile)
 
 
@@ -5252,6 +5315,8 @@ def summarise(all_stats, detail, started, job_id=None, run: dict = None):
         "tokens": tokens,
         "truncated": any(s.get("truncated") for s in all_stats),
         "looped": any(s.get("looped") for s in all_stats),
+        # Reads thrown away for looping and redone a Detail up (`read_page`).
+        "loop_retries": sum(len(s.get("loop_retries") or ()) for s in all_stats),
         "seconds": round(time.perf_counter() - started, 2),
         "prefill_seconds": round(sum(s.get("prefill_seconds", 0) for s in all_stats), 2),
         "decode_seconds": round(decode, 2),
@@ -5337,8 +5402,8 @@ def prepare_input(data: bytes, detail: str, case=None, source=None):
     pages, total = load_pages(data)
     budget = DETAIL_PRESETS[detail]
     # Trim first, then fit: the pixel budget is spent on content, not margins.
-    prepared = [fit_pixels(trim_margins(page) if TRIM_MARGINS else page, budget)
-                for page in pages]
+    trimmed = [trim_margins(page) if TRIM_MARGINS else page for page in pages]
+    prepared = [fit_pixels(page, budget) for page in trimmed]
     context = {"source": source or {}, "detail": detail, "pages": len(prepared),
                # What the FILE holds, against what was read. Carried on the job
                # rather than threaded through a wider return, because `summarise`
@@ -5347,7 +5412,14 @@ def prepare_input(data: bytes, detail: str, case=None, source=None):
                # caller, which is how one of them ends up dropping it.
                "pages_total": total,
                "case": case["id"] if case else ""}
-    return prepared, detail, register_job(prepared, context), case
+    job_id = register_job(prepared, context)
+    # Where a looped read climbs from (`loop_retry_page`). Untagged at the top
+    # Detail, which has nowhere to go, so only a lower one holds the trimmed page.
+    if LOOP_RETRY and next_detail(detail):
+        for index, (page, trim) in enumerate(zip(prepared, trimmed)):
+            page._loop_retry = {"source": trim, "detail": detail,
+                                "job": job_id, "index": index}
+    return prepared, detail, job_id, case
 
 
 def _stamp_model_meta(summary) -> None:
@@ -8173,12 +8245,24 @@ def ocr_stream():
             else:
                 for index, page in enumerate(pages, 1):
                     yield page_started(index, page)
-                    parts, stats = [], {}
-                    for batch in batch_tokens(stream_page(page, stats),
-                                              STREAM_FLUSH_MS / 1000):
-                        parts.extend(batch)
-                        yield json.dumps({"event": "token", "text": "".join(batch),
-                                          "n": len(batch)}) + "\n"
+                    stats = {}
+                    while True:
+                        parts = []
+                        for batch in batch_tokens(stream_page(page, stats),
+                                                  STREAM_FLUSH_MS / 1000):
+                            parts.extend(batch)
+                            yield json.dumps({"event": "token", "text": "".join(batch),
+                                              "n": len(batch)}) + "\n"
+                        # The same climb `read_page` makes, said out loud: the
+                        # page drops the looped text and streams the retry in.
+                        retry = loop_retry_page(page, stats)
+                        if retry is None:
+                            break
+                        record_retry(stats, page, retry)
+                        page = retry
+                        yield json.dumps({"event": "loop_retry", "page": index,
+                                          "detail": stats["detail"],
+                                          "resolution": f"{page.width}x{page.height}"}) + "\n"
                     collected.append(finish_page("".join(parts), stats))
                     all_stats.append(stats)
                     yield from page_finished(index, stats)

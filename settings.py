@@ -140,6 +140,17 @@ def resolve_detail(name: str) -> str:
     name = (name or "").strip().lower()
     return name if name in DETAIL_PRESETS else DEFAULT_DETAIL
 
+
+# The presets from fewest pixels to most: the ladder LOOP_RETRY climbs.
+DETAIL_ORDER = ("low", "medium", "original")
+
+
+def next_detail(name: str):
+    """The Detail one step up from `name`, or None at the top (`original`)."""
+    name = resolve_detail(name)
+    index = DETAIL_ORDER.index(name)
+    return DETAIL_ORDER[index + 1] if index + 1 < len(DETAIL_ORDER) else None
+
 # Crop blank scan margins before applying the resolution cap. Set TRIM_MARGINS=0 to
 # send pages exactly as rasterised.
 TRIM_MARGINS = config.env_bool("TRIM_MARGINS", True)
@@ -705,6 +716,13 @@ def sampler_extras(n_ctx: int = 0):
 # and 75 s on dots.ocr where the backstop stopped it at 864 tokens and 14 s).
 # Switchable per process from the page as well, like the pass-1 profile.
 LOOP_GUARD = config.env_bool("LOOP_GUARD", True)
+# A page whose read looped is read again at the next Detail up -- low to medium,
+# medium to original -- rescaled from the trimmed page rather than enlarged from
+# the smaller one, until a read comes back clean or `original` loops too. The looped attempts are kept on the page's stats
+# as `loop_retries`. Only reads that went through `prepare_input` can climb: the
+# stress test prepares its own pages and is never retried, so its timings stay
+# one request per page. LOOP_RETRY=0 turns it off.
+LOOP_RETRY = config.env_bool("LOOP_RETRY", True)
 LOOP_TAIL_CHARS = 600
 LOOP_MIN_REPEATS = 4
 # A repeated line/block that carries no actual *word* -- blank table markup
