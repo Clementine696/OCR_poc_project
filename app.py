@@ -23,8 +23,9 @@ import threading
 import time
 import uuid
 import weakref
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 import requests
@@ -43,6 +44,7 @@ import normalise
 import prompts
 import randomtest
 import runlog
+import runhistory
 import scoring
 import segment
 import servertime
@@ -50,6 +52,7 @@ import stress
 import tables
 import validate
 import verify
+import vllmbatch
 import workspace
 
 # Prompt text and tunables live outside this file so either can be read, edited
@@ -91,9 +94,13 @@ from settings import (
     MONITOR_MIN_INTERVAL,
     ACCEPTED_SUFFIXES,
     AGENTIC_EXTRACT,
+    EXTRACT_OTHER_FIELDS,
     AUTO_SELECT_SERVER,
     AGENTIC_PARALLEL,
     AGENTIC_PARALLEL_MAX,
+    OCR_PARALLEL,
+    OCR_PARALLEL_MAX,
+    OCR_PARALLEL_MIN_PAGES,
     VLLM_FIT_MAX_TOKENS,
     VLLM_FIT_MIN_TOKENS,
     VLLM_PREFIX_WARMUP,
@@ -788,71 +795,86 @@ def stream_page(image: Image.Image, stats: dict = None,
     first_at = None
     timings, usage, pieces = {}, {}, 0
     collected, looped = [], False
-    with backends.http_post(
-        chat_url(), status,
-        json=payload,
-        stream=True,
-        # No read timeout: this is the streaming path, where the gap between
-        # tokens is the only thing a timeout could measure and a slow first
-        # token is normal. The client disconnecting is what ends it.
-        timeout=(GEN_CONNECT_TIMEOUT, None),
-    ) as res:
-        if cancel is not None:
-            cancel.attach(res)
-        if res.status_code != 200:
-            detail = res.text[:300].strip()
-            if res.status_code == 500 and status["kind"] == "llama.cpp":
+    # "Batch requests" on a stress run: this page is one conversation of a
+    # vLLM /batch request (vllmbatch.py). Nothing streams, so there is no first
+    # token to time and nothing for the loop guard to cut -- the finished text
+    # is tested below instead.
+    batcher = _batcher_for(chat_url(), status)
+    if batcher is not None:
+        body = _await_batched(batcher, chat_url(), payload, cancel)
+        usage = body.get("usage") or {}
+        piece = (((body.get("choices") or [{}])[0].get("message") or {})
+                 .get("content") or "")
+        if piece:
+            pieces = 1
+            collected.append(piece)
+            yield piece
+    else:
+        with backends.http_post(
+            chat_url(), status,
+            json=payload,
+            stream=True,
+            # No read timeout: this is the streaming path, where the gap between
+            # tokens is the only thing a timeout could measure and a slow first
+            # token is normal. The client disconnecting is what ends it.
+            timeout=(GEN_CONNECT_TIMEOUT, None),
+        ) as res:
+            if cancel is not None:
+                cancel.attach(res)
+            if res.status_code != 200:
+                detail = res.text[:300].strip()
+                if res.status_code == 500 and status["kind"] == "llama.cpp":
+                    raise ValueError(
+                        "llama-server rejected the image (HTTP 500). This normally "
+                        "means vision is not enabled -- restart it with "
+                        f"--mmproj <mmproj-...gguf>. Server said: {detail}"
+                    )
+                if res.status_code in (400, 404) and status["kind"] == "ollama":
+                    raise ValueError(
+                        f"Ollama rejected the request for model '{status['model']}' "
+                        f"(HTTP {res.status_code}). Check the model is pulled on "
+                        f"{status['url']} and can read images. Server said: {detail}"
+                    )
                 raise ValueError(
-                    "llama-server rejected the image (HTTP 500). This normally "
-                    "means vision is not enabled -- restart it with "
-                    f"--mmproj <mmproj-...gguf>. Server said: {detail}"
-                )
-            if res.status_code in (400, 404) and status["kind"] == "ollama":
-                raise ValueError(
-                    f"Ollama rejected the request for model '{status['model']}' "
-                    f"(HTTP {res.status_code}). Check the model is pulled on "
-                    f"{status['url']} and can read images. Server said: {detail}"
-                )
-            raise ValueError(
-                f"{status['kind'] or 'model server'} HTTP {res.status_code}: {detail}")
+                    f"{status['kind'] or 'model server'} HTTP {res.status_code}: {detail}")
 
-        # Decode the SSE body as UTF-8 explicitly. requests' decode_unicode=True
-        # falls back to latin-1 for text/event-stream (no charset in the header),
-        # which turns every Thai character into mojibake.
-        for raw in res.iter_lines():
-            if not raw:
-                continue
-            line = raw.decode("utf-8", errors="replace")
-            if not line.startswith("data:"):
-                continue
-            chunk = line[5:].strip()
-            if chunk == "[DONE]":
-                # Read on to the end of the stream rather than break: a
-                # response closed with its last chunk unread closes its
-                # socket, so the keep-alive pool could never reuse it.
-                continue
-            try:
-                obj = json.loads(chunk)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("timings"):
-                timings = obj["timings"]
-            if obj.get("usage"):
-                usage = obj["usage"]
-            # The usage-only final chunk carries no choices at all.
-            choices = obj.get("choices") or [{}]
-            piece = (choices[0].get("delta") or {}).get("content")
-            if piece:
-                if first_at is None:
-                    first_at = time.perf_counter()
-                pieces += 1
-                collected.append(piece)
-                yield piece
-                # Check periodically, not per token -- the scan is O(tail^2).
-                if (guard and pieces % LOOP_CHECK_EVERY == 0
-                        and looks_repetitive("".join(collected))):
-                    looped = True
-                    break
+            # Decode the SSE body as UTF-8 explicitly. requests' decode_unicode=True
+            # falls back to latin-1 for text/event-stream (no charset in the header),
+            # which turns every Thai character into mojibake.
+            for raw in res.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8", errors="replace")
+                if not line.startswith("data:"):
+                    continue
+                chunk = line[5:].strip()
+                if chunk == "[DONE]":
+                    # Read on to the end of the stream rather than break: a
+                    # response closed with its last chunk unread closes its
+                    # socket, so the keep-alive pool could never reuse it.
+                    continue
+                try:
+                    obj = json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("timings"):
+                    timings = obj["timings"]
+                if obj.get("usage"):
+                    usage = obj["usage"]
+                # The usage-only final chunk carries no choices at all.
+                choices = obj.get("choices") or [{}]
+                piece = (choices[0].get("delta") or {}).get("content")
+                if piece:
+                    if first_at is None:
+                        first_at = time.perf_counter()
+                    pieces += 1
+                    collected.append(piece)
+                    yield piece
+                    # Check periodically, not per token -- the scan is O(tail^2).
+                    if (guard and pieces % LOOP_CHECK_EVERY == 0
+                            and looks_repetitive("".join(collected))):
+                        looped = True
+                        break
 
     finished = time.perf_counter()
     # With the guard down nothing interrupted the stream, so the tail is tested
@@ -860,7 +882,7 @@ def stream_page(image: Image.Image, stats: dict = None,
     # not the detection: a read that cycled the whole way to the token cap is a
     # looped read and has to say so, or it would log `ok` and be averaged as a
     # transcript.
-    if not guard and looks_repetitive("".join(collected)):
+    if (not guard or batcher is not None) and looks_repetitive("".join(collected)):
         looped = True
 
     clock.timings(timings)
@@ -886,7 +908,8 @@ def stream_page(image: Image.Image, stats: dict = None,
             # is llama.cpp's own prompt_ms where it sends one, which EXCLUDES the
             # time the request waited in the server's queue -- exactly the part a
             # stress test with more requests than slots is measuring.
-            ttft_seconds=round((first_at or finished) - started, 3),
+            ttft_seconds=(None if batcher is not None
+                          else round((first_at or finished) - started, 3)),
             new_tokens=new_tokens,
             truncated=new_tokens >= MAX_NEW_TOKENS,
             looped=looped,
@@ -935,9 +958,90 @@ def _timed_post(url: str, payload: dict, status: dict):
     return res
 
 
+_agentic_chat_context = threading.local()
+
+
+def _chat_measurement(payload, status, response=None, error=None, seconds=None):
+    """One physical chat request. Counts come from its reply, never /metrics.
+
+    No prompts or replies are retained here. A missing usage count is unknown,
+    not zero, and a vLLM window is its served max_model_len, not our UI picker.
+    """
+    body = {}
+    if response is not None and response.status_code == 200:
+        try:
+            body = response.json()
+        except (ValueError, TypeError):
+            pass
+    body = body if isinstance(body, dict) else {}
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    timings = body.get("timings") if isinstance(body.get("timings"), dict) else {}
+    def count(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    sent = count(usage.get("prompt_tokens", body.get("prompt_eval_count")))
+    output = count(usage.get("completion_tokens", body.get("eval_count")))
+    computed, cached = count(timings.get("prompt_n")), count(timings.get("cache_n"))
+    if sent is None and computed is not None and cached is not None:
+        sent = computed + cached
+    if output is None:
+        output = count(timings.get("predicted_n"))
+    # A loop-aborted stream may contain only a count of text chunks. Those are
+    # not tokenizer tokens, so do not present that fallback as measured usage.
+    if body.get("loop_aborted") and usage.get("prompt_tokens") is None:
+        output = None
+    options = payload.get("options") or {}
+    if status.get("kind") in ("vllm", "openai"):
+        window = backends.model_window(status)
+        if window is None:
+            known = backends.known(status.get("url")) or {}
+            window = backends.model_window({**known, "model": status.get("model")})
+        source = "server"
+    else:
+        window = options.get("num_ctx") or payload.get("n_ctx")
+        source = "requested"
+    window = count(window) or None
+    used = sent + output if sent is not None and output is not None else None
+    return {
+        "in_tokens": sent, "out_tokens": output, "used_tokens": used,
+        "reply_cap": count(payload.get("max_tokens", payload.get("max_completion_tokens",
+                                                                 options.get("num_predict")))),
+        "context_limit": window, "context_source": source if window else None,
+        "used_pct": round(100 * used / window, 2) if used is not None and window else None,
+        "seconds": round(seconds, 3) if seconds is not None else None,
+        "http_status": response.status_code if response is not None else None,
+        "schema": bool(payload.get("format") or
+                       (payload.get("response_format") or {}).get("type") == "json_schema"),
+        "error": str(error)[:200] if error else "",
+    }
+
+
 def _post_once(url: str, payload: dict, status: dict):
-    if _guards_extraction(url, payload, status):
-        return _streamed_post(url, payload, status)
+    chats = getattr(_agentic_chat_context, "requests", None)
+    if chats is None:
+        return _post_dispatch(url, payload, status)
+    began, response, error = time.perf_counter(), None, None
+    try:
+        response = _post_dispatch(url, payload, status)
+        return response
+    except Exception as err:
+        error = err
+        raise
+    finally:
+        chats.append({"request": len(chats) + 1, **_chat_measurement(
+            payload, status, response, error, time.perf_counter() - began)})
+
+
+def _post_dispatch(url: str, payload: dict, status: dict):
+    with _watched() as progress:
+        batcher = _batcher_for(url, status)
+        if batcher is not None:
+            return _batched_post(batcher, url, payload, status)
+        if _guards_extraction(url, payload, status):
+            return _streamed_post(url, payload, status, progress)
+        return _plain_post(url, payload, status)
+
+
+def _plain_post(url: str, payload: dict, status: dict):
     clock = servertime.Clock(status)
     res = backends.http_post(url, status, json=payload, timeout=GEN_TIMEOUT)
     # The whole reply is in, so the prefill certainly is: release anything
@@ -950,6 +1054,67 @@ def _post_once(url: str, payload: dict, status: dict):
             pass
         clock.finish()
     return res
+
+
+# The stress test's batcher, while a run with "Batch requests" on holds the
+# sweep guard; None otherwise. Process-wide like the prompt-cache bypass, and for
+# the same reason: the guard means the stress run is the only thing sending.
+# See vllmbatch.py.
+_batcher = None
+
+
+def _batcher_for(url: str, status: dict):
+    """The batcher to send this request through, or None to send it alone.
+
+    vLLM only (`serves_metrics`, the server's own statement), and only the
+    chat endpoint, the one shape vLLM's /batch route takes.
+    """
+    batcher = _batcher
+    if (batcher is None or not backends.serves_metrics(status)
+            or not vllmbatch.batchable(url)):
+        return None
+    return batcher
+
+
+def _send_batch(url: str, body: dict) -> dict:
+    """`send` for a `Batcher` -- one POST to vLLM's batch route, parsed. Only a
+    vLLM server is ever batched, so the request goes on the pooled connection."""
+    res = backends.http_post(url, {"kind": "vllm"}, json=body, timeout=GEN_TIMEOUT)
+    if res.status_code == 404:
+        raise vllmbatch.BatchError(
+            f"{url} answered HTTP 404 -- this vLLM build has no batch route. "
+            "Turn off Batch requests, or update vLLM.", 404)
+    if res.status_code != 200:
+        raise vllmbatch.BatchError(
+            f"vllm batch HTTP {res.status_code}: {res.text[:300].strip()}",
+            res.status_code)
+    try:
+        return res.json()
+    except ValueError:
+        raise vllmbatch.BatchError("the batch reply was not JSON", 502)
+
+
+def _await_batched(batcher, url: str, payload: dict, cancel=None) -> dict:
+    """This request's own reply out of a batch. Raises `BatchError` on failure,
+    and on Stop -- `cancel` hangs the waiter up like a stream."""
+    ticket = batcher.submit(url, payload)
+    if cancel is not None:
+        cancel.attach(ticket)
+    return ticket.result()
+
+
+def _batched_post(batcher, url: str, payload: dict, status: dict):
+    """`_plain_post`, through the batch: the same reply shape, the same tally."""
+    clock = servertime.Clock(status)
+    try:
+        body = _await_batched(batcher, url, payload)
+    except vllmbatch.BatchError as err:
+        _prefilled()
+        return _Reply(err.status_code or 502, text=str(err))
+    _prefilled()
+    clock.body(body)
+    clock.finish()
+    return _Reply(200, body)
 
 
 _OVERFLOW = re.compile(r"maximum context length|max_tokens|max_completion_tokens"
@@ -998,6 +1163,78 @@ def _prefilled():
     if hook is not None:
         _prefill_hook.cb = None
         hook()
+
+
+# Who is told that a pass-2 request is still making progress: the stress test's
+# stall alert. Until 2026-10-19 that alert heard only when a job's whole
+# extraction returned, so a multi-document file -- classify, split, one
+# extraction per document, table agents -- read as "stalled" under load while
+# every one of its requests was moving. `cb(event, request, what)`, with `event`
+# "begin", "chunk" (a streamed line arrived) or "end"; `request` is an object
+# unique to one request and `what` names it ("step parties"), from `_asking`.
+# Thread-local like `_prefill_hook`; `_carry_progress` takes it into the agentic
+# step threads, which a thread-local alone would never reach.
+_progress = threading.local()
+
+
+def _progress_swap(cb):
+    """Install `cb` as this thread's progress hook. Returns the one it replaced."""
+    previous = getattr(_progress, "cb", None)
+    _progress.cb = cb
+    return previous
+
+
+def _carry_progress(fn):
+    """`fn`, set to run with this thread's progress hook -- for handing to a thread."""
+    cb = getattr(_progress, "cb", None)
+    what = getattr(_progress, "what", None)
+    if cb is None:
+        return fn
+
+    def run(*args, **kwargs):
+        previous, previous_what = _progress_swap(cb), getattr(_progress, "what", None)
+        _progress.what = what
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _progress_swap(previous)
+            _progress.what = previous_what
+    return run
+
+
+@contextmanager
+def _asking(what: str):
+    """Name the requests made inside this block, for the stall alert.
+
+    Never wrapped round a `yield`: a generator can resume on another thread,
+    and the name would stay behind on this one.
+    """
+    previous = getattr(_progress, "what", None)
+    _progress.what = what
+    try:
+        yield
+    finally:
+        _progress.what = previous
+
+
+def _no_progress():
+    pass
+
+
+@contextmanager
+def _watched():
+    """One request, reported to the progress hook. Yields the call to make on
+    each streamed line; "end" is sent however the request finishes."""
+    cb = getattr(_progress, "cb", None)
+    if cb is None:
+        yield _no_progress
+        return
+    request, what = object(), getattr(_progress, "what", None)
+    cb("begin", request, what)
+    try:
+        yield lambda: cb("chunk", request, what)
+    finally:
+        cb("end", request, what)
 
 
 # Pass-2 requests this process cut off for looping, since it started. Read by the
@@ -1092,7 +1329,7 @@ class _Reply:
         return self._body
 
 
-def _streamed_post(url: str, payload: dict, status: dict):
+def _streamed_post(url: str, payload: dict, status: dict, progress=_no_progress):
     """One pass-2 request, streamed, and closed the moment it starts cycling.
 
     Closing the connection is the whole of the termination: vLLM aborts a request
@@ -1101,6 +1338,7 @@ def _streamed_post(url: str, payload: dict, status: dict):
     so the callers' salvage and diagnosis run exactly as on a loop that ran to the
     cap -- `_why_unparsable` names it a loop -- and the body carries
     `loop_aborted` for anything that wants to know it was cut rather than run out.
+    `progress` is called on every line that arrives (the stall alert's clock).
     """
     body = dict(payload, stream=True, stream_options={"include_usage": True})
     clock = servertime.Clock(status)
@@ -1116,6 +1354,7 @@ def _streamed_post(url: str, payload: dict, status: dict):
             # vLLM sends nothing until the first token exists, so the first line
             # of the body means the prompt has been prefilled -- and cached.
             _prefilled()
+            progress()
             line = raw.decode("utf-8", errors="replace")
             if not line.startswith("data:"):
                 continue
@@ -1451,7 +1690,8 @@ def _classify_with_model(text: str, status: dict):
             backends.system_prefix(status)
             + [{"role": "user", "content": message}],
             None, CLASSIFY_MAX_TOKENS, status)
-        res = _timed_post(url, payload, status)
+        with _asking("classify"):
+            res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return [], ""
         raw, _, _ = backends.structured_reply(res.json(), status)
@@ -1725,7 +1965,8 @@ def _segment_with_model(pages, status: dict):
             backends.system_prefix(status)
             + [{"role": "user", "content": message}],
             None, SEGMENT_MAX_TOKENS, status)
-        res = _timed_post(url, payload, status)
+        with _asking("split"):
+            res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return None
         raw, _, _ = backends.structured_reply(res.json(), status)
@@ -1859,7 +2100,8 @@ class _SegmentChat:
             url, payload = backends.structured_request(
                 self._messages(number, page), None, SEGMENT_MAX_TOKENS,
                 self.status)
-            res = _timed_post(url, payload, self.status)
+            with _asking(f"split, page {number}"):
+                res = _timed_post(url, payload, self.status)
             if res.status_code != 200:
                 return None
             raw, _, _ = backends.structured_reply(res.json(), self.status)
@@ -2020,7 +2262,7 @@ def _segment_record(seg: dict, index: int, total: int) -> dict:
 
 
 def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
-               pages=None):
+               pages=None, extras=None):
     """Everything downstream needs about one document's form, in one dict.
 
     **Resolved once per extraction and handed to everything**: the prompt's
@@ -2032,6 +2274,8 @@ def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
     page that is both a credit note and a tax invoice must answer for both, and
     an intersection would let each type excuse the other's obligations.
     `doc_type` is the primary one, for a label and nothing else.
+
+    `extras` is whether `other_fields` is asked for; None takes the switch.
     """
     codes, how, heading, confidence, escalated = resolve_doc_types(
         text, case_id, doc_type, status, pages)
@@ -2087,7 +2331,10 @@ def _field_set(text: str, case_id: str = None, doc_type=None, status=None,
             # entry rather than folded into `mandatory` for the reason `items` is
             # its own entry: a row's obligation is not a key's, and `validate`
             # reports it against a path no key list could match.
-            "mandatory_items": list(mandatory_items_for_types(codes))}
+            "mandatory_items": list(mandatory_items_for_types(codes)),
+            # Whether `other_fields` is asked for: the single prompt and grammar
+            # and the agentic `other` step all read it off here.
+            "extras": extract_extras() if extras is None else bool(extras)}
 
 
 def _classified(form: dict, mode: str) -> dict:
@@ -2139,8 +2386,9 @@ def _classified(form: dict, mode: str) -> dict:
         # Named only for the shape that walks them. Single mode asks one
         # question, and reporting the steps it did not take would describe a run
         # that did not happen.
-        "steps": ([s["id"] for s in steps_for_types(codes)]
+        "steps": ([s["id"] for s in steps_for_types(codes, form.get("extras", True))]
                   if mode == "agentic" else []),
+        "extras": form.get("extras", True),
         "rules": list(rules_for_types(codes)),
         # Whether the answer reached the PROMPT or only the field list. It is
         # per mode and a setting can turn it off, so a reader comparing two runs
@@ -2175,7 +2423,8 @@ def _extract_single(text: str, status: dict, form: dict) -> dict:
     # grammar listing a key the prompt never asked for is an invitation to fill
     # it, which is the note `prompts.extract_schema` carries.
     retry = _extract_once(text, status,
-                          extract_schema(form["keys"], form["items"]), form)
+                          extract_schema(form["keys"], form["items"],
+                                         form.get("extras", True)), form)
     retry["seconds"] = round(result.get("seconds", 0) + retry.get("seconds", 0), 2)
     if "fields" not in retry:
         # Both failed. The first reply is the one to report -- it is the one the
@@ -2229,7 +2478,7 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
     # "single" because this function IS single mode's one request -- agentic
     # never reaches here, it goes through `_step_question`.
     message = (extract_prompt(form["keys"], _framing(form, "single"),
-                              TYPE_FRAMING_BULLETS, form["items"])
+                              TYPE_FRAMING_BULLETS, form["items"], form.get("extras", True))
                + text + EXTRACT_REMINDER)
     url, payload = backends.structured_request(
         backends.system_prefix(status)
@@ -2238,7 +2487,8 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
 
     started = time.perf_counter()
     try:
-        res = _timed_post(url, payload, status)
+        with _asking("extraction"):
+            res = _timed_post(url, payload, status)
         if res.status_code != 200:
             return {"error": f"{status['kind'] or 'model server'} HTTP "
                              f"{res.status_code}: {res.text[:200]}"}
@@ -2278,6 +2528,10 @@ def _extract_once(text: str, status: dict, schema, form: dict) -> dict:
                          "Re-extract; if it persists, extract one page at a time.",
                 "envelope": True, "raw": raw[:2000], "prompt": message,
                 "seconds": elapsed}
+    if not form.get("extras", True):
+        # Not asked for, so not kept if the model wrote some anyway: the list
+        # is empty, as it is on an agentic run without the `other` step.
+        fields["other_fields"] = []
 
     _, _, tokens = backends.structured_reply(body, status)
     return {
@@ -2644,7 +2898,7 @@ def _step_count_label():
             else f"{min(counts)}-{max(counts)}")
 
 
-def _steps_for(wanted, doc_types=()):
+def _steps_for(wanted, doc_types=(), extras=True):
     """The step table, or the named subset of it, in the table's own order.
 
     A measurement tool and nothing else: it is what lets one step's prompt be
@@ -2655,7 +2909,7 @@ def _steps_for(wanted, doc_types=()):
     The order is always `EXTRACT_STEPS`', never the caller's, so a restricted run
     is the full run with steps removed rather than a differently ordered one.
     """
-    table = steps_for_types(doc_types)
+    table = steps_for_types(doc_types, extras)
     if not wanted:
         return table
     ids = [s.strip() for s in wanted if str(s).strip()]
@@ -2699,6 +2953,20 @@ def _warm_step(warmed, *args):
 
 
 def _run_step(step: dict, prefix: str, question: str, status: dict, source):
+    """`_run_step_asked`, its requests named after the step for the stall alert."""
+    previous = getattr(_agentic_chat_context, "requests", None)
+    chats = _agentic_chat_context.requests = []
+    try:
+        with _asking(f"step {step['id']}"):
+            outcome = _run_step_asked(step, prefix, question, status, source)
+        if chats:
+            outcome[0]["chats"] = chats
+        return outcome
+    finally:
+        _agentic_chat_context.requests = previous
+
+
+def _run_step_asked(step: dict, prefix: str, question: str, status: dict, source):
     """Ask one agentic step, with its grounding re-ask, and record what happened.
 
     Returns (record, values, replies, tokens). Self-contained by design: it reads
@@ -2817,8 +3085,8 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
     # caller applied. `steps_only` is measured against this rather than against
     # the whole step table: an invoice legitimately runs six of the eight steps
     # and is a complete run of its own form, not a partial run of someone else's.
-    full_table = steps_for_types(form["doc_types"])
-    table = _steps_for(only, form["doc_types"])
+    full_table = steps_for_types(form["doc_types"], form.get("extras", True))
+    table = _steps_for(only, form["doc_types"], form.get("extras", True))
     source = grounding.Source(text)
     started = time.perf_counter()
     fields, steps, replies = {}, [], []
@@ -2866,7 +3134,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
                                 thread_name_prefix="agentic-step") as pool:
             def submit(index):
                 step = table[index]
-                return pool.submit(workspace.bind(batch.run), _run_step, step,
+                return pool.submit(_carry_progress(workspace.bind(batch.run)), _run_step, step,
                                    prefix, _step_question(step, framing), status,
                                    source)
 
@@ -2877,7 +3145,7 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
                 # find the shared prefix in vLLM's cache rather than each
                 # prefilling it again in the same scheduler step.
                 warmed = threading.Event()
-                futures = {pool.submit(workspace.bind(batch.run), _warm_step,
+                futures = {pool.submit(_carry_progress(workspace.bind(batch.run)), _warm_step,
                                        warmed, table[0],
                                        prefix, _step_question(table[0], framing),
                                        status, source): 0}
@@ -3016,6 +3284,12 @@ _profile_lock = threading.Lock()
 # see `workspace`. The globals are the default workspace's.
 workspace.field("extract_mode", lambda: _extract_mode)
 workspace.field("ocr_profile", lambda: _ocr_profile)
+
+# Whether pass 2 asks for `other_fields` at all. Held and switched like the mode
+# above, and stamped on every result as `extras` so a row says which it ran under.
+# See `settings.EXTRACT_OTHER_FIELDS`.
+_extract_extras = bool(EXTRACT_OTHER_FIELDS)
+workspace.field("extract_extras", lambda: _extract_extras)
 
 
 def ocr_profile() -> str:
@@ -3245,6 +3519,19 @@ def set_extract_mode(mode: str) -> str:
         if not workspace.put("extract_mode", mode):
             _extract_mode = mode
     return mode
+
+
+def extract_extras() -> bool:
+    with _mode_lock:
+        return bool(workspace.get("extract_extras", _extract_extras))
+
+
+def set_extract_extras(on: bool) -> bool:
+    global _extract_extras
+    with _mode_lock:
+        if not workspace.put("extract_extras", bool(on)):
+            _extract_extras = bool(on)
+    return extract_extras()
 
 
 def _recut_message(table: dict) -> str:
@@ -3818,26 +4105,30 @@ def _item_table_stream(text: str, form: dict, status: dict, pages=None,
         if concat_on and table.get("_others"):
             yield event("concat", "running", offered=len(table["_others"]),
                         model=status.get("model") or "")
-            table = _table_concat_agent(table, status, snap)
+            with _asking("table concat agent"):
+                table = _table_concat_agent(table, status, snap)
             yield event("concat", "done", **_agent_brief(table.get("concat")))
         else:
             yield event("concat", "off" if not concat_on else "skipped")
         if fix_on:
             yield event("fix", "running", rows=len(table["rows"]),
                         model=status.get("model") or "")
-            table = _table_fix_agent(table, status, snap)
+            with _asking("table fix agent"):
+                table = _table_fix_agent(table, status, snap)
             yield event("fix", "done", **_agent_brief(table.get("fix_agent")))
         else:
             yield event("fix", "off")
             table = tables.reclassify(tables.realign(table))
             snap("realign", "code", table)
-            table = _recut_with_model(table, status)
+            with _asking("table recut"):
+                table = _recut_with_model(table, status)
             snap("recut", "model", table)
         # Agent 2 last, on the table as it now stands.
         asking = identify_on and bool(table.get("rows"))
         if asking:
             yield event("identify", "running", model=status.get("model") or "")
-        table = _table_identify_agent(table, form, fields, status)
+        with _asking("table identify agent"):
+            table = _table_identify_agent(table, form, fields, status)
         yield event("identify", "done" if asking else "off",
                     is_master_table=table.get("is_master_table"),
                     master_from=table.get("master_from"),
@@ -3889,7 +4180,7 @@ def _score_item_table(result: dict, case_id: str, pages=None, text: str = "") ->
 
 def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
                           steps=None, doc_type: str = None, pages=None,
-                          truth_fed: bool = False):
+                          truth_fed: bool = False, extras: bool = None):
     """Turn a finished transcript into structured JSON, yielding progress.
 
     A separate text-only pass rather than part of the OCR prompt: mixing
@@ -3935,6 +4226,9 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     if not status["text_available"]:
         return {"error": status["text_reason"]}
     mode = mode or extract_mode()
+    # Whether `other_fields` is asked for, decided once for every document of
+    # the file so a switch flipped mid-file cannot split it.
+    extras = extract_extras() if extras is None else bool(extras)
     # Every model request this extraction makes -- the segment and classify
     # questions, the steps or the single request, the table agents -- is timed
     # by the server too, and summed here into `server_time`. Closed in `finally`
@@ -3942,7 +4236,7 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     previous = servertime.open_tally()
     try:
         result = yield from _extract_file(text, mode, case_id, steps, doc_type,
-                                          pages, truth_fed, status)
+                                          pages, truth_fed, status, extras)
     finally:
         served = servertime.close_tally(previous)
     if isinstance(result, dict) and served:
@@ -3950,7 +4244,8 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     return result
 
 
-def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status):
+def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status,
+                  extras=True):
     """The body of `extract_fields_stream`, split out so the server-time tally
     can be wrapped round all of it."""
     segments, split_from = yield from _segment_stream(text, pages, status)
@@ -3965,11 +4260,11 @@ def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status
     if len(segments) > 1:
         result = yield from _extract_documents(segments, records, mode, case_id,
                                                steps, doc_type, status,
-                                               truth_fed)
+                                               truth_fed, extras)
     else:
         result = yield from _extract_document(segments[0]["text"], mode, case_id,
                                               steps, doc_type, status,
-                                              truth_fed=truth_fed)
+                                              truth_fed=truth_fed, extras=extras)
     if isinstance(result, dict):
         # On every result, however many documents: what the file was read as is
         # a fact about the run, and a reader looking at one document's fields
@@ -3977,12 +4272,15 @@ def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status
         result["segments"] = records
         result.setdefault("documents_found", 1)
         result["split_from"] = split_from
+        # Whether `other_fields` was asked for. An empty list means "none
+        # found" only where it was; the run log reads this to leave it blank.
+        result["extras"] = extras
     return result
 
 
 def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
                       status: dict, record: dict = None,
-                      truth_fed: bool = False):
+                      truth_fed: bool = False, extras: bool = True):
     """One document: classify it, ask for its form, ground it, validate it, score it.
 
     The whole of what `extract_fields_stream` used to be, lifted out unchanged so
@@ -4000,7 +4298,7 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
     # missing, what validate checks and what fieldscore scores all come off this
     # one dict, so the two modes cannot disagree about which document this is.
     form = _field_set(text, case_id, doc_type, status,
-                      (record or {}).get("pages"))
+                      (record or {}).get("pages"), extras)
     # Stage 0, announced before either shape starts. It is the one part of a
     # pass-2 run that is finished before the first request goes out, so a page
     # that shows it immediately is showing something true rather than a
@@ -4037,7 +4335,8 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
 
 
 def _extract_documents(segments, records, mode: str, case_id: str, steps,
-                       doc_type, status: dict, truth_fed: bool = False):
+                       doc_type, status: dict, truth_fed: bool = False,
+                       extras: bool = True):
     """Every document in the file, one at a time, merged into one result.
 
     **The fields are independent and are kept that way.** Each document is
@@ -4061,7 +4360,7 @@ def _extract_documents(segments, records, mode: str, case_id: str, steps,
                "page_range": record["page_range"]}
         result = yield from _extract_document(seg["text"], mode, case_id,
                                               steps, doc_type, status, record,
-                                              truth_fed)
+                                              truth_fed, extras)
         if not isinstance(result, dict):
             result = {"error": "extraction returned nothing"}
         result["document"] = record["document"]
@@ -4374,21 +4673,27 @@ def _attribute_blame(score, case_id: str, transcript: str,
         return {"skipped": f"attribution failed: {err}"}
 
 
-def _drain(generator):
-    """Run a generator that returns a value, discarding what it yields."""
+def _drain(generator, each=None):
+    """Run a generator that returns a value, discarding what it yields -- or
+    handing each event to `each`."""
     while True:
         try:
-            next(generator)
+            event = next(generator)
         except StopIteration as stop:
             return stop.value
+        if each is not None:
+            each(event)
 
 
 def extract_fields(text: str, mode: str = None, case_id: str = None,
                    steps=None, doc_type: str = None, pages=None,
-                   truth_fed: bool = False) -> dict:
-    """`extract_fields_stream` for callers with nowhere to show progress."""
+                   truth_fed: bool = False, extras: bool = None,
+                   each=None) -> dict:
+    """`extract_fields_stream` for callers with nowhere to show progress.
+    `each`, where given, sees every event (the stress test reads which document
+    is being extracted off them)."""
     return _drain(extract_fields_stream(text, mode, case_id, steps, doc_type,
-                                        pages, truth_fed))
+                                        pages, truth_fed, extras), each)
 
 
 def strip_fence(text: str) -> str:
@@ -4565,6 +4870,116 @@ def read_page(image: Image.Image, stats: dict = None,
     return finish_page("".join(parts), stats, profile)
 
 
+def _page_parallelism(pages: int) -> int:
+    """How many pages of one read go to the server at once: 1 means one at a time.
+
+    More than one only for a document of `OCR_PARALLEL_MIN_PAGES` or more, on a
+    server that batches concurrent requests (`backends.parallel_ok`, vLLM), with
+    `OCR_PARALLEL` on. Capped by `OCR_PARALLEL_MAX` where it is set. The server
+    is only asked about once the page count says it could matter, so a short
+    read costs no status lookup it did not already make.
+    """
+    if not (OCR_PARALLEL and pages >= OCR_PARALLEL_MIN_PAGES):
+        return 1
+    if not backends.parallel_ok(llama_status()):
+        return 1
+    return max(1, min(OCR_PARALLEL_MAX or pages, pages))
+
+
+class _Hangup:
+    """Something a one-slot `Cancel` can hang up that stops MANY requests.
+
+    A random test hands its read one `Cancel`, which holds one live request; a
+    read whose pages are in flight together has several. The read attaches this
+    to the round's `Cancel` and gives the pages a `MultiCancel` of their own, so
+    the round's Stop reaches every page.
+    """
+
+    def __init__(self, cancel):
+        self.cancel = cancel
+
+    def close(self):
+        self.cancel.set()
+
+
+def read_pages_at_once(pages, parallel: int, cancel=None, run: dict = None):
+    """Read `pages` `parallel` at a time; yield `(number, text, stats)` in PAGE order.
+
+    The split-and-join that lets a 13-page file take about as long as its
+    slowest page rather than all thirteen (see `OCR_PARALLEL`). Every page goes
+    through `read_page`, exactly as a sequential read sends it, and the results
+    are handed back by page number -- page 3 is yielded only once pages 1 and 2
+    have been -- so the caller joins them in document order whatever order the
+    server finished them in, and the transcript is the one a sequential read
+    gives.
+
+    A page that fails stops the rest: the others are hung up and the error is
+    raised as soon as it is known, rather than after every page before it in
+    the document has finished. So does closing this generator -- the browser's
+    Stop on the streaming route.
+
+    `run`, where given, gets `parallel` and `server`: the server's own timing
+    of the read as one span (`servertime.Batch`), because a /metrics difference
+    around any one page covers its neighbours and the pages themselves carry
+    none.
+    """
+    inner = MultiCancel()
+    if cancel is not None:
+        cancel.attach(_Hangup(inner))
+    batch = servertime.Batch(llama_status())
+
+    def one(page):
+        stats = {}
+        return read_page(page, stats, cancel=inner), stats
+
+    pool = ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="ocr-page")
+    futures = [pool.submit(workspace.bind(batch.run), one, page) for page in pages]
+    complete = False
+    try:
+        pending, ready = set(futures), 0
+        while pending:
+            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in finished:
+                future.result()             # a failed page raises here, at once
+            while ready < len(futures) and futures[ready].done():
+                text, stats = futures[ready].result()
+                ready += 1
+                yield ready, text, stats
+        complete = True
+    finally:
+        if not complete:
+            inner.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        server = batch.close()
+        if run is not None:
+            run.update(parallel=parallel, server=server)
+
+
+def read_all_pages(pages, page_texts: list, all_stats: list, cancel=None,
+                   run: dict = None) -> None:
+    """Read every page into the caller's lists, at once where that is allowed.
+
+    The lists are the caller's so the pages that finished before an error or a
+    Stop are still there to summarise. Sequential exactly as before where
+    `_page_parallelism` says 1, stopping between pages on `cancel`.
+    """
+    parallel = _page_parallelism(len(pages))
+    if parallel > 1:
+        if stop_requested(cancel):
+            return
+        with closing(read_pages_at_once(pages, parallel, cancel, run)) as reads:
+            for _, text, stats in reads:
+                page_texts.append(text)
+                all_stats.append(stats)
+        return
+    for page in pages:
+        if stop_requested(cancel):
+            break
+        stats = {}
+        page_texts.append(read_page(page, stats, cancel=cancel))
+        all_stats.append(stats)
+
+
 # --------------------------------------------------------------------------
 # file loading
 # --------------------------------------------------------------------------
@@ -4726,8 +5141,13 @@ def _page_coverage(job_id, counted):
     return {"pages_total": total, "pages_truncated": max(0, total - counted)}
 
 
-def summarise(all_stats, detail, started, job_id=None):
-    """Roll per-page stats into the totals both endpoints report."""
+def summarise(all_stats, detail, started, job_id=None, run: dict = None):
+    """Roll per-page stats into the totals both endpoints report.
+
+    `run` is what `read_pages_at_once` left for a read whose pages were in
+    flight together: how many at once, and the server's timing of the lot as
+    one span, which stands in for the per-page figures those pages cannot have.
+    """
     tokens = sum(s.get("new_tokens", 0) for s in all_stats)
     decode = sum(s.get("decode_seconds", 0) for s in all_stats)
     models = [s.get("model") for s in all_stats if s.get("model")]
@@ -4783,8 +5203,28 @@ def summarise(all_stats, detail, started, job_id=None):
                        else None),
         "server_timing": served[0].get("server_timing", "") if served else "",
         "server_timed_pages": len(served),
+        **_concurrent_read(run, served),
         "page_stats": all_stats,
     }
+
+
+def _concurrent_read(run: dict, served: list) -> dict:
+    """`summarise`'s fields for a read whose pages went to the server at once.
+
+    Empty for a sequential read. Otherwise `ocr_parallel`, and -- where no page
+    carried a server time of its own and the batch could be attributed -- the
+    batch's figures in place of the per-page sums, `server_timed_pages` being
+    the requests it covers.
+    """
+    if not run or (run.get("parallel") or 1) <= 1:
+        return {}
+    out = {"ocr_parallel": run["parallel"]}
+    server = run.get("server") or {}
+    if not served and server.get("server_seconds") is not None:
+        out.update({name: server.get(name) for name in servertime.FIELDS})
+        out.update(server_timing=server.get("source") or "",
+                   server_timed_pages=server.get("requests") or 0)
+    return out
 
 
 # Two concurrent runs of the same case would otherwise interleave their writes to
@@ -5068,6 +5508,7 @@ def index():
         ctx_choices=backends.NUM_CTX_CHOICES,
         num_ctx=backends.num_ctx(),
         extract_mode=extract_mode(),
+        extract_extras=extract_extras(),
         # A RANGE, not a count: the step table is per document type now, so an
         # invoice runs six of the eight steps and a credit note all eight. The
         # picker is drawn before any document is chosen, so the only honest
@@ -5137,7 +5578,9 @@ def context_set():
 def servers_list():
     """Configured endpoints, what each one is, and which is active."""
     force = request.args.get("probe") == "1"
-    return jsonify(backends.overview(force=force))
+    response = jsonify(backends.overview(force=force))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.post("/api/servers")
@@ -5528,7 +5971,8 @@ def classify_endpoint():
         # What the answer buys, which is the whole reason to ask: the steps an
         # agentic run would walk, the rules `validate` would then apply, and the
         # framing both prompts would carry.
-        "steps": [s["id"] for s in steps_for_types(form["doc_types"])],
+        "steps": [s["id"] for s in steps_for_types(form["doc_types"],
+                                                   form.get("extras", True))],
         "rules": list(rules_for_types(form["doc_types"])),
         "type_phrase": type_phrase(form["doc_types"]),
     })
@@ -5638,6 +6082,25 @@ def extract_mode_set():
     except ValueError as err:
         return jsonify(error=str(err)), 400
     return jsonify(mode=mode, steps=len(EXTRACT_STEPS))
+
+
+@app.get("/api/extract/extras")
+def extract_extras_get():
+    return jsonify(extras=extract_extras())
+
+
+@app.post("/api/extract/extras")
+def extract_extras_set():
+    """Ask for `other_fields` or not, for everything this tab extracts next.
+
+    Not refused during a sweep, for the mode's reason: every result carries
+    `extras`, so a batch split across the switch still says which ran how.
+    """
+    body = request.get_json(silent=True) or {}
+    on = body.get("extras")
+    if not isinstance(on, bool):
+        return jsonify(error="extras must be true or false."), 400
+    return jsonify(extras=set_extract_extras(on))
 
 
 @app.get("/api/ocr/profile")
@@ -6253,15 +6716,10 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     pages, detail, job_id, case = prepare_input(data, detail, case, source)
 
     started = time.perf_counter()
-    page_texts, all_stats = [], []
+    page_texts, all_stats, run = [], [], {}
     cancelled = False
     try:
-        for page in pages:
-            if stop_requested(cancel):
-                break
-            stats = {}
-            page_texts.append(read_page(page, stats, cancel=cancel))
-            all_stats.append(stats)
+        read_all_pages(pages, page_texts, all_stats, cancel, run)
     except Exception:                               # noqa: BLE001
         # A hung-up request raises wherever it was blocked -- mid-prefill, most
         # of the time. If WE are the ones who hung up, that is the stop landing
@@ -6276,7 +6734,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
         # then logged and dropped. `evaluate_if_known` is deliberately not run:
         # scoring half a document against the whole ground truth would report a
         # stop as a bad read.
-        partial = summarise(all_stats, detail, started, job_id)
+        partial = summarise(all_stats, detail, started, job_id, run)
         log_run(partial, source, status="cancelled")
         raise SweepCancelled(f"{case_id} was stopped part-way through")
 
@@ -6286,7 +6744,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
     else:
         text = page_texts[0]
 
-    payload = summarise(all_stats, detail, started, job_id)
+    payload = summarise(all_stats, detail, started, job_id, run)
     payload["truth"] = evaluate_if_known(case, text)
     if extract and EXTRACT and text.strip():
         payload["extracted"] = extract_fields(
@@ -6316,7 +6774,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
 #
 # **What it deliberately does NOT share with the random test:**
 #
-# * **Nothing is logged by default.** No run-log row, no `solution/out/`
+# * **No per-job accuracy row is logged by default.** No run-log row, no `solution/out/`
 #   transcript, no page job in the compare-view cache: every figure here was
 #   taken under contention no other run was. **`save_log`** (2026-10-15, at the
 #   user's request -- the stress test is where the volume of data is) writes one
@@ -6324,6 +6782,7 @@ def _read_case(case_id: str, detail: str, extract: bool = True,
 #   so the `stress` filter can keep or drop them. Warm-up, cancelled and skipped
 #   jobs are never written; classification has no row shape and is never
 #   written. Still no transcript and no page job.
+#   Aggregate settings and metrics are saved separately in History.
 # * **No model is switched.** The whole run uses the reader and the extraction
 #   model selected now. A stress test compares LOAD, and a model change between
 #   jobs would be a second variable nobody could separate from the first.
@@ -6382,7 +6841,8 @@ class _StressLive:
     def begin(self, job: int, case: str, stage: str):
         with self._lock:
             self._active[job] = {"case": case, "stage": stage,
-                                 "last": time.perf_counter(), "flagged": False}
+                                 "last": time.perf_counter(), "flagged": False,
+                                 "document": None, "requests": {}}
 
     def touch(self, job: int, stage: str = None):
         with self._lock:
@@ -6395,18 +6855,63 @@ class _StressLive:
         with self._lock:
             self._active.pop(job, None)
 
+    def hook(self, job: int):
+        """This job's progress hook (`_progress`): every pass-2 request it makes,
+        on whatever thread, resets its clock on each line and when it ends."""
+        return lambda event, request, what: self.request(job, event, request, what)
+
+    def request(self, job: int, event: str, request, what: str = None):
+        """One request's begin, chunk or end. Beginning is not hearing back, so
+        only a chunk or the end resets the clock."""
+        with self._lock:
+            active = self._active.get(job)
+            if not active:
+                return
+            now = time.perf_counter()
+            if event == "begin":
+                label = ", ".join(p for p in (active["document"], what) if p)
+                active["requests"][request] = {"what": label, "last": now}
+                return
+            active["last"] = now
+            if event == "end":
+                active["requests"].pop(request, None)
+            elif request in active["requests"]:
+                active["requests"][request]["last"] = now
+
+    def extract_event(self, job: int, event: dict):
+        """An extraction's progress event: which document it is on, if several."""
+        if isinstance(event, dict) and event.get("event") == "document":
+            with self._lock:
+                active = self._active.get(job)
+                if active:
+                    active["document"] = (f"document {event.get('document')} of "
+                                          f"{event.get('documents')}")
+
     def flag_stalled(self, limit: float):
-        """Flag, once each, the jobs that have been silent for `limit` seconds."""
+        """Flag, once each, the jobs that have been silent for `limit` seconds.
+
+        Silent means no request of the job has sent a line or finished -- not
+        that the job as a whole has not finished. The alert names the requests
+        still in flight, the quietest first.
+        """
         now = time.perf_counter()
         with self._lock:
             for job, active in self._active.items():
                 if not active["flagged"] and now - active["last"] >= limit:
                     active["flagged"] = True
+                    verb = _STAGE_VERB.get(active["stage"], active["stage"])
+                    quiet = sorted(active["requests"].values(),
+                                   key=lambda r: r["last"])
+                    names = [r["what"] or "a request" for r in quiet]
+                    waiting = ""
+                    if names:
+                        more = f"; {len(names) - 3} more" if len(names) > 3 else ""
+                        waiting = f" (waiting on {'; '.join(names[:3])}{more})"
                     self._alerts.append({
                         "kind": "stalled", "job": job, "case": active["case"],
                         "stage": active["stage"], "at": now,
                         "message": f"nothing back for {now - active['last']:.0f} s "
-                                   f"while {_STAGE_VERB.get(active['stage'], active['stage'])}"
+                                   f"while {verb}{waiting}"
                                    " -- the request may be hung or the server "
                                    "stopped answering"})
 
@@ -6476,22 +6981,43 @@ def _stress_config(body: dict) -> dict:
     if strategy not in ("balanced", "uniform"):
         raise ValueError("strategy must be 'balanced' or 'uniform'.")
     cases = _stress_cases(mode)
+    if "cases" in body:
+        selected = body["cases"]
+        if not isinstance(selected, list) or any(
+                not isinstance(cid, str) for cid in selected):
+            raise ValueError("cases must be a list of benchmark document IDs.")
+        if not selected:
+            raise ValueError("Select at least one file to stress test.")
+        unknown = sorted(set(selected) - set(cases))
+        if unknown:
+            raise ValueError(f"{', '.join(unknown)} is not a document this mode can use.")
+        cases = sorted(set(selected))
     lock = (body.get("lock_case") or "").strip()
     if lock and mode == "classify":
         lock = ""        # a pack of one case glued to itself has no findable boundaries
     if lock and lock not in cases:
-        raise ValueError(f"{lock} is not a document this mode can use.")
+        raise ValueError(f"{lock} is not among the selected documents this mode can use.")
     if not cases:
         raise ValueError("No benchmark case has the ground truth this mode needs.")
 
+    used = []
     if mode in ("ocr", "full"):
         info = llama_status()
         if not info["available"]:
             raise ValueError(info["reason"])
+        used.append(info)
     if mode in ("extract", "classify", "full"):
         info = backends.extract_status()
         if not info["text_available"]:
             raise ValueError(info["text_reason"])
+        used.append(info)
+    # vLLM's /batch route (vllmbatch.py). A server that is not vLLM is sent
+    # its requests one by one as always; a run where none of them is, is refused.
+    vllm_batch = bool(body.get("vllm_batch"))
+    if vllm_batch and not any(backends.serves_metrics(info) for info in used):
+        raise ValueError("Batch requests need a vLLM server; this mode uses "
+                         + " and ".join(f"{i.get('kind') or 'no server'} at {i.get('url')}"
+                                        for i in used) + ".")
 
     return {
         "mode": mode,
@@ -6504,11 +7030,18 @@ def _stress_config(body: dict) -> dict:
         "metrics_every": number("metrics_every", 5, 1, 600),
         "metrics": bool(body.get("metrics")),
         "no_cache": bool(body.get("no_cache")),
+        "vllm_batch": vllm_batch,
         # Classification has no row shape: a glued pack is no benchmark case and
         # its score is a grouping, so nothing is written for it.
         "save_log": bool(body.get("save_log")) and mode != "classify",
+        "history_monitor": bool(body.get("history_monitor", True)),
+        "gpu_url": str(body.get("gpu_url") or "").strip() or MONITOR_GPU_URL,
+        "gpu_extract_url": str(body.get("gpu_extract_url") or "").strip() or MONITOR_GPU_URL,
         "detail": resolve_detail(body.get("detail") or "medium"),
         "extract_mode": shape,
+        # Whether `other_fields` is asked for, fixed for the run like the shape.
+        "extras": (body["extras"] if isinstance(body.get("extras"), bool)
+                   else extract_extras()),
         "strategy": strategy,
         "seed": body.get("seed"),
         "lock": lock,
@@ -6649,6 +7182,15 @@ def _stress_classify_body(pack: dict, rec: dict, live: _StressLive, cancel,
                model_classified=by_model, status="ok")
 
 
+def _agentic_chats(result):
+    """Numeric request records across every document, without prompt/raw text."""
+    for document in result.get("documents") or [result]:
+        for step in document.get("steps") or []:
+            for chat in step.get("chats") or []:
+                yield {**chat, "step": step["id"], "title": step.get("title", ""),
+                       "keys": step.get("keys") or [], "document": document.get("document", 1)}
+
+
 def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 live: _StressLive) -> dict:
     """One job of the queue, start to finish. Returns its record; never raises."""
@@ -6681,6 +7223,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
            "stress_concurrency": cfg["concurrency"]} if log else {}
     all_stats, row, logged = [], None, False
     read_began = began
+    # Every pass-2 request this job makes resets its stall clock as it streams
+    # and when it ends -- not only the extraction as a whole (see `_progress`).
+    previous_hook = _progress_swap(live.hook(job))
     try:
         if mode == "classify":
             _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel, job)
@@ -6710,8 +7255,10 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 else:
                     text = prepared["truths"][case_id]
                 started = time.perf_counter()
-                result = extract_fields(text, cfg["extract_mode"], case_id,
-                                        pages=texts, truth_fed=mode == "extract")
+                result = extract_fields(
+                    text, cfg["extract_mode"], case_id, pages=texts,
+                    truth_fed=mode == "extract", extras=cfg.get("extras"),
+                    each=lambda event: live.extract_event(job, event))
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
                 rec["extract_tokens"] = result.get("tokens") or 0
                 # Every pass-2 request of this file: classify, segment, steps or
@@ -6719,6 +7266,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 served = result.get("server_time") or {}
                 rec["extract_in"] = served.get("in_tokens")
                 rec["extract_out"] = served.get("out_tokens")
+                chats = list(_agentic_chats(result))
+                if chats:
+                    rec["agentic_chats"] = [{**chat, "job": job, "case": case_id} for chat in chats]
                 if log:
                     logged = True
                     if row is not None:
@@ -6775,6 +7325,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 _stress_log_error(mode, spec, prepared, all_stats, read_began,
                                   cfg, tag, err)
     finally:
+        _progress_swap(previous_hook)
         live.end(job)
         rec.pop("at_page", None)
         rec.pop("alerted", None)
@@ -6802,11 +7353,11 @@ def _stress_log_error(mode, spec, prepared, all_stats, read_began, cfg, tag,
 
 
 def _stress_targets(reader: dict, extractor: dict) -> list:
-    """The vLLM servers a stress run uses, each once: `[{role, url}]`.
+    """The vLLM servers a stress run watches, each once: `[{role, url}]`.
 
-    A full-pipeline run reads on one server and extracts on another when a
-    separate extraction server is set, and both carry load -- so both are
-    sampled. A server that is not vLLM is never asked (`serves_metrics`), and a
+    The reading server and the extraction server are both sampled, whichever
+    of them the run's mode loads: a full-pipeline run loads both, and an OCR-
+    or extraction-only run shows the other one idle beside it. A server that is not vLLM is never asked (`serves_metrics`), and a
     URL used for both passes is one target, `reader + extractor`.
     """
     out = []
@@ -6986,7 +7537,10 @@ def _stress_run(cfg: dict, cancel):
     reader = llama_status() if mode in ("ocr", "full") else None
     extractor = backends.extract_status() if mode != "ocr" else None
     info = reader or extractor
-    targets = _stress_targets(reader, extractor) if cfg["metrics"] else []
+    # Both servers are watched whatever the mode (the user's request,
+    # 2026-10-19): a run that loads one shows the other beside it.
+    targets = _stress_targets(reader or llama_status(),
+                              extractor or backends.extract_status())         if cfg["metrics"] else []
 
     specs = [{"index": i} for i in range(total)]
     if mode != "classify":
@@ -7000,8 +7554,10 @@ def _stress_run(cfg: dict, cancel):
         "concurrency": cfg["concurrency"], "jobs": cfg["jobs"],
         "warmup": cfg["warmup"], "max_seconds": cfg["max_seconds"],
         "strategy": cfg["strategy"], "lock": cfg["lock"],
+        "cases": cfg["cases"],
         "detail": cfg["detail"] if mode in ("ocr", "full") else "",
         "extract_mode": cfg["extract_mode"] if mode in ("extract", "full") else "",
+        "extras": bool(cfg.get("extras", True)) if mode in ("extract", "full") else None,
         "pack_pages": cfg["pack_pages"] if mode == "classify" else 0,
         "documents": len({s["case"] for s in specs if "case" in s}),
         "server": {"url": info["url"], "kind": info["kind"]},
@@ -7017,6 +7573,13 @@ def _stress_run(cfg: dict, cancel):
         "no_cache_effect": ({s["kind"]: backends.cache_bypass_effect(s["kind"])
                              for s in (reader, extractor) if s}
                             if cfg.get("no_cache") else {}),
+        # Requests in flight together sent as one /batch request, up to the
+        # concurrency each; the servers named are the ones that take it.
+        "vllm_batch": bool(cfg.get("vllm_batch")),
+        "batch_size": cfg["concurrency"] if cfg.get("vllm_batch") else 0,
+        "batch_servers": ([s["url"] for s in (reader, extractor)
+                           if s and backends.serves_metrics(s)]
+                          if cfg.get("vllm_batch") else []),
     }) + "\n"
 
     began = time.perf_counter()
@@ -7063,6 +7626,9 @@ def _stress_run(cfg: dict, cancel):
         except Exception:                           # noqa: BLE001
             pass
     records, wall, timeline, last = [], 0.0, [], {}
+    batcher = _batcher if cfg.get("vllm_batch") else None
+    if batcher is not None:
+        batcher.reset_counts()        # the warm-up's batches are not the run's
     if not cancel.is_set():
         records, wall, timeline, last, draining = yield from _stress_phase(
             specs[cfg["warmup"]:], cfg, prepared, cancel, "run", targets, bases)
@@ -7071,6 +7637,8 @@ def _stress_run(cfg: dict, cancel):
     report["timeline"] = stress.thin_timeline(timeline)
     report["timeline_columns"] = ["t", *stress.STAGES, "done"]
     report["prepare_seconds"] = prepare_seconds
+    if batcher is not None:
+        report["vllm_batch"] = batcher.summary()
     if targets:
         views, snaps, _ = _stress_sample(targets, bases, wall)
         for t in targets:          # a failed last read falls back to the last sample
@@ -7096,9 +7664,8 @@ def _stress_run(cfg: dict, cancel):
 def stress_stream():
     """Run a stress test, one NDJSON progress event a second and one report.
 
-    No per-job event is sent. Nothing is written anywhere unless `save_log` is
-    set, and then only a run-log row per measured job. See the section comment
-    above.
+    The full report is saved to History, separately from the accuracy run log.
+    Optional `save_log` also writes a CSV row per measured job.
     """
     body = request.get_json(silent=True) or {}
     try:
@@ -7111,26 +7678,152 @@ def stress_stream():
     cancel = begin_sweep(MultiCancel())
 
     def generate():
-        # Only the stress sampler (every `metrics_every` s) may read /metrics
-        # during the run and its drain -- not every request's server timing.
+        # The stress sampler and optional History monitor collect /metrics;
+        # per-request timing must not add its own scrapes under contention.
         servertime.suspend_metrics()
         # "Bypass prompt cache": every request of the run and its drain is sent
         # uncacheable, so prefill is measured rather than a cache lookup.
         no_cache = bool(cfg.get("no_cache"))
+        global _batcher
         try:
             if no_cache:
                 backends.bypass_prefix_cache()
-            yield from _stress_run(cfg, cancel)
+            if cfg.get("vllm_batch"):
+                # One batcher for every server the run uses; the group key
+                # keeps each URL's requests apart.
+                _batcher = vllmbatch.Batcher(cfg["concurrency"], _send_batch)
+            configuration = {**cfg, "ocr_profile": ocr_profile(),
+                             "sampling": ocr_sampling_state(), "loop_guard": loop_guard(),
+                             "read_floor": read_floor(), "table_agents": table_agents(),
+                             "context": backends.num_ctx(),
+                             "workspace": workspace.current_id(),
+                             "reader": llama_status() if cfg.get("mode") in ("ocr", "full") else None,
+                             "extractor": backends.extract_status() if cfg.get("mode") in ("extract", "classify", "full") else None}
+            yield from _history_stream(_stress_run(cfg, cancel), "stress", configuration)
         except Exception as err:                    # noqa: BLE001
             yield json.dumps({"event": "error",
                               "error": f"{type(err).__name__}: {err}"[:300]}) + "\n"
         finally:
+            if _batcher is not None:
+                _batcher.close()
+                _batcher = None
             if no_cache:
                 backends.restore_prefix_cache()
             servertime.resume_metrics()
             end_sweep()
 
     return Response(generate(), mimetype="application/x-ndjson")
+
+
+def _history_stream(stream, kind, configuration):
+    """Save on the server before emitting completion, including failed/closed streams."""
+    run_id, storage_error, progress, finished = None, "", None, False
+    samples, sampled_at, samples_total, alerts = deque(maxlen=300), None, 0, []
+    monitor_infos = []
+    for role in ("reader", "extractor"):
+        info = configuration.get(role)
+        if (info and backends.serves_metrics(info)
+                and not any(other["url"] == info["url"] for other in monitor_infos)):
+            monitor_infos.append({**info, "role": role})
+    try:
+        run_id = runhistory.start(kind, configuration)
+    except Exception as err:
+        storage_error = f"History could not be saved: {err}"
+    try:
+        for line in stream:
+            event = json.loads(line)
+            stage = event.get("event")
+            if (monitor_infos and configuration.get("history_monitor")
+                    and stage in ("plan", "progress", "done")
+                    and (stage == "done" or sampled_at is None
+                         or time.monotonic() - sampled_at >= configuration.get("metrics_every", 5))):
+                for monitor_info in monitor_infos:
+                    gpu_key = "gpu_extract_url" if monitor_info["role"] == "extractor" else "gpu_url"
+                    try:
+                        sample, _ = _monitor_scrape(monitor_info, monitor_info["url"],
+                                                    configuration.get(gpu_key, ""))
+                    except Exception as err:
+                        sample = {"error": str(err), "url": monitor_info["url"], "at": time.time()}
+                    samples.append({**sample, "role": monitor_info["role"]})
+                    samples_total += 1
+                sampled_at = time.monotonic()
+            if stage == "alert":
+                alerts.append(dict(event))
+            if event.get("event") == "plan" and run_id:
+                try:
+                    runhistory.save_plan(run_id, event)
+                except Exception as err:
+                    storage_error = f"History could not be saved: {err}"
+            if event.get("event") == "progress":
+                progress = event
+            if event.get("event") == "done":
+                event["monitor_samples"] = list(samples)
+                event["monitor_samples_total"] = samples_total
+                event["alerts"] = alerts
+                if run_id:
+                    try:
+                        report = event.get("report") or {}
+                        state = ("stopped" if event.get("stopped") else
+                                 "completed_with_errors" if (report.get("error_rate") or 0) > 0
+                                 else "completed")
+                        runhistory.finish(run_id, state, event, progress)
+                    except Exception as err:
+                        storage_error = f"History could not be saved: {err}"
+                finished = True
+            if run_id:
+                event["history_id"] = run_id
+            if storage_error:
+                event["history_error"] = storage_error
+            yield json.dumps(event) + "\n"
+        if run_id and not finished:
+            runhistory.finish(run_id, "interrupted", result={"monitor_samples": list(samples),
+                              "monitor_samples_total": samples_total, "alerts": alerts},
+                              progress=progress, error="The stream ended without a final report.")
+    except GeneratorExit:
+        if run_id and not finished:
+            try:
+                runhistory.finish(run_id, "interrupted", result={"monitor_samples": list(samples),
+                                  "monitor_samples_total": samples_total, "alerts": alerts}, progress=progress,
+                                  error="The client disconnected before the report finished.")
+            except Exception:
+                pass
+        raise
+    except Exception as err:
+        if run_id and not finished:
+            try:
+                runhistory.finish(run_id, "error", result={"monitor_samples": list(samples),
+                                  "monitor_samples_total": samples_total, "alerts": alerts}, progress=progress,
+                                  error=f"{type(err).__name__}: {err}"[:1000])
+            except Exception:
+                pass
+        raise
+    finally:
+        stream.close()
+
+
+@app.get("/api/history")
+def history_list():
+    try:
+        return jsonify(runhistory.list_runs(request.args.get("limit", 50),
+                                            request.args.get("offset", 0)))
+    except (ValueError, TypeError):
+        return jsonify(error="limit and offset must be whole numbers."), 400
+    except Exception as err:
+        return jsonify(error=f"Could not read History: {err}"), 503
+
+
+@app.get("/api/history/<run_id>")
+def history_detail(run_id):
+    try:
+        item = runhistory.get(run_id)
+    except Exception as err:
+        return jsonify(error=f"Could not read History: {err}"), 503
+    if item is None:
+        return jsonify(error="History run not found."), 404
+    response = jsonify(item)
+    if request.args.get("download") == "1":
+        response.headers["Content-Disposition"] = f'attachment; filename="run-{run_id}.json"'
+    return response
 
 
 @app.post("/api/stress/stop")
@@ -7197,11 +7890,21 @@ def _local_gpu():
     return _smi_cache["value"]
 
 
-def _monitor_target():
-    """The vLLM server to watch: the reading server, else the extraction one."""
-    urls = [backends.active_url()]
-    if backends.extract_separate():
-        urls.append(backends.extract_url())
+def _monitor_target(which: str = ""):
+    """The vLLM server to watch: the reading server, else the extraction one.
+
+    `which` names one: "ocr" the reading server, "extract" the extraction
+    server (the reader's own URL where none is set apart). The page asks for
+    each in turn to watch both side by side.
+    """
+    if which == "ocr":
+        urls = [backends.active_url()]
+    elif which == "extract":
+        urls = [backends.extract_url()]
+    else:
+        urls = [backends.active_url()]
+        if backends.extract_separate():
+            urls.append(backends.extract_url())
     seen = None
     for url in urls:
         info = backends.known(url) or backends.status(url)
@@ -7240,11 +7943,16 @@ def _vram(samples, url, gpu_url):
 def monitor_now():
     """One live reading of the vLLM server: KV cache, VRAM, queue, throughput.
 
-    `gpu=` names a GPU exporter's /metrics URL for VRAM, overriding
-    `MONITOR_GPU_URL`. Rates are since this process last scraped the same
-    server (`monitor.observe`), so the first call of a session has none.
+    `server=ocr|extract` picks the reading or the extraction server; without it,
+    the reading server, else the extraction one. `gpu=` names a GPU exporter's
+    /metrics URL for VRAM, overriding `MONITOR_GPU_URL`. Rates are since this
+    process last scraped the same server (`monitor.observe`), so the first call
+    of a session has none.
     """
-    info, refused = _monitor_target()
+    which = (request.args.get("server") or "").strip().lower()
+    if which not in ("", "ocr", "extract"):
+        return jsonify(error="server must be ocr or extract."), 400
+    info, refused = _monitor_target(which)
     if refused:
         return jsonify(error=refused, kind=(info or {}).get("kind"),
                        url=(info or {}).get("url")), 409
@@ -7296,22 +8004,19 @@ def ocr():
         return jsonify(error=str(err)), 400
 
     started = time.perf_counter()
-    page_texts, all_stats = [], []
+    page_texts, all_stats, run = [], [], {}
     try:
-        for page in pages:
-            stats = {}
-            page_texts.append(read_page(page, stats))
-            all_stats.append(stats)
+        read_all_pages(pages, page_texts, all_stats, run=run)
     except ValueError as err:
-        log_run(summarise(all_stats, detail, started, job_id), source, error=err)
+        log_run(summarise(all_stats, detail, started, job_id, run), source, error=err)
         return jsonify(error=str(err)), 400
     except requests.RequestException as err:
-        log_run(summarise(all_stats, detail, started, job_id), source, error=err)
+        log_run(summarise(all_stats, detail, started, job_id, run), source, error=err)
         return jsonify(error=f"model server connection failed: {err}"), 502
 
     text = join_page_texts(page_texts)
 
-    payload = summarise(all_stats, detail, started, job_id)
+    payload = summarise(all_stats, detail, started, job_id, run)
     payload["truth"] = evaluate_if_known(case, text)
     if EXTRACT and request.form.get("extract", "1") != "0" and text.strip():
         payload["extracted"] = extract_fields(
@@ -7359,36 +8064,60 @@ def ocr_stream():
         return jsonify(error=str(err)), 400
     want_extract = request.form.get("extract", "1") != "0"
 
+    def page_started(index, page):
+        return json.dumps(
+            {
+                "event": "page",
+                "page": index,
+                "total": len(pages),
+                "resolution": f"{page.width}x{page.height}",
+                # Sent per page so the compare view can show the source
+                # image while that page is still being transcribed.
+                "job": job_id,
+            }
+        ) + "\n"
+
+    def page_finished(index, stats):
+        yield json.dumps({"event": "page_done", "page": index, **stats}) + "\n"
+        if stats.get("truncated"):
+            yield json.dumps({"event": "truncated", "page": index}) + "\n"
+        if stats.get("looped"):
+            yield json.dumps({"event": "looped", "page": index}) + "\n"
+
     def generate():
         started = time.perf_counter()
-        collected, all_stats = [], []
+        collected, all_stats, run = [], [], {}
         summary = {}
         try:
-            for index, page in enumerate(pages, 1):
-                yield json.dumps(
-                    {
-                        "event": "page",
-                        "page": index,
-                        "total": len(pages),
-                        "resolution": f"{page.width}x{page.height}",
-                        # Sent per page so the compare view can show the source
-                        # image while that page is still being transcribed.
-                        "job": job_id,
-                    }
-                ) + "\n"
-                parts, stats = [], {}
-                for batch in batch_tokens(stream_page(page, stats),
-                                          STREAM_FLUSH_MS / 1000):
-                    parts.extend(batch)
-                    yield json.dumps({"event": "token", "text": "".join(batch),
-                                      "n": len(batch)}) + "\n"
-                collected.append(finish_page("".join(parts), stats))
-                all_stats.append(stats)
-                yield json.dumps({"event": "page_done", "page": index, **stats}) + "\n"
-                if stats.get("truncated"):
-                    yield json.dumps({"event": "truncated", "page": index}) + "\n"
-                if stats.get("looped"):
-                    yield json.dumps({"event": "looped", "page": index}) + "\n"
+            parallel = _page_parallelism(len(pages))
+            if parallel > 1:
+                # Every page is in flight at once, so there is no one page whose
+                # tokens could stream: interleaved, they would splice pages into
+                # each other on screen. Each page arrives whole instead, in page
+                # order, as the same page/token/page_done events a sequential
+                # read sends -- the page needs nothing new to assemble it.
+                yield json.dumps({"event": "pages_parallel", "total": len(pages),
+                                  "parallel": parallel, "job": job_id}) + "\n"
+                with closing(read_pages_at_once(pages, parallel, run=run)) as reads:
+                    for index, page_text, stats in reads:
+                        yield page_started(index, pages[index - 1])
+                        yield json.dumps({"event": "token", "text": page_text,
+                                          "n": stats.get("new_tokens") or 1}) + "\n"
+                        collected.append(page_text)
+                        all_stats.append(stats)
+                        yield from page_finished(index, stats)
+            else:
+                for index, page in enumerate(pages, 1):
+                    yield page_started(index, page)
+                    parts, stats = [], {}
+                    for batch in batch_tokens(stream_page(page, stats),
+                                              STREAM_FLUSH_MS / 1000):
+                        parts.extend(batch)
+                        yield json.dumps({"event": "token", "text": "".join(batch),
+                                          "n": len(batch)}) + "\n"
+                    collected.append(finish_page("".join(parts), stats))
+                    all_stats.append(stats)
+                    yield from page_finished(index, stats)
 
             if len(collected) > 1:
                 text = "\n\n".join(
@@ -7396,7 +8125,7 @@ def ocr_stream():
                 )
             else:
                 text = collected[0] if collected else ""
-            summary = summarise(all_stats, detail, started, job_id)
+            summary = summarise(all_stats, detail, started, job_id, run)
             summary["truth"] = evaluate_if_known(case, text)
             yield json.dumps(
                 {"event": "done", "text": text, "pages": collected, **summary}
@@ -7433,11 +8162,11 @@ def ocr_stream():
             yield json.dumps({"event": "logged"}) + "\n"
         except GeneratorExit:
             # The browser hung up -- Stop, or a closed tab. Still worth a row.
-            log_run(summary or summarise(all_stats, detail, started, job_id),
+            log_run(summary or summarise(all_stats, detail, started, job_id, run),
                     source, status="cancelled")
             raise
         except Exception as err:  # surface failures inside the stream body
-            log_run(summary or summarise(all_stats, detail, started, job_id),
+            log_run(summary or summarise(all_stats, detail, started, job_id, run),
                     source, error=err)
             yield json.dumps({"event": "error", "error": str(err)}) + "\n"
 

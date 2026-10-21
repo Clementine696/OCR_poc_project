@@ -1260,12 +1260,13 @@ _COUNT_WORDS = {
 }
 
 
-def _skeleton_lines(keys, items=()):
+def _skeleton_lines(keys, items=(), extras=True):
     """The JSON skeleton the prompt asks for, one line per key.
 
     `items` is the row shape of a table this form asks for, or `()` for the forms
     that ask for none. It goes ABOVE `other_fields`, because it is one of the
-    form's own answers and the overflow list is not.
+    form's own answers and the overflow list is not. `extras` False leaves
+    `other_fields` out, and the last line then closes without a comma.
     """
     lines = ["{"]
     for key in keys:
@@ -1277,12 +1278,18 @@ def _skeleton_lines(keys, items=()):
     if items:
         cells = ", ".join(f'"{k}": ""' for k in items)
         lines.append(f'  "{INCOME_ITEMS_KEY}": [ {{ {cells} }} ],')
-    lines.append('  "other_fields": [ { "label": "", "value": "" } ]')
+    if extras:
+        lines.append('  "other_fields": [ { "label": "", "value": "" } ]')
+    else:
+        # JSON has no trailing comma; the note after `//` is not JSON and stays.
+        head, sep, note = lines[-1].partition("//")
+        bare = head.rstrip()[:-1] if head.rstrip().endswith(",") else head.rstrip()
+        lines[-1] = (bare.ljust(len(head)) + sep + note) if sep else bare
     lines.append("}")
     return "\n".join(lines) + "\n"
 
 
-def extract_prompt(keys, codes=(), bullets=True, items=()):
+def extract_prompt(keys, codes=(), bullets=True, items=(), extras=True):
     """The single-request pass-2 prompt for one field set.
 
     `keys` is an ordered sequence of scalar keys -- normally `DOC_TYPE_FIELDS[code]`.
@@ -1297,11 +1304,16 @@ def extract_prompt(keys, codes=(), bullets=True, items=()):
     framing at all, which is what makes `extract_prompt(LEGACY_KEYS)` still
     byte-identical to the prompt every pass-2 number in CLAUDE.md was measured
     on -- `_selftest` asserts it.
+
+    `extras` False drops `other_fields` from the skeleton and its rules block,
+    for a run that wants the form and nothing else (`EXTRACT_OTHER_FIELDS`).
+    The per-key rules that say "put it in other_fields" are left as they are:
+    they are measured text, and what they still say is "not in this key".
     """
     keys = list(keys)
     have = set(keys)
     count = _COUNT_WORDS.get(len(keys), str(len(keys)))
-    parts = [_EP_HEAD.format(count=count), _skeleton_lines(keys, items),
+    parts = [_EP_HEAD.format(count=count), _skeleton_lines(keys, items, extras),
              _EP_MID]
     # After the rules that apply to every key and before the blocks about
     # particular ones: what the document IS frames the per-key rules below it,
@@ -1375,7 +1387,8 @@ def extract_prompt(keys, codes=(), bullets=True, items=()):
         parts.append(_EP_WHT_TOTALS)
     if "dividend_rate_option" in have:
         parts.append(_EP_WHT_DIVIDEND)
-    parts.append(_EP_OTHER.format(count=count))
+    if extras:
+        parts.append(_EP_OTHER.format(count=count))
     parts.append(_EP_TAIL)
     return "".join(parts)
 
@@ -1876,14 +1889,15 @@ def income_items_schema(items):
     }
 
 
-def extract_schema(keys, items=()):
+def extract_schema(keys, items=(), extras=True):
     """The JSON grammar for one field set, as `backends.structured_request` sends it.
 
     A function of the field set for the same reason the prompt is: a grammar
     listing a key the prompt never asked for is an invitation to fill it, which
     is the exact wording of the note above about `line_items`. `items` is the
     row shape of a table this form asks for -- and where it asks for none, the
-    key is absent from the grammar as well as from the skeleton.
+    key is absent from the grammar as well as from the skeleton. `extras` False
+    leaves `other_fields` out of it the same way.
     """
     keys = list(keys)
     properties = {k: {"type": "string"} for k in keys}
@@ -1891,11 +1905,13 @@ def extract_schema(keys, items=()):
     if items:
         properties[INCOME_ITEMS_KEY] = income_items_schema(items)
         required.append(INCOME_ITEMS_KEY)
-    properties["other_fields"] = OTHER_FIELDS_SCHEMA
+    if extras:
+        properties["other_fields"] = OTHER_FIELDS_SCHEMA
+        required.append("other_fields")
     return {
         "type": "object",
         "properties": properties,
-        "required": required + ["other_fields"],
+        "required": required,
     }
 
 
@@ -2482,7 +2498,7 @@ its own column.
 )
 
 
-def steps_for_types(codes):
+def steps_for_types(codes, extras=True):
     """The agentic steps that fill exactly the field set for a document type.
 
     A step is included when EVERY key it owns is in that type's set. The step
@@ -2497,7 +2513,8 @@ def steps_for_types(codes):
     full run with steps removed -- the same rule `app._steps_for` follows.
 
     Takes the CODES a document names, not one code, so a receipt/tax-invoice
-    runs the steps for the union of both forms.
+    runs the steps for the union of both forms. `extras` False drops `other`,
+    for a run that wants the form and nothing else (`EXTRACT_OTHER_FIELDS`).
     """
     wanted = set(fields_for_types(codes))
     # The table step owns a key that is not a scalar and so is not in the form.
@@ -2506,7 +2523,7 @@ def steps_for_types(codes):
     if items_for_types(codes):
         wanted.add(INCOME_ITEMS_KEY)
     return tuple(s for s in EXTRACT_STEPS
-                 if s["id"] == "other"
+                 if (s["id"] == "other" and extras)
                  or (s["keys"] and set(s["keys"]) <= wanted))
 
 

@@ -1,8 +1,8 @@
-"""The stress test: its arithmetic, its vLLM detection, and that it logs nothing.
+"""Stress arithmetic, vLLM detection, and separation from the accuracy CSV.
 
 The model server is stubbed at the functions the runner calls, and the run log
 is patched to FAIL the test if anything is recorded -- the user's rule for this
-mode is that only the final report is shown and no job is written anywhere.
+mode keeps aggregate reports in History; its default does not add per-job accuracy rows.
 """
 import json
 import random

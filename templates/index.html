@@ -222,6 +222,17 @@ document.addEventListener("DOMContentLoaded", function () {
   .app-base-row { display: flex; gap: 6px; }
   .app-base-msg { margin: 0; color: var(--muted); min-height: 1em; }
   .app-base-msg.err { color: var(--danger); }
+  .page-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #monToggle { padding: 5px 12px; font-size: .78rem; }
+  #monToggle.on { background: var(--accent-soft); border-color: var(--accent); }
+  .monitor-card { margin-bottom: 18px; }
+  .monitor-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .monitor-settings { margin-top: 10px; }
+  .monitor-gpus { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+  #stMon { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); }
+  #stMon .mon-server { min-width: 0; overflow-wrap: anywhere; }
+  #stMon .mon-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  @media (max-width: 600px) { #stMon .mon-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   h1 { font-size: 1.4rem; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 0.9rem; }
   .sub code { background: var(--accent-soft); padding: 2px 6px; border-radius: 5px; }
@@ -234,11 +245,54 @@ document.addEventListener("DOMContentLoaded", function () {
   }
   /* The controls follow the result down the page: the side pane stays in view while
      a long transcript is being read. */
-  .side { position: sticky; top: 18px; max-height: calc(100vh - 36px); overflow-y: auto; }
+  .side { position: sticky; top: 18px; max-height: var(--side-height, calc(100dvh - 36px));
+    display: flex; flex-direction: column; overflow: hidden; }
+  .side-scroll { min-height: 0; overflow-y: auto; }
+  .test-actions { flex-shrink: 0; margin: 14px -18px -18px; padding: 12px 18px;
+    border-top: 1px solid var(--border); background: var(--panel); }
+  .test-action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .test-action-row button { white-space: nowrap; }
+  .test-action-row .primary { flex: 1; }
+  .test-status { display: inline-flex; align-items: center; gap: 6px; font-size: .76rem;
+    margin-bottom: 8px; color: var(--muted); }
+  .test-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .test-status[data-state="running"] { color: var(--accent); }
+  .test-status[data-state="stopping"] { color: var(--warn); }
+  .test-status[data-state="completed"] { color: var(--ok); }
+  .test-status[data-state="failed"] { color: var(--danger); }
   @media (max-width: 1080px) { .side { position: static; max-height: none; } }
-  .side-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
-  .side-tabs button { flex: 1; padding: 8px 10px; font-size: .84rem; border-radius: 8px; }
+  @media (max-width: 1080px) {
+    body.has-test-actions { padding-bottom: var(--run-actions-space, 150px); }
+    .side-scroll { overflow: visible; }
+    .test-actions { position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
+      margin: 0; padding: 10px 18px max(12px, env(safe-area-inset-bottom));
+      box-shadow: 0 -4px 18px rgba(0,0,0,.12); }
+  }
+  .side-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px; margin-bottom: 14px; }
+  .side-tabs button { min-width: 0; padding: 8px 10px; font-size: .84rem;
+    border-radius: 8px; white-space: normal; overflow-wrap: anywhere; }
   .side-tabs button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .st-views { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px; margin-bottom: 14px; }
+  .st-views button { min-width: 0; padding: 8px 10px; font-size: .84rem; }
+  .st-views button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .history-list { display: grid; gap: 8px; margin-top: 12px;
+    max-height: 55vh; overflow-y: auto; }
+  .history-item { text-align: left; min-width: 0; padding: 10px;
+    overflow-wrap: anywhere; font-size: .82rem; }
+  .history-item.on { background: var(--accent-soft); border-color: var(--accent); }
+  .history-item span { display: block; color: var(--muted); font-size: .76rem; margin-top: 3px; }
+  .history-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+  .history-config { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+    gap: 8px; margin: 14px 0; }
+  .history-config div { padding: 9px 11px; border: 1px solid var(--border);
+    border-radius: 8px; overflow-wrap: anywhere; font-size: .85rem; }
+  .history-config dt { color: var(--muted); font-size: .75rem; }
+  .history-config dd { margin: 2px 0 0; }
+  .history-report { min-width: 0; overflow-x: auto; }
+  .history-json { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh;
+    overflow: auto; font-size: .76rem; }
   .side-tabs .count {
     display: none; margin-left: 6px; font-size: .7rem; font-weight: 700;
     background: var(--accent); color: #fff; border-radius: 9px; padding: 0 6px;
@@ -742,7 +796,8 @@ document.addEventListener("DOMContentLoaded", function () {
   .lv-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
   .lv-chip { font-size: .74rem; border: 1px solid var(--border); border-radius: 999px;
              padding: 3px 10px; cursor: pointer; user-select: none;
-             background: var(--card); }
+             background: var(--card); color: var(--text); max-width: 100%;
+             white-space: normal; overflow-wrap: anywhere; text-align: left; }
   .lv-chip .n { color: var(--muted); font-size: .68rem; margin-left: 4px; }
   .lv-chip.inc { border-color: var(--accent); background: var(--accent-soft);
                  font-weight: 600; }
@@ -754,7 +809,39 @@ document.addEventListener("DOMContentLoaded", function () {
   table.queue th.lv-th:hover { color: var(--text); }
   table.queue th.lv-on { color: var(--text); }
   .lv-arrow { font-size: .6rem; margin-left: 4px; }
-  .lv-panel { margin-top: 4px; }
+  .lv-panel { margin-top: 4px; min-width: 0; overflow-x: auto; }
+  .log-groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 8px; margin-top: 18px; }
+  .log-groups button { white-space: normal; min-width: 0; }
+  #logTabs { flex-wrap: wrap; }
+  #logTabs[hidden], #logTabs button[hidden] { display: none; }
+  .lv-main-facets { display: grid; gap: 4px 18px;
+                   grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+  .log-filter-details { margin-top: 14px; border: 1px solid var(--border);
+                        border-radius: 10px; }
+  .log-filter-details > summary { padding: 10px 12px; cursor: pointer; font-size: .83rem; }
+  .log-filter-body { padding: 0 12px 12px; }
+  .log-filter-body .lv-bar { margin-top: 6px; }
+  .lv-filter-help { margin-top: 14px; font-size: .78rem; color: var(--muted); }
+  .lv-filter-help summary { cursor: pointer; }
+  .lv-applied { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;
+                font-size: .74rem; color: var(--muted); }
+  .lv-applied > span { border: 1px solid var(--border); border-radius: 6px;
+                       padding: 4px 8px; overflow-wrap: anywhere; max-width: 100%; }
+  .lv-applied > .active { border-color: var(--accent); background: var(--accent-soft);
+                          color: var(--text); }
+  .run-detail td { white-space: normal; background: var(--bg); }
+  .run-detail dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+                   gap: 12px 20px; margin: 8px 0 14px; }
+  .run-detail dt { color: var(--muted); font-size: .72rem; }
+  .run-detail dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: .8rem; }
+  .run-detail pre { max-height: 360px; overflow: auto; white-space: pre-wrap;
+                    overflow-wrap: anywhere; font-size: .75rem; }
+  @media (max-width: 600px) {
+    .log-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .run-detail dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #lvPipe { flex-wrap: wrap; }
+  }
   #logTabs button { flex: none; padding: 6px 12px; font-size: .8rem; }
   .lv-seg button { flex: none; padding: 5px 9px; font-size: .76rem; border-radius: 6px; }
   #lvEmpty:not(:empty) { margin-top: 12px; padding: 12px 14px; border-radius: 10px;
@@ -768,6 +855,14 @@ document.addEventListener("DOMContentLoaded", function () {
   .st-metrics-box { margin-top: 16px; border: 1px solid var(--border); border-radius: 10px;
     padding: 10px 12px; }
   .st-metrics-head { font-size: .8rem; }
+  .st-advanced { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .st-advanced > summary { cursor: pointer; padding: 10px 12px; font-size: .82rem; font-weight: 600; }
+  .st-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 10px; }
+  .st-advanced-body { padding: 0 12px 12px; border-top: 1px solid var(--border); }
+  .st-settings-title { font-size: .78rem; margin: 16px 0 8px; color: var(--muted); }
+  #stSetup > .row { margin-top: 12px; }
+  #stFilesField > .row { margin-top: 8px; }
+  #stFiles { max-height: 120px; }
   .st-check { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
     color: var(--muted); }
   .st-plan { font-size: .8rem; color: var(--muted); margin: 10px 0 0; line-height: 1.5; }
@@ -1479,6 +1574,9 @@ document.addEventListener("DOMContentLoaded", function () {
       <p class="sub">Full-page transcription via <span id="subKind">{{ server.kind or 'no server' }}</span> ·
         <code id="subUrl">{{ server.url }}</code></p>
     </div>
+    <div class="page-actions">
+    <button type="button" id="monToggle" disabled aria-pressed="false"
+            aria-expanded="false" aria-controls="monCard">Start live monitor</button>
     <!-- Three states in one control, because "follow the desktop" is a real
          choice and not the absence of one: a two-way switch would silently
          freeze the page on whichever theme the OS happened to be showing the
@@ -1506,10 +1604,37 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
         </div>
       </details>
     </div>
+    </div>
   </header>
+
+  <section class="card monitor-card" id="monCard" aria-labelledby="monTitle" hidden>
+    <div class="monitor-head">
+      <h2 id="monTitle" style="margin:0">Live monitor</h2>
+      <label class="st-check">Refresh every
+        <input id="monEvery" type="number" min="1" max="60" value="2" style="width:56px"> s
+      </label>
+      <span class="note">Available across all tabs · vLLM servers</span>
+    </div>
+    <details class="monitor-settings">
+      <summary>GPU exporter settings</summary>
+      <p class="note">vLLM does not report VRAM. Use a DCGM or nvidia_gpu_exporter /metrics URL.
+        Leave blank to use GPU metrics from the vLLM scrape, or nvidia-smi when the server runs on this machine.
+        These URLs also apply to saved Stress test monitor snapshots.</p>
+      <div class="monitor-gpus">
+        <label class="field">VRAM from a GPU exporter
+          <input id="monGpu" type="text" placeholder="http://gpu-box:9400/metrics">
+        </label>
+        <label class="field" id="monGpuExtractRow" style="display:none">VRAM of the extraction server's GPU
+          <input id="monGpuExtract" type="text" placeholder="http://extract-box:9400/metrics">
+        </label>
+      </div>
+    </details>
+    <div id="stMon"></div>
+  </section>
 
   <div class="grid">
     <div class="card side">
+      <div class="side-scroll">
       <div class="side-tabs" id="sideTabs">
         <button type="button" data-pane="source" class="on">Workspace</button>
         <!-- Pass 1 alone against a document's transcript ground truth, the
@@ -1703,6 +1828,13 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
         </label>
       </div>
       <p class="note" id="extractNote"></p>
+      <div class="row" id="extrasRow">
+        <label class="check" style="flex:1;min-width:200px">
+          <input id="extrasChk" type="checkbox" {% if extract_extras %}checked{% endif %}>
+          Also extract extra fields (<code>other_fields</code>)
+        </label>
+      </div>
+      <p class="note" id="extrasNote"></p>
       <div class="row">
         <button id="run" class="primary" disabled>Read document</button>
         <button id="stop" disabled>Stop</button>
@@ -1931,10 +2063,6 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
           </label>
         </div>
 
-        <div class="row">
-          <button id="rtRun" class="primary">Run random test</button>
-          <button id="rtStop" class="ghost-sm" disabled>Stop</button>
-        </div>
         <p class="note" id="rtScopeNote"></p>
 
         <p class="note">Every round is a <b>real run</b> and appends its own row
@@ -1949,22 +2077,19 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
            the run log -- the figures were taken under contention no other run
            was, so they stay out of the setting tables. -->
       <div class="pane" id="paneStress">
-        <p class="note">A benchmark of the <b>server</b>: a queue of jobs worked
-          by as many concurrent requests as you set, against the reading and
-          extraction models selected in the Workspace. Documents are drawn the
-          way the random test draws them. Only the final metrics and scores are
-          shown, and <b>nothing is written to the run log</b>. An error, a loop,
-          a read at the token cap or a stalled job is flagged the moment it
-          happens, with its document.</p>
-
+        <div class="st-views" id="stViews" aria-label="Stress test views">
+          <button type="button" data-st-view="run" class="on" aria-pressed="true">Current run</button>
+          <button type="button" data-st-view="history" aria-pressed="false">History</button>
+        </div>
+        <div id="stSetup">
         <div class="row">
           <label class="field" style="flex:1;min-width:210px">
-            What each job runs
+            Mode
             <select id="stMode">
-              <option value="ocr">OCR only &mdash; read the pages, score the transcript</option>
-              <option value="extract">Extract only &mdash; pass 2 from the ground truth</option>
-              <option value="classify">Classify 100+ pages &mdash; split and type a long file</option>
-              <option value="full">Full pipeline &mdash; read, then extract (stages timed apart)</option>
+              <option value="ocr">OCR only</option>
+              <option value="extract">Extract only</option>
+              <option value="classify">Classify 100+ pages</option>
+              <option value="full">Full pipeline</option>
             </select>
           </label>
         </div>
@@ -1979,6 +2104,27 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
             Queue (jobs)
             <input id="stJobs" type="number" min="1" max="5000" value="20">
           </label>
+        </div>
+        <div class="rt-ex" id="stFilesField">
+          <span class="rt-ex-label">Files to test &mdash; untick any files to skip</span>
+          <div class="row">
+            <button type="button" class="ghost-sm" id="stFilesAll">Select all</button>
+            <button type="button" class="ghost-sm" id="stFilesNone">Clear selection</button>
+            <span class="note" id="stFileCount" aria-live="polite"></span>
+          </div>
+          <div class="rt-files" id="stFiles">
+            {% for c in cases|sort(attribute='id') %}
+            <label class="rt-chip"><input type="checkbox" value="{{ c.id }}"
+              data-field-truth="{{ '1' if c.field_truth else '0' }}" checked>
+              <span>{{ c.id }} &middot; {{ c.pdf }}</span></label>
+            {% endfor %}
+          </div>
+        </div>
+        <details class="st-advanced" id="stAdvanced">
+          <summary>Advanced settings</summary>
+          <div class="st-advanced-body">
+        <h3 class="st-settings-title">Run settings</h3>
+        <div class="row">
           <label class="field" style="flex:1;min-width:90px"
                  title="jobs run first at the same concurrency and left out of every figure -- loads the model and warms its caches">
             Warm-up
@@ -2006,6 +2152,11 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
               <option value="agentic">agentic</option>
             </select>
           </label>
+          <label class="check" style="flex:1;min-width:110px" id="stExtrasField"
+                 title="ask for other_fields as well as the form; off skips them in every document">
+            <input id="stExtras" type="checkbox" {% if extract_extras %}checked{% endif %}>
+            Extra fields
+          </label>
           <label class="field" style="flex:1;min-width:110px" id="stPagesField"
                  title="each job glues ground-truth transcripts into one file of at least this many pages, then groups and classifies it">
             Pages per file
@@ -2029,7 +2180,7 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
           <label class="field" style="flex:1;min-width:150px">
             Lock document
             <select id="stLock">
-              <option value="">&mdash; spread over all &mdash;</option>
+              <option value="">&mdash; spread over selected files &mdash;</option>
               {% for doc_type, group in cases|selectattr('field_truth')|list|groupby('doc_type') %}
               <optgroup label="{{ doc_type or 'unclassified' }}">
                 {% for c in group %}
@@ -2041,6 +2192,26 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
           </label>
         </div>
 
+        <h3 class="st-settings-title">Cache and batching</h3>
+        <!-- Prompt cache: a stress run repeats a few pages and one prompt, so the
+             server answers most of each prompt from cache. Ticked, every request
+             is sent uncacheable: a random cache_salt on vLLM, cache_prompt off on
+             llama-server. Ollama has no per-request switch. -->
+        <label class="st-check" style="margin-top:8px"
+               title="Every request is sent so the server cannot reuse a cached prefix: a random cache_salt per request on vLLM, cache_prompt off on llama-server. Ollama has no per-request switch, so it is unchanged there. Prefill is then measured in full, as it would be for documents the server has never seen.">
+          <input id="stNoCache" type="checkbox"> Bypass the server's prompt cache
+          <span class="muted-inline" style="font-weight:400">&mdash; measure full prefill, not cache hits</span>
+        </label>
+        <!-- vLLM's /v1/chat/completions/batch: requests in flight together are
+             sent as ONE request holding all their conversations, up to the
+             concurrency each. vLLM only; nothing streams, so time to first
+             token and the mid-reply loop cut are not available. See vllmbatch.py. -->
+        <div class="row" style="margin-top:8px;align-items:center">
+          <button id="stBatch" type="button" class="ghost-sm" aria-pressed="false" disabled
+                  title="Send the requests that are in flight at the same moment as one vLLM /v1/chat/completions/batch request, up to the concurrency per batch. Requests are grouped only with others that share every setting but the conversation. Replies do not stream, so time to first token and per-request decode speed are not measured, and a looping reply runs to its token cap (it is still flagged as looped). vLLM only.">Batch requests: off</button>
+          <span class="muted-inline" id="stBatchNote" style="font-size:.78rem"></span>
+        </div>
+        <h3 class="st-settings-title">Metrics and logging</h3>
         <!-- vLLM's Prometheus endpoint. Offered only when the selected server
              says it IS vLLM; on a local llama-server or Ollama nothing is ever
              requested, and the server refuses the route as well. -->
@@ -2056,34 +2227,8 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
               <input id="stEvery" type="number" min="1" max="600" value="5" style="width:56px"> s
             </label>
           </div>
-          <!-- The live monitor: /metrics read on a timer, on its own, whether or
-               not a stress test is running. vLLM only, like everything in this
-               box; the reading server is watched, or the extraction server
-               where only that one is vLLM. -->
-          <div class="row" style="margin-top:8px">
-            <button id="monToggle" class="ghost-sm" disabled>Start live monitor</button>
-            <label class="st-check">refresh every
-              <input id="monEvery" type="number" min="1" max="60" value="2" style="width:56px"> s
-            </label>
-          </div>
-          <label class="field" style="margin-top:8px">
-            VRAM from a GPU exporter
-            <span class="muted-inline" style="font-weight:400">&mdash; vLLM does not report VRAM.
-              A DCGM or nvidia_gpu_exporter /metrics URL; blank uses what the vLLM scrape
-              carries, or nvidia-smi when the server runs on this machine</span>
-            <input id="monGpu" type="text" placeholder="http://gpu-box:9400/metrics">
-          </label>
         </div>
 
-        <!-- Prompt cache: a stress run repeats a few pages and one prompt, so the
-             server answers most of each prompt from cache. Ticked, every request
-             is sent uncacheable: a random cache_salt on vLLM, cache_prompt off on
-             llama-server. Ollama has no per-request switch. -->
-        <label class="st-check" style="margin-top:8px"
-               title="Every request is sent so the server cannot reuse a cached prefix: a random cache_salt per request on vLLM, cache_prompt off on llama-server. Ollama has no per-request switch, so it is unchanged there. Prefill is then measured in full, as it would be for documents the server has never seen.">
-          <input id="stNoCache" type="checkbox"> Bypass the server's prompt cache
-          <span class="muted-inline" style="font-weight:400">&mdash; measure full prefill, not cache hits</span>
-        </label>
         <!-- Off by default: a stress job's timings were taken under the load of
              the others. On, each measured job is one ordinary run-log row tagged
              with the run and its concurrency, so the "Run kind" chips can keep
@@ -2093,18 +2238,42 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
           <input id="stSaveLog" type="checkbox"> Save each job to the run log
           <span class="muted-inline" style="font-weight:400" id="stSaveLogNote">&mdash; rows are tagged as stress runs</span>
         </label>
-        <div class="row">
-          <button id="stRun" class="primary">Run stress test</button>
-          <button id="stStop" class="ghost-sm" disabled>Stop</button>
-        </div>
+        <label class="st-check" style="margin-top:10px">
+          <input id="stHistoryMonitor" type="checkbox" checked> Save monitor snapshots to History
+        </label>
+        <p class="note">On vLLM, records KV cache, VRAM and throughput at the sampling interval above,
+          plus the final reading. Keeps the latest 300 snapshots per run.</p>
+        <h3 class="st-settings-title">About this test</h3>
         <p class="note" id="stModeNote"></p>
+        <p class="note">A benchmark of the <b>server</b>: a queue of jobs worked
+          by as many concurrent requests as you set, against the reading and
+          extraction models selected in the Workspace. Documents are drawn the
+          way the random test draws them. Only the final metrics and scores are
+          shown and saved to <b>History</b>. Per-job accuracy logging is optional.
+          Errors, loops, token caps and stalls are flagged as they happen.</p>
+        <p class="note">Jobs, including warm-up, use only the selected benchmark files.
+            The draw strategy applies within this selection. Classification builds
+            its long files from the selected transcripts.</p>
+          </div>
+        </details>
+        </div>
+        <div id="stHistoryPanel" hidden>
+        <h2>Stress test history</h2>
+        <p class="note">Saved Stress test runs, with the settings and full report from each run.
+          History stays available after a refresh or app restart.</p>
+        <div class="row" style="margin-top:8px">
+          <button type="button" id="historyRefresh" class="ghost-sm">Refresh</button>
+          <span id="historyStatus" class="note" role="status" aria-live="polite"></span>
+        </div>
+        <div id="historyList" class="history-list"></div>
+        <div class="row">
+          <button type="button" id="historyPrev" class="ghost-sm" disabled>Newer</button>
+          <button type="button" id="historyNext" class="ghost-sm" disabled>Older</button>
+        </div>
+        </div>
       </div>
 
-      <!-- The narrow half of the Doc types tab: what the tab is, and the
-           legend for the matrix beside it. Everything with a shape goes in
-           `schemaCard`, which is full width -- a five-column matrix of thirty
-           keys does not fit 360px, and this is the same split the Random test
-           pane already uses. -->
+      <!-- Document types reference, alongside its full-width schema card. -->
       <div class="pane" id="paneSchema">
         <h2>Document types</h2>
         <p class="note">Every type this app can classify a page as, and the form
@@ -2191,6 +2360,35 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
           there is nothing to feed pass 2 here.</p>
         {% endif %}
       </div>
+      </div><!-- /side-scroll -->
+      <div class="test-actions" id="testActions" hidden>
+        <div id="sourceActions" hidden>
+          <span class="test-status" id="readStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row" id="sourceActionButtons"></div>
+        </div>
+        <div id="ocrActions" hidden>
+          <span class="test-status" id="ocStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row" id="ocrActionButtons"></div>
+        </div>
+        <div id="fieldsActions" hidden>
+          <span class="test-status" id="fxStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row" id="fieldsActionButtons"></div>
+        </div>
+        <div id="randomActions" hidden>
+          <span class="test-status" id="rtStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row">
+            <button id="rtRun" type="button" class="primary">Run random test</button>
+            <button id="rtStop" type="button" class="ghost-sm" disabled>Stop</button>
+          </div>
+        </div>
+        <div id="stressActions" hidden>
+          <span class="test-status" id="stStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row">
+            <button id="stRun" type="button" class="primary">Run stress test</button>
+            <button id="stStop" type="button" class="ghost-sm" disabled>Stop</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- The random test's plan and results, in the Result card's place (moved
@@ -2201,14 +2399,13 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
          read by hand an hour ago. The controls stay in the side pane, because
          that is where the run is decided.
 
-         `Clear` puts the Result card back. Nothing is lost by it -- every round
-         is a real run and is in the run log below. -->
+         `Clear results` empties this view. Each completed round remains in the run log. -->
     <div class="card" id="rtCard" hidden>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">Random test</h2>
         <span id="rtNote" class="muted-inline" style="font-size:.8rem"></span>
         <button id="rtStop2" class="ghost-sm" style="margin-left:auto" disabled>Stop</button>
-        <button id="rtClear" class="ghost-sm">Clear</button>
+        <button id="rtClear" class="ghost-sm">Clear results</button>
       </div>
       <div id="rtOut"></div>
     </div>
@@ -2221,9 +2418,8 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
         <h2 style="margin:0">Stress test</h2>
         <span id="stNote" class="muted-inline" style="font-size:.8rem"></span>
         <button id="stStop2" class="ghost-sm" style="margin-left:auto" disabled>Stop</button>
-        <button id="stClear" class="ghost-sm">Clear</button>
+        <button id="stClear" class="ghost-sm">Clear results</button>
       </div>
-      <div id="stMon"></div>
       <div id="stOut"></div>
     </div>
 
@@ -2234,6 +2430,15 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
          outside the grid it would leave the main column empty above itself.
          Drawn once from GET /api/schema and cached -- the requirement cannot
          change while the process runs. -->
+    <div class="card" id="historyCard" hidden>
+      <div class="history-head">
+        <h2 style="margin:0">Stress test history</h2>
+        <span id="historyTitle" class="note"></span>
+        <a id="historyDownload" class="ghost-sm" hidden download>Download JSON</a>
+      </div>
+      <div id="historyDetail"><p class="note">Choose a saved run to see its settings and metrics.</p></div>
+    </div>
+
     <div class="card" id="schemaCard" hidden>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">Document types and their fields</h2>
@@ -2381,19 +2586,7 @@ served under behind a reverse proxy, e.g. /OCR.">App path: <code id="appBaseNow"
       <button id="runRefresh" class="ghost-sm" style="margin-left:auto">Refresh</button>
       <a id="runDownload" class="ghost-sm" href="/api/runs.csv" download>Download CSV</a>
     </div>
-    <!-- The view every table below is compiled under. **Neither knob writes
-         anything and neither hides a row from the log**: the raw rows are stored
-         and shown whatever these say, and what moves is only what gets averaged.
-         A read that scored 20% still ran, still went to pass 2, and is still in
-         the CSV -- what a floor above 20% decides is that the field score it
-         produced describes the read rather than the extractor. -->
-    <div class="lv-bar">
-      <!-- Which passes a row is a record of. **Not a model filter, and it cannot
-           be one**: "read no page" is a property of the run, and the column that
-           would have to say so holds the EXTRACTING model on those rows. Turning
-           off every reading model to see the extraction half therefore emptied
-           the card instead — the fields-only rows were being matched on a pass
-           they never ran. This is that question asked directly. -->
+    <div class="lv-bar log-filter-toolbar" aria-label="Summary filters">
       <label class="lv-num" title="which passes a row is a record of. Some runs are
 half a pipeline on purpose — a read-only round never extracts, a fields-only round
 is fed the ground truth and never reads — and each half is worth looking at alone.">Pipeline
@@ -2404,6 +2597,16 @@ is fed the ground truth and never reads — and each half is worth looking at al
           <button data-pipe="extract" title="runs that extracted from a transcript they did not read — usually fed the ground truth">Extract only</button>
         </div>
       </label>
+      <span class="sp"></span>
+      <button id="lvReset" type="button" class="ghost-sm">Reset filters</button>
+    </div>
+    <div id="lvFilters">
+      <div id="lvMainFacets" class="lv-main-facets"></div>
+      <details id="lvAdvancedFilters" class="log-filter-details">
+        <summary>Advanced filters <span id="lvAdvancedCount" class="muted-inline"></span></summary>
+        <div class="log-filter-body">
+          <div class="lv-bar">
+
       <label class="lv-num" title="transcript accuracy under which a field score in
 the log is not averaged: pass 2 can only map the values pass 1 gave it, so a score
 over a broken transcript is the read's mistake wearing the extractor's name. This
@@ -2428,48 +2631,55 @@ failures are one document — from every table except the Errors one, where they
 highlighted. Dominated by a pairing, not itself hard.">
         <input type="checkbox" id="errDomToggle"> Drop single-source failures
       </label>
-      <button id="lvApply" class="ghost-sm">Apply</button>
-      <button id="lvReset" class="ghost-sm">Reset</button>
-      <span id="lvNote" class="muted-inline"></span>
-    </div>
-    <!-- Include/exclude per model, document and shape. Filled from the whole
-         log, never from what survived the filter, so a value just excluded is
-         still there to be put back. -->
-    <div id="lvFilters"></div>
-    <!-- Shown only when the filter matches nothing. An empty card is not
-         self-explanatory, and the fix is always "undo one of these". -->
-    <div id="lvEmpty"></div>
-
-    <div class="seg" id="logTabs" style="margin-top:14px">
-      <button data-panel="present" class="on" title="the six tables worth showing, at presentation size: which model reads best, which extracts best, what each costs, and what raising Detail buys. Shows everything unless you exclude models with the chips or the toggle.">Summary</button>
-      <button data-panel="rank">Full rank</button>
-      <button data-panel="ocr">Best reading</button>
-      <button data-panel="extract">Best extraction</button>
-      <button data-panel="case">Per document</button>
-      <button data-panel="weak" title="what each model and each document is WEAK at, rather than how good it is: the transcript score split into Thai, English and numerals, and the field score split into the individual keys. Every other tab averages over both.">Weak spots</button>
-      <button data-panel="types" title="every run grouped by the KIND of page rather than by the document or the setting: which document type is read and extracted well, and which model is best at each. Every other tab on this card averages that axis away.">Model × type</button>
-      <button data-panel="analysis">Time × Doc × Accuracy</button>
-      <button data-panel="error">Errors</button>
-      <button data-panel="trend" title="accuracy and error rate over TIME, one small chart per model or per document, over every run the filters match (not the recent-runs window). The code, config and server changed under the same model names, so this shows whether a model or a document got better or worse.">Trend</button>
-      <button data-panel="tokens" title="tokens sent (in) and generated (out) per document, per pass, per model. Compiled from the log on every refresh, so a new model appears as soon as it has run.">Tokens</button>
-      <button data-panel="raw">Raw data</button>
-    </div>
-
-    <!-- The presentation summary: six tables, one colour scale, one error
-         column each, and a bias that is on by default and named. The one view
-         on this card meant to be SHOWN rather than argued from -- which is why
-         it is the tab that opens, and why the bias toggle lives on it rather
-         than in the bar above: it changes this tab and nothing else. -->
-    <div class="lv-panel" id="panelPresent">
-      <div class="lv-bar">
         <label class="lv-check" title="drop by rule instead of by hand: models
 this log disqualifies for that pass, failures that came entirely from one pairing,
 and runs whose clock was a robust outlier in its own cell. Everything dropped is
 named below. OFF — the default — shows every model and every run the filters
 matched.">
-          <input type="checkbox" id="presBias"> Exclude weak models
+          <input type="checkbox" id="presBias"> Exclude weak models (Overview only)
         </label>
-      </div>
+      <button id="lvApply" class="ghost-sm">Apply</button>
+          </div>
+          <div id="lvExtraFacets"></div>
+          <details class="lv-filter-help">
+            <summary>How the filters work</summary>
+            <div id="lvFilterHelp"></div>
+          </details>
+          <p id="lvNote" class="note"></p>
+        </div>
+      </details>
+    </div>
+    <div id="lvApplied" class="lv-applied" role="status" aria-live="polite"></div>
+    <div id="lvEmpty"></div>
+
+    <div class="seg log-groups" id="logGroups" aria-label="Run log sections">
+      <button type="button" data-log-group="overview" class="on" aria-pressed="true">Overview</button>
+      <button type="button" data-log-group="compare" aria-pressed="false">Compare models</button>
+      <button type="button" data-log-group="history" aria-pressed="false">Run history</button>
+      <button type="button" data-log-group="advanced" aria-pressed="false">Advanced analysis</button>
+    </div>
+    <p class="note" id="logViewNote"></p>
+    <div class="seg" id="logTabs" style="margin-top:14px">
+      <button type="button" data-panel="present" data-group="overview" class="on" title="the six tables worth showing, at presentation size: which model reads best, which extracts best, what each costs, and what raising Detail buys. Shows everything unless you exclude models with the chips or the toggle.">Overview</button>
+      <button type="button" data-panel="rank" data-group="compare">Full rank</button>
+      <button type="button" data-panel="ocr" data-group="compare">Best reading</button>
+      <button type="button" data-panel="extract" data-group="compare">Best extraction</button>
+      <button type="button" data-panel="case" data-group="advanced">Per document</button>
+      <button type="button" data-panel="weak" data-group="advanced" title="what each model and each document is WEAK at, rather than how good it is: the transcript score split into Thai, English and numerals, and the field score split into the individual keys. Every other tab averages over both.">Weak spots</button>
+      <button type="button" data-panel="types" data-group="advanced" title="every run grouped by the KIND of page rather than by the document or the setting: which document type is read and extracted well, and which model is best at each. Every other tab on this card averages that axis away.">Model × type</button>
+      <button type="button" data-panel="analysis" data-group="advanced">Time × Doc × Accuracy</button>
+      <button type="button" data-panel="error" data-group="advanced">Errors</button>
+      <button type="button" data-panel="trend" data-group="advanced" title="accuracy and error rate over TIME, one small chart per model or per document, over every run the filters match (not the recent-runs window). The code, config and server changed under the same model names, so this shows whether a model or a document got better or worse.">Trend</button>
+      <button type="button" data-panel="tokens" data-group="advanced" title="tokens sent (in) and generated (out) per document, per pass, per model. Compiled from the log on every refresh, so a new model appears as soon as it has run.">Tokens</button>
+      <button type="button" data-panel="raw" data-group="history">Run history</button>
+    </div>
+
+    <!-- The presentation summary: six tables, one colour scale, one error
+         column each, and a bias that is on by default and named. The one view
+         on this card meant to be SHOWN rather than argued from -- which is why
+         it is the panel that opens. The bias toggle in Advanced filters is
+         labelled Overview only because it changes this panel and nothing else. -->
+    <div class="lv-panel" id="panelPresent">
       <div id="presentSum"></div>
     </div>
     <!-- Best and worst per model and per document, for each pass, ranked on
@@ -2563,6 +2773,7 @@ matched.">
          deleted from -- which is the one operation on this card that changes the
          file. -->
     <div class="lv-panel" id="panelRaw" hidden>
+      <p class="note" id="rawScope"></p>
       <div class="lv-bar">
         <span id="rawSel" class="muted-inline">Nothing selected.</span>
         <span class="sp"></span>
@@ -2824,6 +3035,7 @@ const runNote = document.getElementById('runNote');
    was no error anywhere to say why. A tab and its pane are one thing; naming
    them in two places means one of them is eventually forgotten. */
 function showPane(name) {
+  selectedPane = name;
   [...sideTabs.querySelectorAll('button[data-pane]')].forEach(b => {
     const on = b.dataset.pane === name;
     b.classList.toggle('on', on);
@@ -2832,38 +3044,94 @@ function showPane(name) {
     if (pane) pane.classList.toggle('on', on);
   });
   scOpen = name === 'schema';
+  stressPaneOpen = name === 'stress';
+  historyOpen = stressPaneOpen && stressView === 'history';
   paintMain();
   if (scOpen) paintSchema();
+  if (historyOpen) historyLoad();
+  else if (stressPaneOpen) stPaint();
+  else if (name === 'random') rtPaint();
 }
 
 /* One pane, so nothing moves between panes any more. `paintPanes` and
    `syncEngineTab` went with the second tab: the engine is a control INSIDE the
    workspace now, and a control cannot disagree with the tab it sits in. */
 
-/* Which full-width card owns the main column. Three things want it and only one
-   can have it: the Result card (with Compare, which holds that same read's page
-   images), the Random test's round table, and the Doc types reference.
-
-   **One function decides, rather than each caller hiding what it displaces.**
-   The alternative was tried on the Random test and is what `rtShowing` used to
-   do alone -- and with a third contender it stops working: opening Doc types
-   mid-test and going back would have left the round table hidden, because
-   nothing would have put it back.
-
-   `var`, and only ids inside, because `showPane` is defined long before the
-   card elements' own consts are -- a `let` read from here at parse time is a
-   temporal-dead-zone throw, which takes the whole inline script down with it. */
-var scOpen = false, rtWanted = false, stWanted = false;
+/* The selected menu owns the main column. Background run updates may repaint
+   their report, but cannot replace the user's current view. Keep each report
+   in its card so returning to its tab restores it without clearing the run.
+   `var` and element IDs allow early callers before the card consts exist. */
+var scOpen = false, historyOpen = false;
+var selectedPane = 'source', stressPaneOpen = false, stressView = 'run', stRunning = false;
 function paintMain() {
   const el = id => document.getElementById(id);
-  const st = !scOpen && stWanted;
-  const rt = !scOpen && !st && rtWanted;
+  const st = stressPaneOpen && !historyOpen;
+  const rt = selectedPane === 'random';
+  el('historyCard').hidden = !historyOpen;
   el('schemaCard').hidden = !scOpen;
   el('stCard').hidden = !st;
   el('rtCard').hidden = !rt;
-  el('resultCard').hidden = scOpen || rt || st;
-  el('compareCard').hidden = scOpen || rt || st;
+  el('resultCard').hidden = scOpen || historyOpen || rt || st;
+  el('compareCard').hidden = scOpen || historyOpen || rt || st;
+  let hasActions = false;
+  for (const name of ['source', 'ocr', 'fields', 'random', 'stress']) {
+    const group = el(name + 'Actions');
+    group.hidden = name !== selectedPane || !group.querySelector('button');
+    if (!group.hidden) hasActions = true;
+  }
+  el('testActions').hidden = !hasActions;
+  document.body.classList.toggle('has-test-actions', hasActions);
 }
+
+function setTestStatus(prefix, state) {
+  const status = document.getElementById(prefix + 'Status');
+  status.dataset.state = state;
+  status.textContent = {ready: 'Ready', running: 'Running', stopping: 'Stopping',
+    completed: 'Completed', stopped: 'Stopped', failed: 'Failed'}[state];
+}
+
+function setReadStatus(state) {
+  setTestStatus('read', state);
+  setTestStatus('oc', state);
+}
+
+// Move the existing document buttons, preserving their handlers and the
+// server-rendered absence of controls when benchmark cases are unavailable.
+for (const [pane, ids] of Object.entries({source: ['run', 'stop', 'clear'],
+    ocr: ['ocRun', 'ocStop'], fields: ['fxRun']})) {
+  const target = document.getElementById(pane + 'ActionButtons');
+  for (const id of ids) {
+    const button = document.getElementById(id);
+    if (!button) continue;
+    const row = button.parentElement;
+    target.appendChild(button);
+    if (!row.children.length) row.remove();
+  }
+}
+document.getElementById('clear').textContent = 'Clear workspace';
+
+// Keep the footer inside the visible sidebar even while the page header or
+// global monitor occupies space above it. On narrow screens CSS docks it.
+const sideCard = document.querySelector('.side');
+let sideSizeFrame = null;
+function sizeSidebar() {
+  if (sideSizeFrame !== null) return;
+  sideSizeFrame = requestAnimationFrame(() => {
+    sideSizeFrame = null;
+    const top = Math.max(18, sideCard.getBoundingClientRect().top);
+    sideCard.style.setProperty('--side-height', Math.max(180, innerHeight - top - 18) + 'px');
+    const actionHeight = document.getElementById('testActions').getBoundingClientRect().height;
+    document.body.style.setProperty('--run-actions-space', (actionHeight + 18) + 'px');
+  });
+}
+window.addEventListener('resize', sizeSidebar);
+window.addEventListener('scroll', sizeSidebar, {passive: true});
+const sideSizeObserver = new ResizeObserver(sizeSidebar);
+sideSizeObserver.observe(document.querySelector('.page-head'));
+sideSizeObserver.observe(document.getElementById('monCard'));
+sideSizeObserver.observe(document.getElementById('testActions'));
+sizeSidebar();
+paintMain();
 sideTabs.addEventListener('click', e => {
   const btn = e.target.closest('button[data-pane]');
   if (btn) showPane(btn.dataset.pane);
@@ -4027,6 +4295,36 @@ fldMode.addEventListener('click',
 extractSel.addEventListener('change', () => setMode(extractSel.value));
 paintMode();
 
+/* Whether pass 2 asks for `other_fields`. Server-owned like the mode: it applies
+   to Re-extract, the random test and the stress test alike. */
+const extrasChk = document.getElementById('extrasChk');
+const extrasNote = document.getElementById('extrasNote');
+
+function paintExtras() {
+  extrasNote.innerHTML = extrasChk.checked
+    ? 'Every labelled fact the form has no key for comes back under its own label. '
+      + 'Nothing scores it, and it is the longest part of most replies.'
+    : '<b>Off.</b> Only the form is asked for: the single prompt and its grammar '
+      + 'leave <code>other_fields</code> out, and agentic skips the <i>other</i> step.';
+}
+
+async function setExtras(on) {
+  extrasChk.disabled = true;
+  try {
+    const res = await fetch('/api/extract/extras', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ extras: on })
+    });
+    const body = await res.json();
+    if (typeof body.extras === 'boolean') extrasChk.checked = body.extras;
+  } catch (err) { /* leave it where it was */ }
+  extrasChk.disabled = false;
+  paintExtras();
+}
+
+extrasChk.addEventListener('change', () => setExtras(extrasChk.checked));
+paintExtras();
+
 /* ---------- pass 1: which prompt, and whether a system message goes with it ----
    The two move together on purpose. A prompt written for one model sent to
    another has been measured returning nothing at all at HTTP 200, and so has the
@@ -4720,6 +5018,9 @@ function stepList(steps) {
           // are gated on the same test as their button: a panel left open by an
           // earlier run whose button this one does not offer would have no way
           // to be closed again.
+          + (s.chats && s.chats.length ? '<li class="raw-row"><details><summary>Chat context ('
+              + s.chats.length + ' request(s))</summary>'
+              + agenticChatTable(s.chats.map(chat => ({...chat, step: s.id}))) + '</details></li>' : '')
           + (openAsk && askable ? '<li class="raw-row"><div class="step-raw">'
               + '<div class="step-raw-head">shared prefix'
               + (stepPrefixText()
@@ -6196,6 +6497,14 @@ const lvApply = document.getElementById('lvApply');
 const lvReset = document.getElementById('lvReset');
 const lvNote = document.getElementById('lvNote');
 const lvFilters = document.getElementById('lvFilters');
+const lvMainFacets = document.getElementById('lvMainFacets');
+const lvExtraFacets = document.getElementById('lvExtraFacets');
+const lvFilterHelp = document.getElementById('lvFilterHelp');
+const lvApplied = document.getElementById('lvApplied');
+const lvAdvancedCount = document.getElementById('lvAdvancedCount');
+const logGroups = document.getElementById('logGroups');
+const logViewNote = document.getElementById('logViewNote');
+const rawScope = document.getElementById('rawScope');
 const lvPipe = document.getElementById('lvPipe');
 const lvEmpty = document.getElementById('lvEmpty');
 const errDomToggle = document.getElementById('errDomToggle');
@@ -6425,6 +6734,10 @@ function runRow(r) {
       + esc(r.status || '') + '</span>'
       + (r.error ? '<br><span style="color:var(--danger);font-size:.72rem">'
                    + esc(r.error) + '</span>' : '') + '</td>'
+    + '<td><button type="button" class="ghost-sm" data-run-detail="' + Number(r._row)
+      + '" aria-expanded="' + (rawExpanded === runIdentity(r)) + '" aria-label="'
+      + logAttr('Details for ' + (r.file || 'run') + ' at ' + (r.timestamp || 'unknown time'))
+      + '">' + (rawExpanded === runIdentity(r) ? 'Close' : 'Details') + '</button></td>'
     + '</tr>';
 }
 
@@ -8061,7 +8374,8 @@ function prBiasNote(p) {
   const why = {};
   ['ocr', 'extract'].forEach(pass => (p.weak[pass] || []).forEach(w => {
     why[w.model] = (why[w.model] ? why[w.model] + '; ' : '')
-      + (pass === 'ocr' ? 'reading' : 'extraction') + ': ' + w.reason;
+      + (pass === 'ocr' ? 'reading' : 'extraction (Extra fields '
+        + (w.extras === false ? 'off' : 'on') + ')') + ': ' + w.reason;
   }));
   const chips = Object.keys(why).sort().map(m =>
     '<span class="pr-chip pr-chip-out" title="' + esc(why[m]) + '">'
@@ -8253,7 +8567,8 @@ function prHeroes(p) {
     + prHero('Best at reading a page', ocr, '%', secs(ocr))
     + prHero('Best extractor', best, '%', secs(best),
              best ? '<span class="pr-shape pr-shape-' + esc(best.mode)
-                    + ' pr-hero-pill">' + esc(best.mode) + '</span>' : '')
+                    + ' pr-hero-pill">' + esc(best.mode) + '</span> '
+                    + prExtrasLabel(best.extras) : '')
     + '</div>';
 }
 
@@ -8407,6 +8722,10 @@ function prHead(n, text, hint, what) {
     + '<span class="pr-n">' + n + '</span>' + esc(text) + '</div>';
 }
 
+function prExtrasLabel(extras) {
+  return '<span class="pr-shape">Extra fields ' + (extras === false ? 'off' : 'on') + '</span>';
+}
+
 function paintPresent(t) {
   const p = (t && t.presentation) || null;
   if (!presentSum) return;
@@ -8424,6 +8743,12 @@ function paintPresent(t) {
   const ocrTokMax = prMax(ocr, e => e.tokens.mean);
   const exSecsMax = prMax(ex, e => e.seconds.mean);
   const shapeSecsMax = prMax(shapes, e => e.seconds.mean);
+  const extrasColumn = {
+    key: 'extras', label: 'Extra fields', value: e => e.extras === false ? 'off' : 'on',
+    title: 'Whether other_fields was requested. Older runs used Extra fields on. '
+      + 'Zero extra values found still counts as on.',
+    cell: e => prExtrasLabel(e.extras)
+  };
 
   // 1. Which model to read a page with.
   const rank = [
@@ -8486,6 +8811,7 @@ function paintPresent(t) {
   const exRank = [
     {key: 'model', label: 'Model', cls: 'pr-model', value: e => csModel(e.model),
      cell: e => prModel(e, exRankAt.get(e))},
+    extrasColumn,
     {key: 'field', label: 'Field accuracy', n: true, value: e => e.value.mean,
      title: 'priority-1 values that are the value the field ground truth says '
           + 'belongs in that key. A partial match counts half.',
@@ -8506,6 +8832,7 @@ function paintPresent(t) {
           + 'of one to three fields, then the answers merged.',
      cell: e => '<span class="pr-shape pr-shape-' + esc(e.mode) + '">'
        + esc(e.mode) + '</span>'},
+    extrasColumn,
     {key: 'field', label: 'Field accuracy', n: true, value: e => e.value.mean,
      title: 'the same score as the table above, split by the shape of the request',
      cell: e => prFig(e.value, '%', 1, presColour, (e.value.mean || 0) / 100)},
@@ -8519,6 +8846,7 @@ function paintPresent(t) {
   const exTime = [
     {key: 'model', label: 'Model', cls: 'pr-model', value: e => csModel(e.model),
      cell: e => prModel(e, exRankAt.get(e))},
+    extrasColumn,
     {key: 'secs', label: 'Time per document', n: true, value: e => e.seconds.mean,
      title: 'wall clock for the extraction alone, meaned over documents',
      cell: e => prFig(e.seconds, 's', 1, null, (e.seconds.mean || 0) / exSecsMax)},
@@ -8560,17 +8888,21 @@ function paintPresent(t) {
     + (prDetailGrid(p, 'time') || none)
     + prHead(4, 'Which model extracts fields best',
              'Scored against hand-written field ground truth. A partial match '
-             + 'counts half a value.')
+             + 'counts half a value. Extra fields on and off are separate rows.',
+             'model and Extra fields setting')
     + (ex.length ? lvTable('prExtract', ex, exRank,
         {sort: {key: 'field', dir: 'desc'},
          rowClass: e => e === ex[0] ? ' class="ms-top"' : ''}) : none)
     + prHead(5, 'Single against agentic',
              'The two shapes are separate rows, never averaged: some models do '
-             + 'well in one and badly in the other.',
-             'model and shape')
+             + 'well in one and badly in the other. Extra fields on and off '
+             + 'also stay separate for accuracy, time and error rate.',
+             'model, shape and Extra fields setting')
     + (shapes.length ? lvTable('prShape', shapes, shape, {sort: {key: 'field', dir: 'desc'}}) : none)
     + prHead(6, 'What each extractor costs',
-             'The pass-2 clock alone — reading the page is not in these figures.')
+             'The pass-2 clock alone — reading the page is not in these figures. '
+             + 'Extra fields on and off are separate rows.',
+             'model and Extra fields setting')
     + (ex.length ? lvTable('prExtractTime', ex, exTime, {sort: {key: 'secs', dir: 'asc'}}) : none);
 }
 
@@ -8776,15 +9108,12 @@ function rtPaintScope() {
    was a fifty-row table stacked above a Result card still showing a document
    somebody read by hand an hour ago. Compare goes with the Result card, since
    it holds that same read's page images. */
-function rtShowing(on) {
-  rtWanted = on;
-  // Whichever run was started last owns the column.
-  if (on) stWanted = false;
-  paintMain();
-}
 function rtPaint() {
-  rtShowing(!!rtRows.length);
-  if (!rtRows.length) { rtOut.innerHTML = ''; return; }
+  paintMain();
+  if (!rtRows.length) {
+    rtOut.innerHTML = '<p class="note">Run a random test to see its rounds here.</p>';
+    return;
+  }
   const body = rtRows.map(r => {
     const p = r.plan, out = r.result || {};
     const cls = r.error ? ' class="rt-bad"' : (r.pending ? ' class="rt-now"' : '');
@@ -8910,7 +9239,8 @@ function rtThroughputCells(out) {
    lies about what it will do. */
 function rtBusy(on) {
   rtRunning = on;
-  if (on) rtStopping = false;
+  if (on) { rtStopping = false; setTestStatus('rt', 'running'); }
+  rtClear.disabled = on;
   rtPaintSequence();
   // A Stop already asked for is not a Stop that can be asked for again: the
   // request is in, and a live-looking button would invite a second one that
@@ -8921,9 +9251,9 @@ function rtBusy(on) {
   // by being unavailable rather than by an error after the click.
   if (rtExtractEndpoint) rtExtractEndpoint.disabled = on;
   // One sweep at a time: the server refuses the second with a 409 anyway.
-  if (typeof stRun !== 'undefined' && stRun) stRun.disabled = on;
-  // The two share one card, so they cannot share the screen: a read started
-  // mid-test would stream into a Result card the next round event hides again.
+  if (typeof stRun !== 'undefined' && stRun) stPaintFiles();
+  // Reads and sweeps share server settings, so do not start a workspace read
+  // while a sweep is changing those settings between rounds.
   // `paintServer` owns this button otherwise and puts it back on its own terms.
   if (on) runBtn.disabled = true; else paintServer();
 }
@@ -8935,16 +9265,17 @@ async function rtStart() {
   rtContinuous = false;
   rtPaint();
   rtBusy(true);
+  rtStop.disabled = rtStop2.disabled = true;
   // Same reason as the Read button: the rounds below are judged by this floor,
   // so it is pushed before the first one rather than whenever the box lost
   // focus.
-  await pushReadFloor(rtReadFloorInp || readFloorInp);
-  await ensureSampling();
   rtNote.classList.remove('err');
   rtNote.textContent = 'Planning…';
-  rtShowing(true);
+  paintMain();
   rtAbort = new AbortController();
   try {
+    await pushReadFloor(rtReadFloorInp || readFloorInp);
+    await ensureSampling();
     const res = await fetch('/api/randomtest/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       signal: rtAbort.signal,
@@ -8968,6 +9299,7 @@ async function rtStart() {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || ('HTTP ' + res.status));
     }
+    rtStop.disabled = rtStop2.disabled = rtStopping;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -9037,7 +9369,9 @@ async function rtStart() {
           // The server says where it stopped. Nothing to paint: `done` follows
           // immediately and writes the one summary line a run gets.
           rtStopping = true;
+          setTestStatus('rt', 'stopping');
         } else if (ev.event === 'done') {
+          setTestStatus('rt', ev.stopped ? 'stopped' : 'completed');
           rtNote.textContent = 'Seed ' + ev.seed + ' — ' + ev.completed
             + (ev.continuous ? '' : '/' + ev.total) + ' round(s) '
             + (ev.stopped ? 'run before stopping' : 'completed')
@@ -9059,6 +9393,7 @@ async function rtStart() {
       }
     }
   } catch (err) {
+    setTestStatus('rt', 'failed');
     if (err.name === 'AbortError') {
       // Only reached when the server could not be told to stop -- an ordinary
       // Stop now ends with the stream's own `done`. Hanging up frees the page
@@ -9073,6 +9408,8 @@ async function rtStart() {
       rtNote.classList.add('err');
     }
   } finally {
+    if (['running', 'stopping'].includes(document.getElementById('rtStatus').dataset.state))
+      setTestStatus('rt', 'failed');
     rtAbort = null;
     rtBusy(false);
     // Drop rows that never ran -- on a stop or a failure, a "queued" row that
@@ -9092,6 +9429,7 @@ if (rtRun) {
   const stop = async () => {
     if (!rtAbort || rtStopping) return;
     rtStopping = true;
+    setTestStatus('rt', 'stopping');
     rtStop.disabled = rtStop2.disabled = true;
     rtNote.classList.remove('err');
     // The bound, measured rather than guessed: a read notices between tokens,
@@ -9114,7 +9452,12 @@ if (rtRun) {
   };
   rtStop.addEventListener('click', stop);
   rtStop2.addEventListener('click', stop);
-  rtClear.addEventListener('click', () => { rtRows = []; rtPaint(); });
+  rtClear.addEventListener('click', () => {
+    if (rtRunning) return;
+    rtRows = []; rtNote.textContent = ''; rtNote.classList.remove('err');
+    setTestStatus('rt', 'ready');
+    rtPaint();
+  });
 
   // Painted on change and once at load: the caveat belongs beside the choice,
   // not in the results of a run that already made it.
@@ -9165,6 +9508,9 @@ let logData = null;
 let logView = {window: null, min_read_pct: null};
 let logFilters = {include: {}, exclude: {}};
 let rawPicked = new Set();
+let rawExpanded = null;
+let currentLogGroup = 'overview';
+const lastLogPanel = {overview: 'present', compare: 'rank', history: 'raw', advanced: 'case'};
 let logBusy = false;
 
 /* The axes worth filtering on, in the user's own terms: model, sol, mode. The
@@ -9281,35 +9627,42 @@ function lvActive() {
                           || (logFilters.exclude[f.field] || []).length);
 }
 
+function logAttr(value) {
+  return esc(String(value)).replace(/"/g, '&quot;');
+}
+
 function paintFilters() {
   const facets = (logData && logData.facets) || {};
+  const primary = new Set(['model', 'extract_model', 'extract_mode']);
   const blocks = LV_FIELDS.map(f => {
     const values = facets[f.field] || [];
-    if (!values.length) return '';
-    return '<div class="lv-field"><b title="' + esc(f.hint) + '">' + esc(f.label)
+    if (!values.length) return null;
+    return {field: f.field, html: '<div class="lv-field"><b title="' + logAttr(f.hint) + '">' + esc(f.label)
       + '</b><div class="lv-chips">'
       + values.map(v => {
           const at = lvState(f.field, v.value);
-          return '<span class="lv-chip' + (at ? ' ' + at : '')
-            + '" data-field="' + esc(f.field) + '" data-value="' + esc(v.value)
-            + '" title="' + esc(v.value) + ' — ' + v.runs + ' row(s) in the log. '
+          return '<button type="button" class="lv-chip' + (at ? ' ' + at : '')
+            + '" aria-label="' + logAttr(f.label + ': ' + lvChipLabel(f.field, v.value)
+              + (at === 'inc' ? ' (included)' : at === 'exc' ? ' (excluded)' : ' (any)'))
+            + '" data-field="' + logAttr(f.field) + '" data-value="' + logAttr(v.value)
+            + '" title="' + logAttr(v.value) + ' — ' + v.runs + ' row(s) in the log. '
             + (at === 'inc' ? 'Kept. Click to drop it.'
                : at === 'exc' ? 'Dropped. Click to clear.'
                : 'Click to keep only this, again to drop it.') + '">'
             + esc(lvChipLabel(f.field, v.value)) + '<span class="n">' + v.runs
-            + '</span></span>';
+            + '</span></button>';
         }).join('')
-      + '</div></div>';
-  }).filter(Boolean).join('');
-  if (!blocks) { lvFilters.innerHTML = ''; return; }
-  lvFilters.innerHTML = blocks
-    + '<p class="note" style="margin-top:8px">Click a chip to keep <b>only</b> '
+      + '</div></div>'};
+  }).filter(Boolean);
+  lvMainFacets.innerHTML = blocks.filter(b => primary.has(b.field)).map(b => b.html).join('');
+  lvExtraFacets.innerHTML = blocks.filter(b => !primary.has(b.field)).map(b => b.html).join('');
+  lvFilterHelp.innerHTML = '<p class="note" style="margin-top:8px">Click a chip to keep <b>only</b> '
     + 'that value, again to <b>drop</b> it, again to clear. Chips are counted '
     + 'over the whole log, never over what survived the filter, so a value you '
     + 'have just dropped is still here to put back. <b>A dropped row is absent '
     + 'from every table</b> — not hidden but uncounted: it is out of the run '
     + 'counts, the failure rates and the window, exactly as if it had not been '
-    + 'run. The Raw data panel is never filtered, because a row nobody can see '
+    + 'run. The Run history panel is never filtered, because a row nobody can see '
     + 'is a row nobody can delete. <b>Reading model is blank on a run that read '
     + 'no page</b> — a fields-only run carries the model that extracted, not one '
     + 'that read — so those runs are not in that picker at all. To see one half '
@@ -9430,13 +9783,14 @@ function lvInForce() {
 }
 
 function paintEmpty(t) {
+  lvEmpty.hidden = currentLogGroup === 'history';
   if (t.matched !== 0) { lvEmpty.innerHTML = ''; return; }
   const forced = lvInForce();
-  lvEmpty.innerHTML = '<b>No runs match.</b> Every table below is empty because '
+  lvEmpty.innerHTML = '<b>No runs match the summary filters.</b> The summary tables are empty because '
     + 'nothing in the log got past the filter'
     + (forced.length ? ' — in force: ' + forced.join(' &middot; ') : '')
-    + '. The log itself is untouched (' + t.logged + ' rows) and the <b>Raw data</b> '
-    + 'panel still shows it. Clear a chip above, or press <b>Reset</b>.';
+    + '. The log itself is untouched (' + t.logged + ' rows) and the <b>Run history</b> '
+    + 'panel still shows it. Clear a chip above, or press <b>Reset filters</b>.';
 }
 
 function paintLogControls() {
@@ -9482,6 +9836,22 @@ function paintLogControls() {
   lvNote.innerHTML = bits.join(' &middot; ')
     + (moved ? ' &middot; <b>not the server default</b> (' + d.window + ' runs, '
                + Number(d.min_read_pct).toFixed(0) + '%)' : '');
+  const applied = lvInForce();
+  if (t.min_read_pct) applied.push('Read floor: <b>' + esc(String(t.min_read_pct)) + '%</b>');
+  if (t.window) applied.push('Runs averaged: <b>' + esc(String(t.window)) + '</b> per group');
+  if (errDropSingle) applied.push('Drop single-source failures');
+  if (presBiased) applied.push('Exclude weak models <b>(Overview only)</b>');
+  lvApplied.innerHTML = '<span>' + (t.matched ?? 0) + ' / ' + (t.logged ?? 0)
+    + ' rows match summary filters</span>'
+    + (applied.length ? applied.map(x => '<span class="active">' + x + '</span>').join('')
+       : '<span>No summary filters · all runs averaged</span>');
+  const primary = new Set(['model', 'extract_model', 'extract_mode']);
+  const extraCount = LV_FIELDS.filter(f => !primary.has(f.field)).reduce((n, f) => n
+    + (logFilters.include[f.field] || []).length + (logFilters.exclude[f.field] || []).length, 0)
+    + (t.min_read_pct ? 1 : 0) + (t.window ? 1 : 0)
+    + (errDropSingle ? 1 : 0) + (presBiased ? 1 : 0);
+  lvAdvancedCount.textContent = extraCount ? '· ' + extraCount + ' active' : '';
+  paintLogScope();
 }
 
 /* ---------- raw rows ---------- */
@@ -9490,9 +9860,8 @@ function lvNum(v) {
   const n = Number(v);
   return isNaN(n) ? null : n;
 }
-/* Header labels and sortable values for the log itself. The CELLS come from
-   `runRow`, which is unchanged -- this names what each column is worth so the
-   sort and the display cannot describe different things. */
+/* Header labels and sortable values for the log itself. Values correspond to
+   runRow; the selection and details controls are deliberately not sortable. */
 const RAW_COLS = [
   {key: 'pick', label: '', sortable: false, cls: 'pick'},
   {key: 'when', label: 'When', n: true, value: r => r.timestamp || ''},
@@ -9508,15 +9877,39 @@ const RAW_COLS = [
    title: 'grounded: found on the page. fields: correct against the field ground '
         + 'truth, where there is one',
    value: r => lvNum(r.grounded_pct)},
-  {key: 'status', label: 'Status', value: r => r.status || ''}
+  {key: 'status', label: 'Status', value: r => r.status || ''},
+  {key: 'details', label: 'Details', sortable: false}
 ];
 
+function runIdentity(r) {
+  return JSON.stringify([r._row, r.timestamp, r.file]);
+}
+
+function runDetails(r, jsonOpen) {
+  const fields = [
+    ['Timestamp', r.timestamp], ['Document', r.file], ['Run type', r.run_type],
+    ['Logged model', r.model], ['Extraction model', r.extract_model],
+    ['Extraction shape', r.extract_mode], ['Detail', r.detail], ['Status', r.status],
+    ['Reading time (s)', r.seconds], ['Extraction time (s)', r.extract_seconds],
+    ['Reading output tokens', r.tokens], ['Extraction output tokens', r.extract_tokens]
+  ].filter(([, value]) => value !== undefined && value !== null && value !== '');
+  return '<tr class="run-detail"><td colspan="' + RAW_COLS.length + '">'
+    + '<b>Saved run details</b><p class="note">Only values stored in this log row are shown. '
+    + 'Full Stress test settings and reports are in Stress test → History.</p><dl>'
+    + fields.map(([label, value]) => '<div><dt>' + esc(label) + '</dt><dd>'
+      + esc(String(value)) + '</dd></div>').join('') + '</dl>'
+    + '<details' + (jsonOpen ? ' open' : '') + '><summary>All saved values (JSON)</summary><pre>'
+    + esc(JSON.stringify(r, null, 2)) + '</pre></details></td></tr>';
+}
+
 function paintRunRows() {
+  const jsonOpen = runBody.querySelector('.run-detail details')?.open || false;
   const rows = (logData && logData.runs) || [];
   runBody.innerHTML = rows.length
     ? '<table class="queue">' + lvHead('raw', RAW_COLS)
-      + lvSorted('raw', rows, RAW_COLS).map(runRow).join('') + '</table>'
-    : '';
+      + lvSorted('raw', rows, RAW_COLS).map(r => runRow(r)
+        + (rawExpanded === runIdentity(r) ? runDetails(r, jsonOpen) : '')).join('') + '</table>'
+    : '<p class="note">No runs have been logged yet.</p>';
   const n = rawPicked.size;
   rawSel.textContent = n ? n + ' row(s) selected — deleting archives them to '
                            + 'logs/runs.deleted.csv'
@@ -9524,6 +9917,16 @@ function paintRunRows() {
   rawDelete.disabled = !n || logBusy;
   rawNone.disabled = !n || logBusy;
 }
+
+runBody.addEventListener('click', ev => {
+  const button = ev.target.closest ? ev.target.closest('button[data-run-detail]') : null;
+  if (!button) return;
+  const row = ((logData && logData.runs) || []).find(r => r._row === Number(button.dataset.runDetail));
+  if (!row) return;
+  rawExpanded = rawExpanded === runIdentity(row) ? null : runIdentity(row);
+  paintRunRows();
+  runBody.querySelector('button[data-run-detail="' + Number(row._row) + '"]')?.focus({preventScroll: true});
+});
 
 runBody.addEventListener('change', ev => {
   const box = ev.target.closest ? ev.target.closest('input[data-pick]') : null;
@@ -9584,17 +9987,52 @@ rawDelete.addEventListener('click', async () => {
    hit, where a fourth tab left every pane hidden with the button highlighted and
    no error anywhere. A tab and its pane are one thing; naming them in two places
    means one is eventually forgotten. */
-logTabs.addEventListener('click', ev => {
-  const btn = ev.target.closest ? ev.target.closest('button[data-panel]') : null;
-  if (!btn) return;
-  logTabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
-  const want = btn.dataset.panel;
+function paintLogScope() {
+  const t = (logData && logData.totals) || {};
+  const rows = (logData && logData.runs) || [];
+  const history = currentLogGroup === 'history';
+  logViewNote.textContent = history
+    ? 'Individual logged runs. Summary filters above do not apply here.'
+    : 'Aggregated results using the summary filters above. Open Run history to inspect individual runs.';
+  rawScope.textContent = 'Showing the latest ' + rows.length + ' of ' + (t.logged ?? rows.length)
+    + ' logged rows (up to 50). Summary filters do not hide these rows. Download CSV for the complete log.';
+  lvEmpty.hidden = history;
+  runStats.hidden = history;
+}
+
+function showLogPanel(want) {
+  const selected = logTabs.querySelector('button[data-panel="' + want + '"]');
+  if (!selected) return;
+  currentLogGroup = selected.dataset.group;
+  lastLogPanel[currentLogGroup] = want;
+  let count = 0;
   logTabs.querySelectorAll('button[data-panel]').forEach(b => {
     const name = b.dataset.panel;
+    const active = name === want;
+    b.hidden = b.dataset.group !== currentLogGroup;
+    if (!b.hidden) count++;
+    b.classList.toggle('on', active);
+    b.setAttribute('aria-pressed', String(active));
     const el = document.getElementById('panel' + name[0].toUpperCase() + name.slice(1));
-    if (el) el.hidden = name !== want;
+    if (el) el.hidden = !active;
   });
+  logTabs.hidden = count < 2;
+  logGroups.querySelectorAll('button[data-log-group]').forEach(b => {
+    const active = b.dataset.logGroup === currentLogGroup;
+    b.classList.toggle('on', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
+  paintLogScope();
+}
+logGroups.addEventListener('click', ev => {
+  const button = ev.target.closest ? ev.target.closest('button[data-log-group]') : null;
+  if (button) showLogPanel(lastLogPanel[button.dataset.logGroup]);
 });
+logTabs.addEventListener('click', ev => {
+  const button = ev.target.closest ? ev.target.closest('button[data-panel]') : null;
+  if (button) showLogPanel(button.dataset.panel);
+});
+showLogPanel(lastLogPanel[currentLogGroup]);
 
 lvFilters.addEventListener('click', ev => {
   const chip = ev.target.closest ? ev.target.closest('.lv-chip') : null;
@@ -10238,7 +10676,7 @@ function tmPass(key, pass, labels, unit, noun, title, hint, t) {
           : forced.length
           ? '<p class="note"><b>Nothing left to place against a document type.</b> '
             + 'In force: ' + forced.join(' &middot; ')
-            + '. Clear a chip above, or press <b>Reset</b>.</p>'
+            + '. Clear a chip above, or press <b>Reset filters</b>.</p>'
           : '<p class="note">No run in view could be placed against a document '
             + 'type. The type comes from the benchmark manifest for a fixture and '
             + 'from the run&rsquo;s own classification otherwise, so an upload '
@@ -11689,11 +12127,17 @@ async function refreshServer() {
   try {
     // probe=1 bypasses the status cache and re-reads the model list too, which
     // is what "Re-check" is for after starting or stopping a server.
-    const data = await fetch('/api/servers?probe=1').then(r => r.json());
+    const res = await fetch('/api/servers?probe=1', {cache: 'no-store'});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not re-check the servers.');
     server = data.server;
     if (data.extract) extractInfo = data.extract;
+    // The last switch's "Now using ..." note may name a model that was just
+    // replaced on this port. The freshly painted status is authoritative.
+    setServerNote('');
     paintEndpoint();
-  } catch {
+  } catch (err) {
+    setServerNote(err.message || 'Could not re-check the servers.', true);
     serverText.textContent = was;
   } finally {
     recheckBtn.disabled = false;
@@ -12098,7 +12542,10 @@ window.addEventListener('paste', e => {
 }));
 
 clearBtn.addEventListener('click', () => {
-  if (controller) controller.abort();
+  if (controller || fxBusy) return;
+  setReadStatus('ready');
+  setTestStatus('fx', 'ready');
+  if (fxNote) fxNote.textContent = '';
   text = ''; fileInput.value = '';
   // The folder picker was left selected here, so a "cleared" page would still
   // run whatever was chosen in it.
@@ -12121,7 +12568,9 @@ copyBtn.addEventListener('click', async () => {
   copyBtn.textContent = 'Copied';
   setTimeout(() => copyBtn.textContent = 'Copy', 1200);
 });
-stopBtn.addEventListener('click', () => { if (controller) controller.abort(); });
+stopBtn.addEventListener('click', () => {
+  if (controller) { setReadStatus('stopping'); controller.abort(); }
+});
 
 /* ---------- streaming run ---------- */
 /* ---------- one read driver, two buttons ----------
@@ -12141,7 +12590,7 @@ stopBtn.addEventListener('click', () => { if (controller) controller.abort(); })
    `extract=0`, which the route already understands -- it is what a read-only
    random-test round sends. */
 async function startRead(opts) {
-  if (rtRows.length) { rtRows = []; rtPaint(); }
+  if (rtRows.length) { rtRows = []; setTestStatus('rt', 'ready'); rtPaint(); }
   // The read floor on screen, before the read that will be judged by it. The
   // change handler has almost always sent it already; this makes "the floor this
   // run used" the one the reader is looking at rather than the one that happened
@@ -12182,7 +12631,7 @@ async function startRead(opts) {
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '', painted = 0;
+    let buffer = '', painted = 0, readParallel = 0;
 
     for (;;) {
       const { value, done } = await reader.read();
@@ -12193,9 +12642,18 @@ async function startRead(opts) {
       for (const line of lines) {
         if (!line.trim()) continue;
         const msg = JSON.parse(line);
-        if (msg.event === 'page') {
-          pagebar.innerHTML = '<span class="spin"></span> Reading page ' + msg.page
-            + ' of ' + msg.total + ' (' + msg.resolution + ')…';
+        if (msg.event === 'pages_parallel') {
+          // Every page is in flight at once; each arrives whole, in page order.
+          readParallel = msg.parallel;
+          job = msg.job;
+          pagebar.innerHTML = '<span class="spin"></span> Reading ' + msg.total
+            + ' pages at once (' + msg.parallel + ' in flight)…';
+        } else if (msg.event === 'page') {
+          pagebar.innerHTML = '<span class="spin"></span> ' + (readParallel
+            ? 'Read page ' + msg.page + ' of ' + msg.total + ' · ' + readParallel
+              + ' pages at once…'
+            : 'Reading page ' + msg.page + ' of ' + msg.total
+              + ' (' + msg.resolution + ')…');
           if (msg.page > 1) text += '\n\n--- page ' + msg.page + ' ---\n';
           job = msg.job;
           curPage = msg.page - 1;
@@ -12324,7 +12782,9 @@ async function startRead(opts) {
       }
     }
     paint();
+    setReadStatus('completed');
   } catch (err) {
+    setReadStatus(err.name === 'AbortError' ? 'stopped' : 'failed');
     stopTicker();
     pagebar.textContent = '';
     if (err.name === 'AbortError') {
@@ -12351,6 +12811,8 @@ async function startRead(opts) {
    looking at is a control lying about what it will do. `paintServer` owns the
    Workspace button's enabled state otherwise, so it is asked rather than set. */
 function readBusy(on) {
+  if (on) setReadStatus('running');
+  clearBtn.disabled = on;
   if (on) { runBtn.disabled = true; if (ocRun) ocRun.disabled = true; }
   else { paintServer(); paintOcrOnly(); }
   stopBtn.disabled = !on;
@@ -12429,11 +12891,14 @@ if (ocRun) {
     if (!ocCase.value) return;
     startRead({ case: ocCase.value, detail: ocDetail.value, extract: false });
   });
-  ocStop.addEventListener('click', () => { if (controller) controller.abort(); });
+  ocStop.addEventListener('click', () => {
+    if (controller) { setReadStatus('stopping'); controller.abort(); }
+  });
 }
 
 function paintFieldsOnly() {
   if (!fxRun) return;
+  clearBtn.disabled = fxBusy || !!controller;
   // Vision is deliberately NOT required, unlike the workspace's Run button:
   // pass 2 sends text and gets text back, so a model that cannot read a page can
   // still be measured on the form -- and measuring exactly that is what this
@@ -12487,6 +12952,7 @@ async function runFieldsOnly() {
   const id = fxCase.value;
   if (!id || fxBusy) return;
   fxBusy = true; paintFieldsOnly();
+  setTestStatus('fx', 'running');
   fxNote.classList.remove('err');
   fxNote.textContent = 'Extracting from ' + id + '.md …';
 
@@ -12494,6 +12960,7 @@ async function runFieldsOnly() {
   if (t.error) {
     fxNote.textContent = t.error; fxNote.classList.add('err');
     fxBusy = false; paintFieldsOnly();
+    setTestStatus('fx', 'failed');
     return;
   }
 
@@ -12526,7 +12993,8 @@ async function runFieldsOnly() {
   const r = await extractInto({ case: id, from_truth: true }) || {};
   fxBusy = false; paintFieldsOnly();
   fxNote.classList.toggle('err', !!r.error);
-  if (r.error) { fxNote.textContent = r.error; return; }
+  if (r.error) { setTestStatus('fx', 'failed'); fxNote.textContent = r.error; return; }
+  setTestStatus('fx', 'completed');
   const o = (r.field_score || {}).overall || {};
   fxNote.textContent = modeLabel(r) + ' · ' + r.seconds + 's · ' + (r.model || '')
     + (o.expected
@@ -12755,7 +13223,41 @@ const stOut = stEl('stOut'), stNote = stEl('stNote');
 const stFetchBtn = stEl('stFetchMetrics'), stSample = stEl('stSample');
 let stAbort = null, stStopping = false;
 let stState = null;          // {plan, progress, report, metrics, draining, alerts}
-let stSnapshot = null;       // a manual /metrics snapshot, shown until the next run
+let stSnapshot = null;       // manual /metrics snapshots [{label, data}], shown until the next run
+
+function stFileBoxes() {
+  return [...stEl('stFiles').querySelectorAll('input')];
+}
+function stEligibleFile(box) {
+  return stMode.value === 'classify' || box.dataset.fieldTruth === '1';
+}
+function stSelectedCases() {
+  return stFileBoxes().filter(box => stEligibleFile(box) && box.checked)
+    .map(box => box.value);
+}
+function stPaintFiles() {
+  const busy = !!stAbort || rtRunning;
+  const boxes = stFileBoxes();
+  const eligible = boxes.filter(stEligibleFile);
+  const selected = new Set(stSelectedCases());
+  for (const box of boxes) {
+    const usable = stEligibleFile(box);
+    box.parentElement.style.display = usable ? '' : 'none';
+    box.parentElement.classList.toggle('off', !box.checked);
+    box.disabled = busy || !usable;
+  }
+  stEl('stFileCount').textContent = selected.size + ' / ' + eligible.length
+    + ' files selected' + (selected.size ? '' : ' — select at least one file');
+  stEl('stFilesAll').disabled = stEl('stFilesNone').disabled = busy;
+  const lock = stEl('stLock');
+  for (const option of lock.options) {
+    option.disabled = !!option.value && !selected.has(option.value);
+  }
+  if (lock.value && !selected.has(lock.value)) lock.value = '';
+  lock.disabled = busy || !selected.size;
+  stMode.disabled = busy;
+  stRun.disabled = busy || !selected.size;
+}
 
 const ST_MODE_TEXT = {
   ocr: 'Each job reads one document with the Workspace reading model and scores '
@@ -12776,16 +13278,44 @@ function stPaintMode() {
   const m = stMode.value;
   stEl('stDetailField').style.display = (m === 'ocr' || m === 'full') ? '' : 'none';
   stEl('stShapeField').style.display = (m === 'extract' || m === 'full') ? '' : 'none';
+  stEl('stExtrasField').style.display = (m === 'extract' || m === 'full') ? '' : 'none';
   stEl('stPagesField').style.display = m === 'classify' ? '' : 'none';
   stEl('stLockRow').style.display = m === 'classify' ? 'none' : '';
   stEl('stStrategyField').style.display = m === 'classify' ? 'none' : '';
   // Classification writes no row, so the box is not offered there.
-  const busy = !stStop.disabled;
+  const busy = stRunning;
   stEl('stSaveLog').disabled = m === 'classify' || busy;
   stEl('stSaveLogNote').textContent = m === 'classify'
     ? '— not for classification: a glued file is no benchmark case'
     : '— rows are tagged as stress runs';
   stEl('stModeNote').textContent = ST_MODE_TEXT[m] || '';
+  stPaintBatch();
+  stPaintFiles();
+}
+
+/* The batch toggle follows the servers THIS MODE sends to: only vLLM has the
+   /batch route. Hoisted like stPaintServer, and looks its elements up. */
+var stBatchOn = false;   // var, not let: stPaintBatch can run before this line
+function stPaintBatch() {
+  const btn = document.getElementById('stBatch');
+  const mode = document.getElementById('stMode');
+  if (!btn || !mode) return;
+  const readVllm = !!(server && server.kind === 'vllm');
+  const extractVllm = extractInfo && extractInfo.separate
+    ? extractInfo.kind === 'vllm' : readVllm;
+  const m = mode.value;
+  const ok = m === 'ocr' ? readVllm : m === 'full' ? (readVllm || extractVllm) : extractVllm;
+  const busy = stRunning;
+  if (!ok && !busy) stBatchOn = false;
+  btn.disabled = !ok || busy;
+  btn.classList.toggle('on', stBatchOn);
+  btn.setAttribute('aria-pressed', String(stBatchOn));
+  btn.textContent = 'Batch requests: ' + (stBatchOn ? 'on' : 'off');
+  document.getElementById('stBatchNote').textContent = !ok
+    ? '— vLLM only; the server this mode uses is not vLLM'
+    : stBatchOn ? '— up to ' + (Number(document.getElementById('stConc').value) || 1)
+        + ' requests per /v1/chat/completions/batch call (the concurrency); no streaming'
+    : '— each request sent on its own, streamed';
 }
 
 /* The metrics controls follow the SERVER, not a setting: only a server that
@@ -12798,9 +13328,9 @@ function stPaintServer() {
   const sample = document.getElementById('stSample');
   if (!btn) return;
   const vllm = server && server.kind === 'vllm';
-  const busy = !!document.getElementById('stStop') && !document.getElementById('stStop').disabled;
+  const busy = stRunning;
   const extractVllm = !!(extractInfo && extractInfo.separate && extractInfo.kind === 'vllm');
-  btn.disabled = !vllm || busy;
+  btn.disabled = !(vllm || extractVllm) || busy;
   sample.disabled = !(vllm || extractVllm) || busy;
   if (!(vllm || extractVllm)) sample.checked = false;
   document.getElementById('stMetricsState').textContent = vllm
@@ -12812,31 +13342,46 @@ function stPaintServer() {
   const monVllm = vllm || !!(extractInfo && extractInfo.separate && extractInfo.kind === 'vllm');
   if (monBtn) {
     monBtn.disabled = !monVllm;
+    monBtn.title = monVllm ? 'Show live server metrics on any tab' : 'Live monitor requires a vLLM server';
     if (!monVllm && typeof monState !== 'undefined' && monState && monState.on) monSet(false);
     if (monVllm && !vllm) document.getElementById('stMetricsState').textContent =
       '— the reading server is not vLLM; the live monitor and the stress sampler watch the '
       + 'extraction server at ' + extractInfo.url;
     else if (vllm && extractVllm && extractInfo.url !== server.url)
       document.getElementById('stMetricsState').textContent = '— vLLM at ' + server.url
-        + ' (reading) and ' + extractInfo.url + ' (extraction); a stress run samples both';
+        + ' (OCR) and ' + extractInfo.url + ' (extraction); both are watched, side by side';
   }
+  if (typeof monState !== 'undefined' && monState && monState.on) { monSync(); paintMon(); }
+  stPaintBatch();
 }
 
-function stShowing(on) {
-  stWanted = on;
-  if (on) rtWanted = false;
-  paintMain();
+function showStressView(view) {
+  stressView = view;
+  historyOpen = stressPaneOpen && view === 'history';
+  stEl('stSetup').hidden = view !== 'run';
+  stEl('stHistoryPanel').hidden = view !== 'history';
+  stEl('stViews').querySelectorAll('button[data-st-view]').forEach(button => {
+    const on = button.dataset.stView === view;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-pressed', String(on));
+  });
+  stPaint();
+  if (historyOpen) historyLoad();
 }
 
 function stBusy(on) {
-  if (on) stStopping = false;
+  stRunning = on;
+  if (on) { stStopping = false; setTestStatus('st', 'running'); }
+  stClear.disabled = on;
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
   stEl('stSaveLog').disabled = on || stMode.value === 'classify';
+  stPaintBatch();
   stStop.disabled = stStop2.disabled = !on || stStopping;
   if (rtRun) rtRun.disabled = on;
   if (on) runBtn.disabled = true; else paintServer();
   stPaintServer();
+  stPaintFiles();
 }
 
 const stNum = (v, d = 1) => (v === null || v === undefined) ? '—'
@@ -12866,7 +13411,7 @@ function stLatencyRows(rows) {
 /* In-flight jobs over time, stacked by stage. One axis (jobs in flight), two
    series at most -- only two stages can hold jobs in any one mode -- with a
    legend and a hover readout, and the numbers are in the tables beside it. */
-function stChart(report) {
+function stChart(report, host = stOut) {
   const t = report.timeline || [];
   const cols = report.timeline_columns || [];
   if (t.length < 2) return '';
@@ -12877,7 +13422,7 @@ function stChart(report) {
     : mode === 'ocr' ? [['ocr', 'Reading']]
     : [['ocr', 'Reading (OCR)'], ['extract', 'Extracting']]);
   // Drawn at the card's real width, so the axis text is never stretched.
-  const W = Math.max(320, Math.round(stOut.clientWidth || 640)), H = 190;
+  const W = Math.max(320, Math.round(host.clientWidth || 640)), H = 190;
   const L = 34, R = 10, T = 10, B = 22;
   const tMax = t[t.length - 1][0] || 1;
   const yMax = Math.max(1, report.concurrency || 1,
@@ -12911,10 +13456,10 @@ function stChart(report) {
     + '<div class="st-tip" hidden></div></div>';
 }
 
-function stWireChart() {
-  const svg = stOut.querySelector('.st-chart');
-  if (!svg || !stState || !stState.report) return;
-  const rep = stState.report, t = rep.timeline, cols = rep.timeline_columns;
+function stWireChart(host = stOut, rep = (stState || {}).report) {
+  const svg = host.querySelector('.st-chart');
+  if (!svg || !rep) return;
+  const t = rep.timeline, cols = rep.timeline_columns;
   const series = JSON.parse(svg.dataset.series);
   const tip = svg.parentElement.querySelector('.st-tip');
   const cross = svg.querySelector('.st-cross');
@@ -13001,11 +13546,80 @@ function stAlertsHtml(alerts) {
 }
 
 function stPaint() {
-  // The live monitor keeps the card up on its own, with or without a report.
-  stShowing(!!(stState || stSnapshot || (typeof monState !== 'undefined' && monState.on)));
-  if (!stState && !stSnapshot) { stOut.innerHTML = ''; return; }
+  paintMain();
+  if (!stState && !stSnapshot) {
+    stOut.innerHTML = '<p class="note">Run a stress test to see its report here, or open History to review a saved run.</p>';
+    return;
+  }
+  stOut.innerHTML = stReportHtml(stState || {}, stSnapshot, stOut);
+  stWireChart();
+  stWireChatContext(stOut, (stState || {}).report);
+}
+
+function chatToken(value) {
+  return value === null || value === undefined ? '—' : Number(value).toLocaleString();
+}
+
+function agenticChatTable(chats) {
+  return '<div class="an-grid"><table class="queue chat-context-table"><tr>'
+    + '<th>Document / Step</th><th>Request</th><th>Input</th><th>Output</th><th>Used total</th>'
+    + '<th>Reply cap</th><th>Context limit</th><th>Used %</th><th>Status</th></tr>'
+    + chats.map(chat => '<tr><td title="' + esc((chat.keys || []).join(', ')) + '">'
+      + (chat.document ? '#' + chat.document + ' · ' : '') + esc(chat.step || '') + '</td>'
+      + '<td class="n">' + chatToken(chat.request) + (chat.schema ? ' · schema' : '') + '</td>'
+      + ['in_tokens', 'out_tokens', 'used_tokens', 'reply_cap'].map(key =>
+        '<td class="n">' + chatToken(chat[key]) + '</td>').join('')
+      + '<td class="n">' + chatToken(chat.context_limit)
+      + (chat.context_source ? ' <small>(' + esc(chat.context_source) + ')</small>' : '') + '</td>'
+      + '<td class="n">' + (chat.used_pct == null ? '—' : chatToken(chat.used_pct) + '%') + '</td>'
+      + '<td title="' + esc(chat.error || '') + '">' + (chat.error ? 'Failed'
+        : chat.http_status ? 'HTTP ' + chat.http_status : '—') + '</td></tr>').join('')
+    + '</table></div>';
+}
+
+function stChatContextHtml(context) {
+  const requests = context.requests || [];
+  const jobs = new Map(requests.map(chat => [chat.job, chat.case]));
+  const spread = d => d ? [d.min, d.mean, d.max].map(chatToken).join(' / ') : '—';
+  return '<h3 class="st-h">Agentic chat context</h3>'
+    + '<p class="note">Each step sends its own transcript and question, without a conversation '
+    + 'history from previous steps. Input includes the cached prompt. Used total is input + output; '
+    + 'Reply cap is the requested output budget, not the context window. Limits marked server '
+    + 'come from model metadata; requested limits come from the request. Missing usage is —.</p>'
+    + '<div class="an-grid"><table class="queue"><tr><th>Step</th><th>Chats</th>'
+    + '<th>Input: min / mean / max</th><th>Output: min / mean / max</th>'
+    + '<th>Peak used total</th><th>Context limit(s)</th><th>Peak used %</th></tr>'
+    + (context.steps || []).map(step => '<tr><td title="' + esc((step.keys || []).join(', '))
+      + '"><b>' + esc(step.step) + '</b><br>' + esc(step.title || '') + '</td>'
+      + '<td class="n">' + step.requests + '</td><td class="n">' + spread(step.tokens.in)
+      + '</td><td class="n">' + spread(step.tokens.out) + '</td><td class="n">'
+      + chatToken(step.used.max) + '</td><td class="n">'
+      + ((step.context_limits || []).map(chatToken).join(' / ') || '—')
+      + '</td><td class="n">' + (step.used_pct.max == null ? '—'
+        : chatToken(step.used_pct.max) + '%') + '</td></tr>').join('') + '</table></div>'
+    + '<details class="chat-context-jobs"><summary>Inspect each job — ' + requests.length
+    + ' chat request(s)</summary><label class="field">Job / file<select data-chat-job>'
+    + [...jobs].map(([job, name]) => '<option value="' + job + '">#' + job + ' · '
+      + esc(name || '') + '</option>').join('') + '</select></label><div data-chat-rows></div></details>';
+}
+
+function stWireChatContext(host, report) {
+  const context = report && report.agentic_context;
+  const select = host.querySelector('[data-chat-job]');
+  if (!context || !select) return;
+  const paint = () => {
+    host.querySelector('[data-chat-rows]').innerHTML = agenticChatTable(
+      context.requests.filter(chat => String(chat.job) === select.value));
+  };
+  select.addEventListener('change', paint);
+  paint();
+}
+
+function stReportHtml(s, snapshot, host) {
   let html = '';
-  const s = stState || {};
+  if (s.monitor_samples && s.monitor_samples.length) {
+    html += historyMonitorHtml(s.monitor_samples, s.monitor_samples_total);
+  }
   const plan = s.plan;
   if (plan) {
     html += '<p class="st-plan">' + esc(plan.mode === 'full' ? 'Full pipeline'
@@ -13018,14 +13632,19 @@ function stPaint() {
       + (plan.extractor ? ' · extracts with <b>' + esc(csModel(plan.extractor)) + '</b>' : '')
       + (plan.detail ? ' · ' + esc(plan.detail) : '')
       + (plan.extract_mode ? ' · ' + esc(plan.extract_mode) : '')
+      + (plan.extras === false ? ' · <b>no extra fields</b>' : '')
       + (plan.metrics ? ' · sampling vLLM /metrics on '
           + (plan.metrics_servers || []).map(t => esc(t.role) + ' ' + esc(t.url)).join(' and ') : '')
       + (plan.no_cache ? ' · prompt cache bypassed ('
           + Object.entries(plan.no_cache_effect || {})
               .map(([k, v]) => esc(k) + ': ' + esc(v)).join('; ') + ')' : '')
+      + (plan.vllm_batch ? ' · <b>batched</b>, up to ' + plan.batch_size
+          + ' per /batch request on ' + (plan.batch_servers || []).map(esc).join(' and ') : '')
       + (plan.save_log ? ' · saving each job to the run log as stress run <b>'
           + esc(plan.run_id) + '</b>' : '')
       + ' · seed ' + plan.seed + '</p>';
+    if (plan.cases) html += '<details><summary>Files selected (' + plan.cases.length
+      + ')</summary><p class="note">' + plan.cases.map(esc).join(', ') + '</p></details>';
   }
   html += stAlertsHtml(s.alerts || []);
   const p = s.progress;
@@ -13076,6 +13695,11 @@ function stPaint() {
         r.ocr ? stNum(r.ocr.pages_per_second, 3) + ' pages/s'
           : r.classify ? stNum(r.classify.pages_per_second, 2) + ' pages/s' : ''),
     ];
+    if (r.vllm_batch) tiles.push(stTile('Batches', stNum(r.vllm_batch.batches, 0)
+      + '<small> sent</small>', 'mean ' + stNum(r.vllm_batch.mean_size, 1) + ' · largest '
+      + r.vllm_batch.max_size + ' of ' + r.vllm_batch.size + ' requests per batch'
+      + (r.vllm_batch.failed ? ' · ' + r.vllm_batch.failed + ' failed' : ''),
+      r.vllm_batch.failed ? 'st-bad' : ''));
     if (r.ocr) tiles.push(stTile('OCR tokens / s', stNum(r.ocr.tokens_per_second, 1),
       'all requests together; one request decodes at '
       + stNum((r.ocr.decode_tps || {}).p50, 0) + ' (median)'));
@@ -13101,7 +13725,7 @@ function stPaint() {
       html += '<p class="note">Of the time jobs spent working, <b>' + stPct(r.stage_share.ocr)
         + '</b> was reading and <b>' + stPct(r.stage_share.extract) + '</b> was extracting.</p>';
     }
-    html += stChart(r);
+    html += stChart(r, host);
     const lat = r.latency || {};
     const latency = stLatencyRows([
       ['Waiting in the queue', lat.queue_wait, 'time a job waited for a free worker on this side'],
@@ -13137,6 +13761,10 @@ function stPaint() {
           + tokCell(d, 'in') + '</td><td class="n">' + tokCell(d, 'out') + '</td></tr>').join('')
         + '</table>';
     }
+    if (r.agentic_context) html += stChatContextHtml(r.agentic_context);
+    else if (plan && plan.extract_mode === 'agentic') {
+      html += '<p class="note">Per-chat context usage was not recorded for this run.</p>';
+    }
     if (r.errors && r.errors.length) {
       html += '<h3 class="st-h">Errors</h3><table class="queue">' + r.errors.map(e =>
         '<tr><td class="n">' + e.count + '×</td><td>' + esc(e.error) + '</td></tr>').join('') + '</table>';
@@ -13152,12 +13780,12 @@ function stPaint() {
     html += '<p class="note err">Stopped. ' + s.draining + ' request(s) are still running '
       + 'on the server; another test can start when they finish.</p>';
   }
-  if (stSnapshot) {
-    html += stMetricsTable(stSnapshot.view, 'vLLM /metrics snapshot · '
-      + new Date(stSnapshot.at * 1000).toLocaleTimeString(), ' (since server start)');
+  for (const snap of snapshot || []) {
+    html += stMetricsTable(snap.data.view, 'vLLM /metrics snapshot · '
+      + (snapshot.length > 1 ? snap.label + ' · ' + snap.data.url + ' · ' : '')
+      + new Date(snap.data.at * 1000).toLocaleTimeString(), ' (since server start)');
   }
-  stOut.innerHTML = html;
-  stWireChart();
+  return html;
 }
 
 function stBody() {
@@ -13166,12 +13794,18 @@ function stBody() {
     mode: stMode.value, concurrency: Number(val('stConc')) || 1,
     jobs: Number(val('stJobs')) || 1, warmup: Number(val('stWarm')) || 0,
     max_seconds: Number(val('stMax')) || 0, detail: val('stDetail'),
-    extract_mode: val('stShape'), pack_pages: Number(val('stPages')) || 100,
+    extract_mode: val('stShape'), extras: stEl('stExtras').checked,
+    pack_pages: Number(val('stPages')) || 100,
     strategy: val('stStrategy'), seed: val('stSeed').trim() || null,
     lock_case: stMode.value === 'classify' ? '' : val('stLock'),
+    cases: stSelectedCases(),
     metrics: stSample.checked && !stSample.disabled,
     no_cache: stEl('stNoCache').checked,
+    vllm_batch: stBatchOn && !stEl('stBatch').disabled,
     save_log: stEl('stSaveLog').checked && stMode.value !== 'classify',
+    history_monitor: stEl('stHistoryMonitor').checked,
+    gpu_url: stEl('monGpu').value.trim(),
+    gpu_extract_url: stEl('monGpuExtract').value.trim(),
     metrics_every: Number(val('stEvery')) || 5
   };
 }
@@ -13180,6 +13814,11 @@ async function stStart() {
   // Read the form BEFORE going busy: busy disables the sampling checkbox, and
   // a body built after that would never ask for /metrics.
   const body = stBody();
+  if (!body.cases.length) {
+    stNote.textContent = 'Select at least one file to stress test.';
+    stNote.classList.add('err');
+    return;
+  }
   stState = { draining: 0, alerts: [] };
   stSnapshot = null;
   stNote.textContent = 'Preparing…';
@@ -13208,6 +13847,8 @@ async function stStart() {
       for (const line of lines) {
         if (!line.trim()) continue;
         const ev = JSON.parse(line);
+        if (ev.history_id) stState.historyId = ev.history_id;
+        if (ev.history_error) stState.historyError = ev.history_error;
         if (ev.event === 'plan') {
           stState.plan = ev;
           stEl('stSeed').value = ev.seed;
@@ -13221,14 +13862,19 @@ async function stStart() {
           stNote.textContent = (ev.phase === 'warmup' ? 'Warming up — ' : 'Running — ')
             + ev.done + '/' + ev.total;
         } else if (ev.event === 'done') {
+          setTestStatus('st', ev.stopped ? 'stopped' : 'completed');
           stState.report = ev.report;
+          stState.monitor_samples = ev.monitor_samples;
+          stState.monitor_samples_total = ev.monitor_samples_total;
           stState.draining = ev.draining || 0;
           stNote.textContent = (ev.stopped ? 'Stopped' : 'Finished') + ' — seed ' + ev.seed
-            + (stState.plan && stState.plan.save_log ? '. Each measured job was saved to the run log.'
-              : '. Nothing was written to the run log.');
+            + (ev.history_error ? '. ' + ev.history_error
+              : ev.history_id ? '. Saved to History.' : '. No History record was saved.');
+          stNote.classList.toggle('err', !!ev.history_error);
+          if (stState.plan && stState.plan.save_log) stNote.textContent += " Each measured job was saved to the run log.";
         } else if (ev.event === 'alert') {
           stState.alerts.push(ev);
-          lastPaint = 0;          // a problem is drawn at once, not on the next tick
+          lastPaint = 0;
         } else if (ev.event === 'draining') {
           stState.draining = ev.in_flight;
         } else if (ev.event === 'error') {
@@ -13239,10 +13885,13 @@ async function stStart() {
       if (now - lastPaint > 300) { lastPaint = now; stPaint(); }
     }
   } catch (err) {
+    setTestStatus('st', 'failed');
     stNote.textContent = err.name === 'AbortError'
       ? 'Hung up on the test; the server may still be running it.' : err.message;
     stNote.classList.add('err');
   } finally {
+    if (['running', 'stopping'].includes(stEl('stStatus').dataset.state))
+      setTestStatus('st', 'failed');
     if (stState) stState.draining = 0;
     stAbort = null;
     stBusy(false);
@@ -13251,35 +13900,55 @@ async function stStart() {
 }
 
 if (stRun) {
+  stEl('stFiles').addEventListener('change', stPaintFiles);
+  const selectFiles = checked => {
+    for (const box of stFileBoxes().filter(stEligibleFile)) box.checked = checked;
+    stPaintFiles();
+  };
+  stEl('stFilesAll').addEventListener('click', () => selectFiles(true));
+  stEl('stFilesNone').addEventListener('click', () => selectFiles(false));
   stMode.addEventListener('change', stPaintMode);
+  stEl('stBatch').addEventListener('click', () => { stBatchOn = !stBatchOn; stPaintBatch(); });
+  stEl('stConc').addEventListener('input', stPaintBatch);
   stRun.addEventListener('click', () => stStart());
   const stop = async () => {
     if (!stAbort || stStopping) return;
     stStopping = true;
+    setTestStatus('st', 'stopping');
     stStop.disabled = stStop2.disabled = true;
     stNote.textContent = 'Stopping — no new job starts, reads in flight are hung up…';
-    try { await fetch('/api/stress/stop', { method: 'POST' }); } catch { stAbort.abort(); }
+    try {
+      const res = await fetch('/api/stress/stop', { method: 'POST' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+    } catch { if (stAbort) stAbort.abort(); }
   };
   stStop.addEventListener('click', stop);
   stStop2.addEventListener('click', stop);
   stClear.addEventListener('click', () => {
     if (stAbort) return;
     stState = null; stSnapshot = null; stNote.textContent = '';
+    stNote.classList.remove('err');
+    setTestStatus('st', 'ready');
     stPaint();
   });
   stFetchBtn.addEventListener('click', async () => {
     stFetchBtn.disabled = true;
     try {
-      const res = await fetch('/api/stress/metrics');
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
-      stSnapshot = data;
-      stNote.textContent = 'Fetched ' + data.url + '/metrics.';
+      const snaps = [];
+      for (const t of monTargets()) {
+        const res = await fetch('/api/stress/metrics' + (t.key === 'extract' ? '?server=extract' : ''));
+        const data = await res.json();
+        if (!res.ok) throw new Error(t.label + ': ' + (data.error || ('HTTP ' + res.status)));
+        snaps.push({ label: t.label, data });
+      }
+      if (!snaps.length) throw new Error('Neither server is vLLM, so /metrics was not requested.');
+      stSnapshot = snaps;
+      stNote.textContent = 'Fetched ' + snaps.map(x => x.data.url + '/metrics').join(' and ') + '.';
       stNote.classList.remove('err');
     } catch (err) {
       stNote.textContent = err.message;
       stNote.classList.add('err');
-      stShowing(true);
+      paintMain();
     } finally {
       stPaintServer();
       stPaint();
@@ -13294,20 +13963,36 @@ if (stRun) {
    request at a time (the next is scheduled when the last has answered). Rates
    come from the server, which diffs its own last two scrapes; the page only
    keeps a short history for the sparklines. */
-var monState = { on: false, hist: [], last: null, error: '', timer: null,
-                 delay: 0, idleRuns: 0, minEvery: 2, idleMax: 30 };
+var monState = { on: false, panes: {}, minEvery: 2, idleMax: 30 };
 const MON_HIST = 300;
 const monToggleBtn = stEl('monToggle'), monEveryInp = stEl('monEvery');
-const monGpuInp = stEl('monGpu'), monOut = stEl('stMon');
+const monGpuInp = stEl('monGpu'), monGpuExInp = stEl('monGpuExtract'), monOut = stEl('stMon');
 
 function monStore(key, value) {
   try { localStorage.setItem(key, value); } catch (e) { /* private window */ }
 }
 try {
   const g = localStorage.getItem('monGpu'), e = localStorage.getItem('monEvery');
+  const gx = localStorage.getItem('monGpuExtract');
   if (g) monGpuInp.value = g;
+  if (gx) monGpuExInp.value = gx;
   if (e) monEveryInp.value = e;
 } catch (e) { /* storage unavailable: defaults stand */ }
+
+/* The servers to watch, each that says it is vLLM: the OCR (reading) server
+   and the extraction server, side by side. One pane where both passes share a
+   URL. A function declaration, so `stPaintServer` can call it at parse time. */
+function monTargets() {
+  const sep = !!(extractInfo && extractInfo.separate);
+  const out = [];
+  if (server && server.kind === 'vllm') {
+    out.push({ key: 'ocr', label: sep ? 'OCR server' : 'OCR + extraction server', url: server.url });
+  }
+  if (sep && extractInfo.kind === 'vllm') {
+    out.push({ key: 'extract', label: 'Extraction server', url: extractInfo.url });
+  }
+  return out;
+}
 
 /* The box's value, never below the server's MONITOR_MIN_INTERVAL: asking
    faster only gets the cached reading back. */
@@ -13324,66 +14009,89 @@ function monIdle(d) {
            || r.prompt_tps > 0 || r.requests_per_s > 0);
 }
 
-function monSchedule() {
-  clearTimeout(monState.timer);
-  if (!monState.on) return;
+/* Each server is polled on its own clock, so a slow or idle one never holds up
+   the other: its own backoff, its own one-request-at-a-time. */
+function monSchedule(p) {
+  clearTimeout(p.timer);
+  if (!monState.on || monState.panes[p.key] !== p) return;
   const base = monEvery(), cap = Math.max(base, monState.idleMax || 0);
-  monState.delay = monState.idleRuns > 1 && monState.idleMax > 0
-    ? Math.min(cap, base * Math.pow(2, monState.idleRuns - 1)) : base;
-  monState.timer = setTimeout(monTick, monState.delay * 1000);
+  p.delay = p.idleRuns > 1 && monState.idleMax > 0
+    ? Math.min(cap, base * Math.pow(2, p.idleRuns - 1)) : base;
+  p.timer = setTimeout(() => monTick(p), p.delay * 1000);
 }
 
-async function monTick() {
-  if (!monState.on || monState.busy) return;
-  if (document.hidden) { monSchedule(); return; }
-  monState.busy = true;
+async function monTick(p) {
+  if (!monState.on || p.busy || monState.panes[p.key] !== p) return;
+  if (document.hidden) { monSchedule(p); return; }
+  p.busy = true;
   try {
-    const gpu = monGpuInp.value.trim();
-    const res = await fetch('/api/monitor' + (gpu ? '?gpu=' + encodeURIComponent(gpu) : ''));
+    const gpu = (p.key === 'extract' ? monGpuExInp : monGpuInp).value.trim();
+    const res = await fetch('/api/monitor?server=' + p.key
+      + (gpu ? '&gpu=' + encodeURIComponent(gpu) : ''));
     const d = await res.json();
     if (d.min_interval !== undefined) monState.minEvery = d.min_interval;
     if (d.idle_max !== undefined) monState.idleMax = d.idle_max;
     if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
     const s = d.snapshot || {}, r = d.rates || {}, g = d.gpu;
     // Another tab scraped a moment ago: the same reading, so no new point.
-    const repeat = monState.last && monState.last.at === d.at;
-    monState.idleRuns = monIdle(d) ? monState.idleRuns + 1 : 0;
-    monState.last = d;
-    monState.error = '';
-    if (!repeat) monState.hist.push({
+    const repeat = p.last && p.last.at === d.at;
+    p.idleRuns = monIdle(d) ? p.idleRuns + 1 : 0;
+    p.last = d;
+    p.error = '';
+    if (!repeat) p.hist.push({
       t: d.at, kv_free: s.kv_free, running: s.running, waiting: s.waiting,
       vram_free: g ? g.free_mb / 1024 : null,
       gen: r.generation_tps, prompt: r.prompt_tps, hit: r.prefix_hit_rate,
       rps: r.requests_per_s
     });
-    if (monState.hist.length > MON_HIST) monState.hist.shift();
+    if (p.hist.length > MON_HIST) p.hist.shift();
   } catch (err) {
-    monState.error = err.message;
-    monState.idleRuns += 1;
+    p.error = err.message;
+    p.idleRuns += 1;
   } finally {
-    monState.busy = false;
+    p.busy = false;
   }
   paintMon();
-  monSchedule();
+  monSchedule(p);
 }
+
+/* Brings the panes in line with the servers now set: a server switched away
+   from loses its pane, a new one gets a fresh one, read at once. */
+function monSync() {
+  const want = monState.on ? monTargets() : [];
+  for (const key of Object.keys(monState.panes)) {
+    const p = monState.panes[key], t = want.find(w => w.key === key);
+    if (!t || t.url !== p.url) { clearTimeout(p.timer); delete monState.panes[key]; }
+  }
+  for (const t of want) {
+    if (monState.panes[t.key]) { monState.panes[t.key].label = t.label; continue; }
+    const p = monState.panes[t.key] = { ...t, hist: [], last: null, error: '',
+                                         timer: null, delay: 0, idleRuns: 0, busy: false };
+    monTick(p);
+  }
+}
+
+function monEach(fn) { Object.values(monState.panes).forEach(fn); }
 
 function monSet(on) {
   monState.on = on;
-  clearTimeout(monState.timer);
+  monEach(p => clearTimeout(p.timer));
   monToggleBtn.textContent = on ? 'Stop live monitor' : 'Start live monitor';
+  monToggleBtn.classList.toggle('on', on);
+  monToggleBtn.setAttribute('aria-pressed', String(on));
+  monToggleBtn.setAttribute('aria-expanded', String(on));
+  stEl('monCard').hidden = !on;
   if (on) {
-    monState.hist = []; monState.last = null; monState.error = ''; monState.idleRuns = 0;
-    stShowing(true);
-    monTick();
+    monState.panes = {};
+    monSync();
   }
   paintMon();
-  if (!on) stPaint();
 }
 
 /* One series per tile, so no legend: the tile label names it. The line is the
    last readings left to right; a gap is a reading that had no value. */
-function monSpark(key, fixedMax) {
-  const vals = monState.hist.map(h => h[key]);
+function monSpark(hist, key, fixedMax) {
+  const vals = hist.map(h => h[key]);
   const nums = vals.filter(v => v !== null && v !== undefined);
   if (nums.length < 2) return '<div class="mon-spark mon-spark-empty"></div>';
   const max = fixedMax || Math.max(...nums) || 1;
@@ -13411,31 +14119,41 @@ function monSpark(key, fixedMax) {
     + lines + '</svg>';
 }
 
-function monTile(label, value, sub, key, fixedMax, cls) {
+function monTile(hist, label, value, sub, key, fixedMax, cls) {
   return '<div class="st-tile mon-tile' + (cls ? ' ' + cls : '') + '">'
     + '<div class="st-tile-label">' + esc(label) + '</div>'
     + '<div class="st-tile-num">' + value + '</div>'
     + (sub ? '<div class="st-tile-sub">' + sub + '</div>' : '')
-    + monSpark(key, fixedMax) + '</div>';
+    + monSpark(hist, key, fixedMax) + '</div>';
 }
 
 function paintMon() {
   if (!monOut) return;
-  if (!monState.on && !monState.last) { monOut.innerHTML = ''; return; }
-  const d = monState.last || {};
+  const order = ['ocr', 'extract'];
+  const panes = Object.values(monState.panes)
+    .sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+  const exRow = stEl('monGpuExtractRow');
+  if (exRow) exRow.style.display = monTargets().some(t => t.key === 'extract') ? '' : 'none';
+  if (!monState.on && !panes.some(p => p.last)) { monOut.innerHTML = ''; return; }
+  monOut.innerHTML = panes.map(p => '<section class="mon-server">'
+    + monPaneHtml(p, panes.length > 1) + '</section>').join('');
+}
+
+function monPaneHtml(p, many, on = monState.on) {
+  const d = p.last || {}, hist = p.hist;
   const s = d.snapshot || {}, r = d.rates || {}, g = d.gpu;
-  const every = monState.delay || monEvery();
-  const slowed = monState.on && every > monEvery()
-    ? (monState.error ? ' (backing off after an error)' : ' (server idle, slowed down)') : '';
-  let head = monState.on
+  const every = p.delay || monEvery();
+  const slowed = on && every > monEvery()
+    ? (p.error ? ' (backing off after an error)' : ' (server idle, slowed down)') : '';
+  let head = (many ? '<b>' + esc(p.label) + '</b> · ' : '') + (on
     ? '<span class="mon-dot"></span><b>Live</b> · every ' + every + ' s' + slowed
-    : '<b>Stopped</b>';
+    : '<b>' + (p.saved ? 'Saved monitor snapshot' : 'Stopped') + '</b>');
   if (d.url) head += ' · ' + esc(d.kind || '') + ' at ' + esc(d.url)
     + (d.model ? ' · ' + esc(d.model) : '')
     + ' · updated ' + new Date(d.at * 1000).toLocaleTimeString();
   let html = '<div class="mon-head">' + head + '</div>';
-  if (monState.error) html += '<p class="note err">' + esc(monState.error) + '</p>';
-  if (!d.snapshot) { monOut.innerHTML = html; return; }
+  if (p.error) html += '<p class="note err">' + esc(p.error) + '</p>';
+  if (!d.snapshot) return html;
   const noRate = 'needs a second reading';
 
   const kvFree = s.kv_free;
@@ -13480,18 +14198,18 @@ function paintMon() {
 
   const waitCls = s.waiting ? 'mon-warn' : '';
   html += '<div class="st-tiles mon-tiles">'
-    + monTile('KV cache free', stPct(kvFree), kvSub, 'kv_free', 1, kvCls)
-    + monTile(vramLabel, vramVal, vramSub, 'vram_free', 0, vramCls)
-    + monTile('Running (concurrent)', stNum(s.running, 0), 'requests being decoded', 'running')
-    + monTile('Waiting', stNum(s.waiting, 0),
+    + monTile(hist, 'KV cache free', stPct(kvFree), kvSub, 'kv_free', 1, kvCls)
+    + monTile(hist, vramLabel, vramVal, vramSub, 'vram_free', 0, vramCls)
+    + monTile(hist, 'Running (concurrent)', stNum(s.running, 0), 'requests being decoded', 'running')
+    + monTile(hist, 'Waiting', stNum(s.waiting, 0),
         'queued inside vLLM' + (s.swapped ? ' · ' + stNum(s.swapped, 0) + ' swapped' : ''),
         'waiting', 0, waitCls)
-    + monTile('Generation tok/s', stNum(r.generation_tps, 1),
+    + monTile(hist, 'Generation tok/s', stNum(r.generation_tps, 1),
         r.seconds ? 'over the last ' + r.seconds + ' s' : noRate, 'gen')
-    + monTile('Prompt tok/s', stNum(r.prompt_tps, 1),
+    + monTile(hist, 'Prompt tok/s', stNum(r.prompt_tps, 1),
         r.seconds ? 'prefill, over the last ' + r.seconds + ' s' : noRate, 'prompt')
-    + monTile('Requests/s (finished)', stNum(r.requests_per_s, 2), reqSub, 'rps', 0, reqCls)
-    + monTile('Prefix cache hit', stPct(r.prefix_hit_rate),
+    + monTile(hist, 'Requests/s (finished)', stNum(r.requests_per_s, 2), reqSub, 'rps', 0, reqCls)
+    + monTile(hist, 'Prefix cache hit', stPct(r.prefix_hit_rate),
         (r.seconds
           ? (r.prefix_queries ? 'of ' + stNum(r.prefix_queries, 0) + ' tokens looked up'
                               : 'no lookups in this window')
@@ -13500,19 +14218,202 @@ function paintMon() {
             ? ' · ' + stPct(d.lifetime_hit_rate) + ' since start' : ''),
         'hit', 1)
     + '</div>';
-  monOut.innerHTML = html;
+  return html;
+}
+
+function monReportHtml(state, every) {
+  return monPaneHtml({...state, delay: every}, false, !!state.on);
 }
 
 if (monToggleBtn) {
   monToggleBtn.addEventListener('click', () => monSet(!monState.on));
-  monEveryInp.addEventListener('change', () => { monStore('monEvery', monEveryInp.value); monState.idleRuns = 0; monSchedule(); paintMon(); });
+  monEveryInp.addEventListener('change', () => {
+    monStore('monEvery', monEveryInp.value);
+    monEach(p => { p.idleRuns = 0; monSchedule(p); });
+    paintMon();
+  });
   monGpuInp.addEventListener('change', () => monStore('monGpu', monGpuInp.value.trim()));
+  monGpuExInp.addEventListener('change', () => monStore('monGpuExtract', monGpuExInp.value.trim()));
   // Back from a hidden tab: read now rather than waiting out the interval.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && monState.on) { clearTimeout(monState.timer); monTick(); }
+    if (!document.hidden && monState.on) monEach(p => { clearTimeout(p.timer); monTick(p); });
   });
   stPaintServer();
 }
+/* ---------- persistent Stress test history ---------- */
+let historyOffset = 0, historySelected = null, historyCurrent = null;
+let historyListSeq = 0, historyDetailSeq = 0;
+stEl('stViews').addEventListener('click', event => {
+  const button = event.target.closest('button[data-st-view]');
+  if (button) showStressView(button.dataset.stView);
+});
+const historyPageSize = 50;
+const historyLabel = status => ({running: 'Running', completed: 'Completed',
+  completed_with_errors: 'Completed with errors', stopped: 'Stopped',
+  interrupted: 'Interrupted', unfinished: 'Unfinished / other instance', error: 'Error'}[status] || status);
+const historyDate = value => value ? new Date(value).toLocaleString() : '—';
+
+async function historyLoad() {
+  const mine = ++historyListSeq;
+  const note = stEl('historyStatus');
+  note.textContent = 'Loading…';
+  note.classList.remove('err');
+  try {
+    const res = await fetch('/api/history?limit=' + historyPageSize + '&offset=' + historyOffset,
+      {cache: 'no-store'});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    if (mine !== historyListSeq) return;
+    const runs = data.runs || [];
+    note.textContent = data.total ? (historyOffset + 1) + '–'
+      + (historyOffset + runs.length) + ' of ' + data.total : 'No saved runs yet.';
+    stEl('historyPrev').disabled = historyOffset === 0;
+    stEl('historyNext').disabled = historyOffset + runs.length >= data.total;
+    stEl('historyList').innerHTML = runs.length ? runs.map(run => {
+      const p = run.plan || run.configuration || {};
+      return '<button type="button" class="history-item" data-history-id="' + esc(run.id) + '">'
+        + '<b>' + esc(historyDate(run.started_at)) + '</b>'
+        + '<span>' + esc(historyLabel(run.status)) + ' · ' + esc(p.mode || '') + '</span>'
+        + '<span>Concurrent ' + esc(String(p.concurrency ?? '—'))
+        + ' · Queue ' + esc(String(p.jobs ?? '—')) + ' · Warm-up ' + esc(String(p.warmup ?? '—')) + '</span>'
+        + '<span>' + esc(p.reader || p.extractor || ((run.configuration.reader
+          || run.configuration.extractor || {}).model) || '') + '</span></button>';
+    }).join('') : '<p class="note">New Stress test runs will appear here automatically. '
+      + 'Earlier runs were not saved.</p>';
+    if (runs.length) {
+      const selected = runs.some(r => r.id === historySelected) ? historySelected : runs[0].id;
+      await historySelect(selected);
+    } else {
+      ++historyDetailSeq;
+      historySelected = null; historyCurrent = null;
+      stEl('historyTitle').textContent = '';
+      stEl('historyDownload').hidden = true;
+      stEl('historyDetail').innerHTML = '<p class="note">No saved Stress test runs on this page.</p>';
+    }
+  } catch (err) {
+    if (mine !== historyListSeq) return;
+    note.textContent = err.message;
+    note.classList.add('err');
+  }
+}
+
+async function historySelect(id) {
+  const mine = ++historyDetailSeq;
+  historySelected = id;
+  stEl('historyDownload').hidden = true;
+  stEl('historyTitle').textContent = 'Loading run…';
+  document.querySelectorAll('[data-history-id]').forEach(button => {
+    const on = button.dataset.historyId === id;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-pressed', String(on));
+  });
+  try {
+    const res = await fetch('/api/history/' + encodeURIComponent(id), {cache: 'no-store'});
+    const item = await res.json();
+    if (!res.ok) throw new Error(item.error || ('HTTP ' + res.status));
+    if (mine !== historyDetailSeq) return;
+    historyCurrent = item;
+    historyRender(item);
+  } catch (err) {
+    if (mine !== historyDetailSeq) return;
+    stEl('historyTitle').textContent = 'Could not load run';
+    stEl('historyDetail').innerHTML = '<p class="note err">' + esc(err.message) + '</p>';
+  }
+}
+
+function historyRender(item) {
+  const cfg = item.configuration || {}, plan = item.plan || {}, result = item.result || {};
+  const read = cfg.reader || {}, extract = cfg.extractor || {};
+  stEl('historyTitle').textContent = historyDate(item.started_at) + ' · ' + historyLabel(item.status);
+  const download = stEl('historyDownload');
+  download.href = appUrl('/api/history/' + encodeURIComponent(item.id) + '?download=1');
+  download.hidden = false;
+  const value = v => v === undefined || v === null ? '—' : typeof v === 'object'
+    ? JSON.stringify(v) : String(v);
+  const cells = [
+    ['Mode', cfg.mode], ['Concurrent', cfg.concurrency], ['Queue (jobs)', cfg.jobs],
+    ['Warm-up', cfg.warmup], ['Time limit (s)', cfg.max_seconds],
+    ['Detail', cfg.detail], ['Extraction shape', cfg.extract_mode],
+    ['Extra fields', cfg.extras ?? true],
+    ['Seed', plan.seed ?? cfg.seed],
+    ['Pages per file', cfg.pack_pages], ['Draw strategy', cfg.strategy],
+    ['Lock document', cfg.lock || 'None'],
+    ['Files selected', cfg.cases ? cfg.cases.join(', ') : undefined],
+    ['OCR model', read.model], ['OCR server', read.url],
+    ['Extraction model', extract.model], ['Extraction server', extract.url],
+    ['OCR profile', cfg.ocr_profile], ['Context', cfg.context], ['Sampling', cfg.sampling],
+    ['Loop guard', cfg.loop_guard], ['Read floor', cfg.read_floor], ['Table agents', cfg.table_agents],
+    ['Sample /metrics', cfg.metrics], ['Monitor snapshots', cfg.history_monitor],
+    ['Sampling interval (s)', cfg.metrics_every], ['GPU exporter', cfg.gpu_url || 'Default / local'],
+    ['Extraction GPU exporter', cfg.gpu_extract_url || 'Default / local'],
+    ['Bypass prompt cache', cfg.no_cache], ['Batch requests (vLLM /batch)', cfg.vllm_batch ?? false],
+    ['Save per-job accuracy rows', cfg.save_log],
+    ['Workspace', cfg.workspace || 'Default'],
+    ['Started', historyDate(item.started_at)], ['Finished', historyDate(item.finished_at)]
+  ];
+  const root = stEl('historyDetail');
+  root.innerHTML = (item.error ? '<p class="note err">' + esc(item.error) + '</p>' : '')
+    + (item.status === 'running' ? '<p class="note">This run is still in progress. Refresh to check its final report.</p>' : '')
+    + '<h3 class="st-h">Settings used for this run</h3><dl class="history-config">'
+    + cells.slice(0, 8).map(([key, v]) => '<div><dt>' + esc(key) + '</dt><dd>' + esc(value(v)) + '</dd></div>').join('')
+    + '</dl><details><summary>More settings: models, servers, sampling and monitor</summary><dl class="history-config">'
+    + cells.slice(8).map(([key, v]) => '<div><dt>' + esc(key) + '</dt><dd>' + esc(value(v)) + '</dd></div>').join('')
+    + '</dl></details><div id="historyReport" class="history-report"></div>'
+    + '<details><summary>All saved settings and metrics (JSON)</summary><pre class="history-json"></pre></details>';
+  const host = stEl('historyReport');
+  host.innerHTML = stReportHtml({plan: item.plan, report: result.report,
+    alerts: result.alerts || [], monitor_samples: result.monitor_samples,
+    monitor_samples_total: result.monitor_samples_total}, null, host)
+    + (!result.report ? '<p class="note">No final report was saved for this run.</p>' : '');
+  stWireChart(host, result.report);
+  stWireChatContext(host, result.report);
+  root.querySelector('.history-json').textContent = JSON.stringify(item, null, 2);
+}
+
+function historyMonitorState(samples, index) {
+  const d = samples[index] || {};
+  return {saved: true, on: false, last: d, error: d.error || '',
+    hist: samples.slice(0, index + 1).filter(sample => sample.url === d.url).map(sample => {
+      const s = sample.snapshot || {}, r = sample.rates || {}, g = sample.gpu;
+      return {t: sample.at, kv_free: s.kv_free, running: s.running, waiting: s.waiting,
+        vram_free: g ? g.free_mb / 1024 : null, gen: r.generation_tps,
+        prompt: r.prompt_tps, hit: r.prefix_hit_rate, rps: r.requests_per_s};
+    })};
+}
+
+function historyMonitorHtml(samples, total) {
+  const options = samples.map((d, i) => '<option value="' + i + '"'
+    + (i === samples.length - 1 ? ' selected' : '') + '>'
+    + esc(d.at ? new Date(d.at * 1000).toLocaleTimeString() : 'Snapshot ' + (i + 1))
+    + (d.role ? ' · ' + esc(d.role) : '')
+    + (d.error ? ' · unavailable' : ' · running ' + esc(String((d.snapshot || {}).running ?? '—')))
+    + '</option>').join('');
+  return '<section class="history-monitor"><h3 class="st-h">Server monitor during this run</h3>'
+    + '<label class="field">Saved snapshot<select class="history-snapshot">' + options + '</select></label>'
+    + '<p class="note">' + samples.length + ' saved snapshot(s)'
+    + (total > samples.length ? ' · latest ' + samples.length + ' of ' + total : '')
+    + '. These are recorded values, not live readings.</p><div class="history-monitor-body">'
+    + monReportHtml(historyMonitorState(samples, samples.length - 1), 0) + '</div></section>';
+}
+
+stEl('historyList').addEventListener('click', event => {
+  const button = event.target.closest('[data-history-id]');
+  if (button) historySelect(button.dataset.historyId);
+});
+stEl('historyRefresh').addEventListener('click', historyLoad);
+stEl('historyPrev').addEventListener('click', () => {
+  historyOffset = Math.max(0, historyOffset - historyPageSize); historyLoad();
+});
+stEl('historyNext').addEventListener('click', () => { historyOffset += historyPageSize; historyLoad(); });
+document.addEventListener('change', event => {
+  if (!event.target.matches('.history-snapshot')) return;
+  const saved = !!event.target.closest('#historyCard');
+  const samples = saved ? ((historyCurrent || {}).result || {}).monitor_samples
+    : (stState || {}).monitor_samples;
+  if (!samples) return;
+  event.target.closest('.history-monitor').querySelector('.history-monitor-body').innerHTML =
+    monReportHtml(historyMonitorState(samples, Number(event.target.value)), 0);
+});
 </script>
 </body>
 </html>

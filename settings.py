@@ -1098,6 +1098,15 @@ OLLAMA_REPEAT_PENALTY = config.env_float("OLLAMA_REPEAT_PENALTY", 1.1,
 # failing to parse costs that step's fields rather than the whole extraction.
 AGENTIC_EXTRACT = config.env_bool("AGENTIC_EXTRACT", False)
 
+# Whether pass 2 asks for `other_fields` -- the overflow list of every labelled
+# fact the form has no key for -- when nothing has switched it at runtime. The
+# page's "Extra fields" switch flips it per tab. Added 2026-10-19 at the user's
+# request. Off, the single prompt and its grammar leave the list out and the
+# agentic `other` step is not sent, in every document of a split file. Nothing
+# scores the list, so this costs no figure; what it saves is the longest and
+# most loop-prone part of the reply, which matters most under load.
+EXTRACT_OTHER_FIELDS = config.env_bool("EXTRACT_OTHER_FIELDS", True)
+
 # How many times a step may be asked again after it returned a value that is not
 # in the transcript. The retry quotes the rejected values back, so it is a
 # different question rather than the same one repeated; asking again in identical
@@ -1125,6 +1134,30 @@ AGENTIC_PARALLEL = config.env_bool("AGENTIC_PARALLEL", True)
 # The most steps in flight at once when `AGENTIC_PARALLEL` applies. 0 = every
 # step of the form at once (7-9 on a typed form, 17 unclassified).
 AGENTIC_PARALLEL_MAX = config.env_int("AGENTIC_PARALLEL_MAX", 0, minimum=0, maximum=64)
+
+# Read a long document's pages AT ONCE rather than one after another, and join
+# the transcripts back in page order. Added 2026-10-20 at the user's request: a
+# 13-page file (sol023) took thirteen pages of wall clock where a one-page file
+# took one, and vLLM batches concurrent requests, so the pages sent together
+# cost about the longest page's time.
+#
+# Safe for the same reason as `AGENTIC_PARALLEL`: no page reads another's
+# answer, and the joined transcript is byte-for-byte the one a sequential read
+# produces -- the pages are reassembled by number, not by finishing order.
+#
+# vLLM only (`backends.parallel_ok`), for the reason given above: llama-server
+# serves one request per slot and Ollama queues them, so there the pages would
+# only wait for each other. 0 turns it off.
+OCR_PARALLEL = config.env_bool("OCR_PARALLEL", True)
+
+# The fewest pages a document needs before its pages are read at once. Below it
+# a read stays sequential, which keeps the live token stream on the page for the
+# short documents that are most of the benchmark.
+OCR_PARALLEL_MIN_PAGES = config.env_int("OCR_PARALLEL_MIN_PAGES", 3, minimum=2, maximum=1000)
+
+# The most pages in flight at once when `OCR_PARALLEL` applies. 0 = every page
+# of the document at once (`MAX_PAGES` already bounds that).
+OCR_PARALLEL_MAX = config.env_int("OCR_PARALLEL_MAX", 0, minimum=0, maximum=64)
 
 # Hold the first agentic step back until its prefill is done, THEN send the rest,
 # when the steps go out at once (above). Added 2026-10-07 at the user's request

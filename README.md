@@ -393,6 +393,9 @@ The ones that matter for a deployment:
 | `OCR_SOLUTION_DIR` | `./solution` | Ground truth. Absent ⇒ accuracy scoring switches off and the page hides its controls. |
 | `MAX_UPLOAD_MB` | `32` | Per-upload size cap. |
 | `MAX_PAGES` | `0` | Pages read per document, **`0` meaning no cap — every page is read**. A positive value caps and **truncates rather than refusing**: the rest of the file is dropped. The page says so under the preview *before* a run, on the result, and above the accuracy bar; the run log records `pages_total` and a truncated read is counted as incomplete rather than scored. Uncapped, a long file is bounded by `MAX_UPLOAD_MB` and by memory — nothing is streamed. |
+| `OCR_PARALLEL` | `1` | On a **vLLM** reading server, read the pages of a long document at once instead of one after another, and join the transcripts back in page order — a 13-page file then takes about as long as its slowest page. The page shows each page whole as it lands rather than token by token. Ignored on llama.cpp, Ollama and a generic OpenAI server, and in the stress test, which sets its own concurrency. `0` turns it off. |
+| `OCR_PARALLEL_MIN_PAGES` | `3` | The fewest pages a document needs before its pages are read at once. |
+| `OCR_PARALLEL_MAX` | `0` | The most pages in flight at once when `OCR_PARALLEL` applies. `0` = every page. |
 | `MAX_JOBS` | `5` | Rendered documents held in memory for the compare view. A 10-page document at `medium` is ~40 MB, so this is a RAM ceiling. |
 | `GEN_READ_TIMEOUT` | `1800` | Raise on slow hardware; a timeout firing mid-generation throws away work the model server is still doing. |
 | `EXTRACT` | `1` | Set `0` to run the OCR pass only. |
@@ -1549,7 +1552,7 @@ fifty of them, which a 380px pane cannot show without clipping the numbers the f
 exists to produce.
 
 The two never share the screen, and the Read button is disabled while a test is running.
-**Clear** on the card — or simply reading a document by hand — puts the Result card back;
+**Clear results** empties the Random test card; choose Workspace, OCR only or Fields only to return to document results.
 nothing is lost, because every round is a real run and is in the run log.
 
 ### Contest — CLI only
@@ -1662,18 +1665,71 @@ The **Stress test** tab benchmarks the **server**: a queue of jobs worked by as 
 concurrent requests as you set, and one report at the end. It uses the reading and extraction
 models selected in the Workspace and never switches them.
 
+The setup shows **Mode**, **Concurrent**, **Queue (jobs)** and **Files to test** by default.
+Open **Advanced settings** for warm-up, time limit, extraction options, seed, cache,
+batching, metrics sampling and logging. Advanced settings start collapsed; closing the
+section keeps its selected values and still applies them to the next run.
+
+The selected menu determines the results shown on the right. Switching to Workspace,
+OCR only or Fields only shows the document results; Random test and Stress test retain
+their reports in their own tabs. A running test continues updating its report in the
+background without changing the selected view.
+
+Workspace, OCR only, Fields only, Random test and Stress test keep their run controls in
+a footer outside the scrolling settings. On narrow screens the footer docks to the bottom of the window.
+Its status shows **Ready**, **Running**, **Stopping**, **Completed**, **Stopped** or
+**Failed**. **Clear results** empties the current report and resets its status to Ready;
+it is disabled until the active run finishes and does not delete saved History or run logs.
+Workspace uses **Clear workspace**, since it also removes the selected input file.
+
 | Setting | What it does |
 |---|---|
-| **What each job runs** | **OCR only** — read one document, score the transcript. **Extract only** — pass 2 on a ground-truth transcript, score the fields. **Classify 100+ pages** — glue ground-truth transcripts into one long file, split it into documents and classify each one, score the grouping and the types. **Full pipeline** — read, then extract, with the two stages timed apart |
+| **Mode** | **OCR only** — read one document, score the transcript. **Extract only** — pass 2 on a ground-truth transcript, score the fields. **Classify 100+ pages** — glue ground-truth transcripts into one long file, split it into documents and classify each one, score the grouping and the types. **Full pipeline** — read, then extract, with the two stages timed apart |
 | **Concurrent** | how many requests are in flight at once (1–256) |
 | **Queue (jobs)** | how many jobs in total; the concurrent workers take them in order |
 | **Warm-up** | jobs run first at the same concurrency and left out of every figure |
 | **Time limit** | stop starting new jobs after this many seconds; `0` runs the whole queue |
 | **Detail** / **Extraction shape** / **Pages per file** | shown for the modes that use them |
 | **How documents are drawn**, **Seed**, **Lock document** | the same rules as the random test; the seed goes into the box so a run can be repeated |
+| **Files to test** | tick the benchmark files to use, with **Select all** and **Clear selection**. Warm-up and measured jobs draw only from this selection; classification builds its long files from these transcripts. A locked document must be selected |
 
-**By default nothing is written anywhere.** No run-log row, no `solution/out/` transcript,
-no page image in the Compare cache. Only the report is shown — no per-document values.
+**Every new Stress test is saved to History.** Open **Stress test → History** to select a run
+and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,
+selected file IDs, models, servers, sampling and extraction settings, together with its complete report,
+latency tables, scores, errors and timeline. Download JSON includes all saved values.
+Completed, stopped, failed and interrupted runs are retained across refreshes and app restarts.
+Earlier runs cannot be recovered because they were not saved.
+Use **Current run** in the same Stress test tab to return to the controls and current report.
+
+Agentic extraction reports **Agentic chat context** separately from the summed tokens per file.
+Each step sends the transcript and its own question in an independent request; previous step
+replies are not added as chat history. The table shows input/output token distributions per step.
+Expand **Inspect each job** and choose a file to see every request, including schema rescue,
+grounding retries, and context-overflow retries: input, output, used total (input + output),
+reply cap, context limit, usage percentage, and HTTP status. Fields-only extraction also shows
+these records under each step's **Chat context** details.
+
+Counts come from each response's usage, including cached input. No additional tokenization
+or metrics requests are made to collect them. vLLM's context limit comes from the served
+model's `max_model_len`; the UI context picker does not override it. Other backends may show
+a **requested** context limit instead. Missing figures stay blank, and chunk counts from an
+aborted stream are not presented as exact tokens. Records are saved in Stress test History
+and its JSON download. Older History entries cannot recover measurements that were not saved.
+
+History lives in `OCR_LOG_DIR/run_history.sqlite3` and stays separate from the accuracy
+ranking CSV. No per-job run-log row, transcript or page image is written by this feature.
+The database is runtime data and is excluded from Git and deployment packages.
+
+**Save monitor snapshots to History** is on by default. On vLLM it saves KV cache,
+VRAM (when available), Running/Waiting, token rates and cache-hit readings at the selected
+sampling interval and at completion. The latest 300 snapshots of each run are kept;
+choose any saved snapshot to inspect its tiles and sparklines. These are historical readings,
+not current server values. Disable the checkbox to avoid these additional monitor requests.
+On a full pipeline, both vLLM servers are retained separately; snapshot sparklines never
+mix readings from different URLs. Non-vLLM servers are never asked for monitor metrics.
+An unfinished run from another app process is labelled as unfinished rather than failed,
+because the other instance may still be working on it. History is shared across workspaces,
+like the accuracy run log; each snapshot also records the originating workspace.
 
 Tick **Save each job to the run log** to keep the data: every measured job is then one
 ordinary row in `logs/runs.csv` — the same row a normal read or extraction writes — with two
@@ -1736,9 +1792,11 @@ requested** — the route refuses with `409` as well.
 
 ### Live monitor
 
-**Start live monitor** (same box, vLLM only) reads `/metrics` every few seconds — 2 by default,
-set beside the button — whether or not a stress test is running, and shows it at the top of the
-Stress test card with a line of the recent readings under each figure.
+**Start live monitor** is in the top-right page menu beside the theme selector (vLLM only).
+It reads `/metrics` every few seconds — 2 by default — whether or not a stress test is running.
+Its own panel below the page header stays available across all tabs without replacing their
+results. Set the refresh interval and GPU exporter URLs in that panel; **Stop live monitor**
+stops polling and hides the panel. Each figure includes a line of recent readings.
 
 The polling is throttled at both ends. The server scrapes one vLLM at most once per
 `MONITOR_MIN_INTERVAL` seconds (default 2) and hands the last reading to any call inside that
@@ -1888,13 +1946,35 @@ Pick **Light** for projecting or screenshotting — it is what the Summary panel
 shown in. Light is a soft grey ground with an off-white card rather than white-on-white, so it
 does not glare on a projector.
 
-### Reading the card: ten panels, sortable, filterable
+### Reading the card: four groups, twelve panels
 
-The card is twelve panels, and only the last of them is the log:
+The Run log stays at the bottom of the page. Its twelve existing panels are grouped as:
+
+| Group | Panels |
+|---|---|
+| **Overview** | the presentation summary (opens by default) |
+| **Compare models** | Full rank, Best reading, Best extraction |
+| **Run history** | the latest 50 unfiltered log rows, with per-row **Details** and saved JSON |
+| **Advanced analysis** | Per document, Weak spots, Model × type, Time × Doc × Accuracy, Errors, Trend, Tokens |
+
+Switching groups remembers the last panel used in each group. Refreshing results preserves
+that selection. Full Stress test settings and reports remain under **Stress test → History**.
+
+All existing filters remain available. Pipeline, Reading model, Extraction model and
+Extraction shape are shown directly. **Advanced filters** contains Document, Reading engine,
+quantisation, engine versions, Detail, Hardware, Start, Run kind, Outcome, Read floor,
+Runs averaged, Drop single-source failures, and Exclude weak models (Overview only).
+Active filters remain visible as badges when Advanced filters is closed; **Reset filters**
+resets the whole summary view. Chip behaviour is unchanged: click to include, again to
+exclude, again to clear. Run history explicitly ignores the summary filters, and **Download
+CSV** exports the complete log. Details show values actually saved in each row; they do not
+reconstruct settings that were not logged.
+
+The twelve panels retain their calculations:
 
 | Panel | |
 |---|---|
-| **Summary** | the six tables worth showing, at presentation size, with two banner cards above them. Opens by default |
+| **Overview** | the six tables worth showing, at presentation size, with two banner cards above them. Opens by default |
 | **Full rank** | best and worst per model and per document, for each pass. The chips above it are each document's best score |
 | **Best reading** | pass 1 per setting — which model, backend, Detail and profile to read a page with |
 | **Best extraction** | pass 2 per setting — which model and shape to extract fields with |
@@ -1905,7 +1985,7 @@ The card is twelve panels, and only the last of them is the log:
 | **Errors** | what is failing, ranked on the failures rather than folded into an accuracy |
 | **Trend** | accuracy and error rate over **time**, one small chart per model or per document, for either pass, by day, by week, or by **run number** (every N consecutive runs of that model or document — runs 1–10, 11–20, …; N is editable, default 10). Over every run the filters match — not the recent-runs window — so a model whose results moved as the code, config or server changed shows it |
 | **Tokens** | tokens **in** (prompt, page image included) and **out** (generated) per document, for reading (per Detail) and extraction (per shape, every pass-2 request of the file, classify included), **by model** (each document counted once) or **by document**. Compiled from the log on every refresh, so a model you run shows up as soon as its run is logged. Extraction input exists only for runs from 2026-10-15 on |
-| **Raw data** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
+| **Run history** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
 
 **Every column sorts**, including the one each table is ranked by. Click a header to sort
 descending, again for ascending. The highlighted row stays the best by the table's own
@@ -1913,7 +1993,7 @@ ranking however you sort it, so re-ordering never re-labels the winner. Rows wit
 sort — *not scored*, *no complete run* — go last in both directions: no score is not a low
 score.
 
-#### The Summary panel
+#### The Overview panel
 
 Built for showing — projected, or read from across a room — so everything on it is a size up
 from the rest of the card. Two banner cards, then six numbered tables.
@@ -2027,7 +2107,7 @@ means and the window, exactly as if it had not been run — which is the only re
 which the question above has an answer. The chip counts are taken over the **whole** log
 rather than over what survived, so a value you have just dropped is still there to put back.
 
-**The Raw data panel is never filtered.** It is the log, and a row nobody can see is a row
+**The Run history panel is never filtered.** It is the log, and a row nobody can see is a row
 nobody can delete. If a filter matches nothing, a banner says so and names what is in force —
 the tables go empty, the log does not.
 
@@ -2082,7 +2162,7 @@ changed, so the tables always report the rule you are looking at.
 
 #### Deleting a run
 
-Tick rows in **Raw data** and press **Delete selected**. That is the one control on this card
+Tick rows in **Run history** and press **Delete selected**. That is the one control on this card
 that changes the file: the rows leave `runs.csv` and therefore every table, every mean and
 every count.
 
@@ -2757,6 +2837,14 @@ not part of what makes a setting: a setting whose runs were made on more than on
 or engine version lists each, most recent first (`Q8_0 / Q4_K_M`). Where no run says, the cell
 shows the backend alone.
 
+The Summary extraction tables also separate **Extra fields on** and **Extra fields off**.
+The **Single against agentic** table has one row per model, shape, and Extra fields setting,
+with separate accuracy, time, error rate, and run counts. The best-extractor card names the
+setting too. Time-outlier checks and recent-run windows keep the two settings separate.
+New CSV rows record the switch in `extract_extras` (`1` on, `0` off). Older rows without
+this column are treated as **on**, matching how those runs were made; zero extra values
+found does not mean extraction was switched off.
+
 All four are also filter chips on the run-log card (**Reading quant**, **Reading engine
 version**, **Extraction quant**, **Extraction engine version**), and the same field names work
 in `POST /api/runs/query`. The reading pair is blank on a fields-only run and the extraction
@@ -3160,14 +3248,24 @@ can run here, and `keys` is every key in the schema in the order the prompt list
 
 `POST /api/stress/stream` — run a stress test. Body: `mode` (`ocr`, `extract`, `classify`,
 `full`), `concurrency`, `jobs`, `warmup`, `max_seconds`, `detail`, `extract_mode`,
-`pack_pages`, `strategy`, `seed`, `lock_case`, `metrics` (sample vLLM `/metrics`),
-`metrics_every`, `no_cache` (bypass the server's prompt cache) and `save_log` (one run-log
-row per measured job; ignored for `classify`). Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
+`pack_pages`, `strategy`, `seed`, `lock_case`, `cases` (optional list of benchmark IDs;
+omitting it uses all eligible files, an empty list is rejected), `metrics` (sample vLLM `/metrics`),
+`metrics_every`, `no_cache` (bypass prompt cache), `save_log` (per-job accuracy rows),
+`history_monitor` (save monitor snapshots, default true), and `gpu_url` / `gpu_extract_url`
+(optional VRAM exporters).
+Streams NDJSON: `plan`, `preparing`, a `progress` event about once a second
 (jobs in each stage, done, live pages and tokens per second, and `server_metrics` when
 sampling), an `alert` the moment a job hits a problem (`kind` — `error`, `looped`,
 `truncated`, `partial` or `stalled` — with `job`, `case`, `stage`, `page` when known,
 `message`, `phase` and `elapsed`), then `done` with `report`. After a Stop, `draining` events follow until the
 server's last request ends. `409` while a random test or another stress test is running.
+Events carry `history_id` when storage is available, or `history_error` when saving failed.
+The final event includes `monitor_samples` and `monitor_samples_total`.
+
+`GET /api/history?limit=50&offset=0` — saved Stress test runs, newest first, with
+settings and status. Returns `runs`, `total`, `limit` and `offset`; limit is capped at 100.
+`GET /api/history/<id>` — full saved settings, plan, report, snapshots and errors.
+Add `?download=1` to download the same data as JSON.
 
 `POST /api/stress/stop` — stop the running stress test. Same answer shape as
 `/api/randomtest/stop`.

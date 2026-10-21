@@ -133,6 +133,26 @@ class RouteTests(unittest.TestCase):
             self.assertEqual(c.get('/api/monitor').status_code, 502)
         self.assertEqual(get.call_count, 2)
 
+    def test_server_extract_watches_the_extraction_server(self):
+        read = {"kind": "vllm", "url": "http://read:8000"}
+        extract = {"kind": "vllm", "url": "http://extract:8000"}
+        asked = []
+
+        def get(url, timeout=None):
+            asked.append(url)
+            return _res(SCRAPE)
+
+        with patch.object(app.backends, "known",
+                          side_effect=lambda u=None: extract if "extract" in u else read),              patch.object(app.backends, "active_url", return_value=read["url"]),              patch.object(app.backends, "extract_url", return_value=extract["url"]),              patch.object(app.backends, "extract_separate", return_value=True),              patch.object(app, "MONITOR_GPU_URL", ""),              patch.object(app.requests, "get", side_effect=get):
+            c = app.app.test_client()
+            ocr = c.get("/api/monitor?server=ocr").get_json()
+            ext = c.get("/api/monitor?server=extract").get_json()
+            bad = c.get("/api/monitor?server=gpu")
+        self.assertEqual(ocr["url"], read["url"])
+        self.assertEqual(ext["url"], extract["url"])
+        self.assertEqual(asked, ["http://read:8000/metrics", "http://extract:8000/metrics"])
+        self.assertEqual(bad.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()
