@@ -271,10 +271,9 @@ def _gzip_json(response):
 
     Added 2026-10-21, at the user's request: *save time and data transfer of
     log retriving*. The run-log card's payload is ~0.3-0.9 MB of JSON and
-    compresses about 11x (295 KB -> 25 KB in 4 ms). Only whole JSON replies:
-    a stream (the ndjson reads) has to reach the page line by line, and
-    anything already encoded is left alone, so a proxy in front can still
-    compress whatever this does not.
+    compresses about 10x. Only whole JSON replies: a stream (the ndjson reads)
+    has to reach the page line by line, and anything already encoded is left
+    alone, so a proxy in front can still compress whatever this does not.
     """
     if (response.status_code != 200 or response.mimetype != "application/json"
             or response.is_streamed or response.direct_passthrough
@@ -8237,7 +8236,7 @@ def ocr_stream():
     return Response(generate(), mimetype="application/x-ndjson")
 
 
-def _environment(rows: list) -> dict:
+def _environment(rows: list, runs: dict = None) -> dict:
     """The Summary tab's environment card: the machine, the server, the runs.
 
     **Three claims, kept apart on purpose**, because merging any two of them is a
@@ -8306,11 +8305,59 @@ def _environment(rows: list) -> dict:
             "max_new_tokens": MAX_NEW_TOKENS,
             "extract_max_tokens": EXTRACT_MAX_TOKENS,
         },
-        "runs": runlog.conditions(rows),
+        # `runs` is passed in by a cached run-log payload, which holds the
+        # log's half of this card and asks only for the live half again.
+        "runs": runlog.conditions(rows) if runs is None else runs,
     }
 
 
+# The last few run-log payloads, keyed by the log's version and the query
+# (2026-10-21, at the user's request: *keep the same logic but i want to save
+# time*). Every figure on the card is a function of the file and the query and
+# nothing else -- no table reads the clock or a model server -- so an unchanged
+# file asked the same question gets the same answer without the ~3 s of
+# compiling a 52k-row log costs. A page reload, a second tab, or a control put
+# back where it was is then a lookup. Only the environment's live half (the
+# machine and the server as last probed) is rebuilt on every request.
+#
+# Four entries, because a payload is a few MB of Python objects and the card
+# asks for one view at a time.
+_runs_cache = OrderedDict()
+_runs_cache_lock = threading.Lock()
+_RUNS_CACHE_SIZE = 4
+
+
 def _runs_payload(limit: int, window=None, min_read_pct=None,
+                  include: dict = None, exclude: dict = None,
+                  drop_single_source: bool = False, bias: bool = False) -> dict:
+    """`_compile_runs`, from `_runs_cache` where the log has not moved since."""
+    version = runlog._stat_key()
+    key = (version, limit, window, min_read_pct,
+           json.dumps(include, sort_keys=True, default=str),
+           json.dumps(exclude, sort_keys=True, default=str),
+           bool(drop_single_source), bool(bias))
+    with _runs_cache_lock:
+        hit = _runs_cache.get(key) if version is not None else None
+        if hit is not None:
+            _runs_cache.move_to_end(key)
+    if hit is None:
+        hit = _compile_runs(limit, window, min_read_pct, include, exclude,
+                            drop_single_source, bias)
+        if version is not None:
+            with _runs_cache_lock:
+                _runs_cache[key] = hit
+                while len(_runs_cache) > _RUNS_CACHE_SIZE:
+                    _runs_cache.popitem(last=False)
+    # A shallow copy down to the one block that is rebuilt, so the cached entry
+    # is never edited.
+    payload = dict(hit)
+    payload["totals"] = dict(hit["totals"])
+    payload["totals"]["environment"] = _environment(
+        None, runs=hit["totals"]["environment"]["runs"])
+    return payload
+
+
+def _compile_runs(limit: int, window=None, min_read_pct=None,
                   include: dict = None, exclude: dict = None,
                   drop_single_source: bool = False, bias: bool = False) -> dict:
     """The run-log card's whole payload: rows, compiled tables, and the pickers.
@@ -8336,31 +8383,15 @@ def _runs_payload(limit: int, window=None, min_read_pct=None,
 
     Nothing here writes: a view is a way of reading the file, and the file is the
     same afterwards. That is what makes any threshold safe to try.
-
-    **The window is the newest N rows OF EACH MODEL that match the filters**
-    (2026-10-21, at the user's request: *100 latest run thats match all
-    condition*, then *make it 100 per model*). Every table used to be compiled
-    over every matching row and trimmed per group afterwards, so the card cost
-    the same at a window of 100 as at 0 -- 4.4 s on a 52k-row log, and growing
-    with the file. Cut here, before anything is compiled, every table on the
-    card (the trend included) covers the same `recent` rows and the cost follows
-    the window rather than the log. Per model, so a model that has not run
-    lately is not pushed off the card by one that has; with one model picked it
-    is simply that model's newest N. 0 is still the whole log.
     """
     everything = runlog.read(limit=10 ** 6)
     matched = runlog.filter_rows(everything, include=include, exclude=exclude)
-    size = SUMMARY_RUNS if window is None else window
-    recent = runlog.recent_by(matched, runlog.model_key, size) if size else matched
     # A percentage on the wire and a fraction in the setting. Named for its unit
     # because the log's own column is a percentage and the setting is not --
     # `runlog._field_trusted` carries the same warning, and getting it wrong
     # trusts everything or nothing.
     floor = None if min_read_pct is None else max(0.0, min(min_read_pct, 100.0)) / 100.0
-    # Window 0 inside: the cut above is the window, and the tables' own
-    # per-setting and per-document windows on top of it would trim a document
-    # run by many models back to its newest N across all of them.
-    with runlog.view(window=0, min_read=floor):
+    with runlog.view(window=window, min_read=floor):
         if drop_single_source:
             # The toggle's own words: exclude single-source failures from every
             # table BUT the errors one. So the ranking, standouts, reading,
@@ -8369,18 +8400,16 @@ def _runs_payload(limit: int, window=None, min_read_pct=None,
             # the single-source rows are pointed AT, so it must still show them.
             # Computed inside the view so the window that decides "single source"
             # is the window the tables are read under.
-            reduced = runlog.drop_single_source(recent)
+            reduced = runlog.drop_single_source(matched)
             totals = runlog.totals(reduced, logged=len(everything))
-            totals["errors"] = runlog.errors(recent)
-            totals["single_source_dropped"] = len(recent) - len(reduced)
+            totals["errors"] = runlog.errors(matched)
+            totals["single_source_dropped"] = len(matched) - len(reduced)
+            # `matched` is the filter count, not the post-drop one, so the status
+            # line keeps saying how many rows the FILTER matched -- the drop is a
+            # separate figure reported beside it.
+            totals["matched"] = len(matched)
         else:
-            totals = runlog.totals(recent, logged=len(everything))
-        # `matched` is the filter count, not the windowed or post-drop one, so
-        # the status line keeps saying how many rows the FILTER matched -- the
-        # window and the drop are separate figures reported beside it.
-        totals["matched"] = len(matched)
-        totals["in_window"] = len(recent)
-        totals["window"] = size or None
+            totals = runlog.totals(matched, logged=len(everything))
         # The presentation summary, compiled over the same filtered rows under
         # the same view -- so the card's chips reach it like every other table.
         #
@@ -8401,12 +8430,12 @@ def _runs_payload(limit: int, window=None, min_read_pct=None,
         # over everything, which is what makes the bias inspectable rather than
         # load-bearing.
         totals["presentation"] = runlog.presentation(
-            reduced if drop_single_source else recent,
+            reduced if drop_single_source else matched,
             bias=bias, single_source=not drop_single_source)
         # Beside it rather than inside it: the environment describes the runs
         # under every view, biased or not, and a card that changed its machine
         # when a checkbox moved would be describing a different computer.
-        totals["environment"] = _environment(recent)
+        totals["environment"] = _environment(matched)
     return {
         "runs": everything[:limit],
         "columns": runlog.COLUMNS,

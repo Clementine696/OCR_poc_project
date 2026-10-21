@@ -1252,14 +1252,6 @@ MIN_READ_FOR_FIELDS = config.env_float("MIN_READ_FOR_FIELDS", 0.75,
 # group's window. 0 means the whole log, which is how every figure before this
 # date was taken.
 #
-# **On the run-log card it is now the newest N matching rows OF EACH MODEL**
-# (2026-10-21, at the user's request: *100 latest run thats match all
-# condition*, then *make it 100 per model*). `app._runs_payload` cuts the
-# filtered rows to each model's newest N before compiling anything, because
-# compiling every row and trimming per group afterwards made the card as slow
-# at 100 as at 0. `runlog.recent_by` still applies per setting and document to
-# any caller handing `totals` a whole log.
-#
 # **`runlog.case_counts` deliberately ignores it.** The random test's fairness
 # rule needs the whole history -- a document read thirty rows ago has been read,
 # and windowing that would send every round back to the same few fixtures.

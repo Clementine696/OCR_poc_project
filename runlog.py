@@ -2122,17 +2122,6 @@ def recent_by(rows: list, key_of, limit: int = None) -> list:
     return kept
 
 
-def model_key(row):
-    """The model a row is a run OF, for the run-log card's per-model window.
-
-    The reading model, or for a re-extraction (which read nothing) the model
-    that extracted -- kept apart from a reading model of the same name, since
-    the two are separate questions everywhere on the card.
-    """
-    return (FILTER_FIELDS["model"](row)
-            or ("extract", FILTER_FIELDS["extract_model"](row)))
-
-
 def _setting_key(columns):
     """A row reduced to one of the setting tuples, for `recent_by`."""
     return lambda row: tuple(row.get(column, "") or "" for column in columns)
@@ -2245,6 +2234,9 @@ def _current_detail(row: dict) -> bool:
     return detail_of(row) not in RETIRED_DETAILS
 
 
+_fold_memo = {}
+
+
 def _for_summary(rows: list) -> list:
     """Rows as the summary tables read them, with renamed Details folded.
 
@@ -2255,8 +2247,16 @@ def _for_summary(rows: list) -> list:
     """
     folded = []
     for row in rows:
-        name = detail_of(row)
-        engine = row_engine(row)
+        # `detail_of` and `row_engine` read only these four cells, and a log
+        # holds a handful of distinct combinations of them; `totals` folds every
+        # row about nine times per request (2026-10-21: 1.1 s of it on a
+        # 52k-row log), so each combination is worked out once.
+        cells = (row.get("detail"), row.get("run_type"), row.get("ocr_engine"),
+                 row.get("backend"))
+        try:
+            name, engine = _fold_memo[cells]
+        except KeyError:
+            name, engine = _fold_memo[cells] = detail_of(row), row_engine(row)
         if name == (row.get("detail") or "") and engine == (row.get("ocr_engine") or ""):
             folded.append(row)
         else:

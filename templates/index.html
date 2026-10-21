@@ -2572,10 +2572,9 @@ a figure never written is not here to recover. 0 averages every score in the
 file.">Read floor
         <span><input id="lvFloor" type="number" min="0" max="100" step="5"><span class="u"> %</span></span>
       </label>
-      <label class="lv-num" title="how many of each model's newest runs that match the filters
-every table covers. Only those rows are compiled, so a smaller number is a faster
-card. 0 is the whole log.">Runs averaged
-        <span><input id="lvWindow" type="number" min="0" step="5"><span class="u"> per model</span></span>
+      <label class="lv-num" title="how many recent runs OF EACH setting, model and
+document each table covers — not a slice off the end of the file. 0 is the whole log.">Runs averaged
+        <span><input id="lvWindow" type="number" min="0" step="5"><span class="u"> each</span></span>
       </label>
       <!-- Applies on its own change (like Pipeline), not via Apply: it is a
            run-level narrowing, and it changes every table except the raw log and
@@ -2683,8 +2682,9 @@ matched.">
          two can be read off. From `runlog.errors`. -->
     <div class="lv-panel" id="panelError" hidden><div id="errorSum"></div></div>
     <!-- Accuracy and error rate over time, one small chart per model or per
-         document. Over the same newest matching runs as every other tab
-         (Runs averaged; 0 for the whole history). From `runlog.trend`. -->
+         document. Over every row the filters match, deliberately NOT the
+         recent-runs window -- a trend with its history cut off has nothing to
+         trend. From `runlog.trend`. -->
     <!-- Tokens in and out, per document, per pass, per model. From
          `runlog.token_usage`, recompiled on every refresh like every tab. -->
     <div class="lv-panel" id="panelTokens" hidden>
@@ -6701,12 +6701,12 @@ function runRow(r) {
    screen because the Accuracy tab compares the run it is showing against it, and
    the two must not be able to disagree. */
 let logBests = {};
-/* Every table on this card is compiled over the newest runs that match the
-   filters -- Runs averaged, `settings.SUMMARY_RUNS` by default (2026-10-21: *100
-   latest run thats match all condition*). That has to be said on each table
-   rather than once at the top: "best ever" over twenty runs and "best ever" over
-   two hundred are different claims, and nobody reading a ranking is looking at
-   the card header. */
+/* Every table on this card is compiled over the most recent runs OF EACH ROW --
+   `settings.SUMMARY_RUNS`, applied per setting, per model and per document, not
+   as a slice off the end of the file. That has to be said on each table rather
+   than once at the top: "best ever" over twenty runs and "best ever" over two
+   hundred are different claims, and nobody reading a ranking is looking at the
+   card header. The noun differs per table because the key does. */
 let logWindow = null, logRows = 0;
 /* **The label does not state the number** (2026-08-21, at the user's request:
    *if its 20 dont say its 20 in the summary, if not says how many*). The window
@@ -6717,10 +6717,10 @@ let logWindow = null, logRows = 0;
    the tooltip where it belongs. */
 function windowNote(what) {
   if (!logWindow) return '';
-  return '<span class="cs-of" title="each ' + what + ' is summarised over its runs '
-    + 'among each model\'s latest ' + logWindow + ' that match the filters'
-    + ' — the count on each row is what it actually covers">'
-    + ' &middot; latest ' + logWindow + ' per model</span>';
+  return '<span class="cs-of" title="each row is summarised over that ' + what
+    + "'s most recent runs, up to " + logWindow
+    + ' (SUMMARY_RUNS) — the count on each row is what it actually covers">'
+    + ' &middot; recent runs per ' + what + '</span>';
 }
 function paintBests(t) {
   logWindow = t.window || null;
@@ -6729,8 +6729,8 @@ function paintBests(t) {
   const cases = Object.keys(logBests).sort();
   if (!cases.length) { runBest.innerHTML = ''; return; }
   runBest.innerHTML = '<span title="'
-      + (logWindow ? 'the best score each document reached in each model\'s latest '
-                     + logWindow + ' matching runs, under any setting'
+      + (logWindow ? "the best score in each document's recent runs (up to "
+                     + logWindow + '), under any setting'
                    : 'the best score each document has ever reached')
       + '">Best' + (logWindow ? ' recently' : ' ever') + ', any setting:</span>'
     + cases.map(c => {
@@ -6958,12 +6958,14 @@ function paintStandouts(t) {
     + 'fixture every model reads badly may be the hardest page here, or its '
     + 'hand-written ground truth may be wrong.'
     + (logWindow
-        ? ' Every row on this card covers <b>each model\'s latest ' + logWindow
-          + ' runs that match the filters</b> (Runs averaged). The count beside each row is what '
-          + 'it actually covers, which is often fewer. A mean taken across a change '
-          + 'to the scorer, the schema or the presets describes a build nobody is '
-          + 'running; set Runs averaged to 0 to compile the whole log. The CSV keeps '
-          + 'everything.'
+        ? ' Every row on this card covers <b>that model\'s or that document\'s own '
+          + 'recent runs</b> &mdash; up to ' + logWindow + ' each '
+          + '(<code>SUMMARY_RUNS</code>), never the log\'s last ' + logWindow
+          + ' lines. The count beside each row is what it actually covers, which '
+          + 'is often fewer. A mean taken across a change to the scorer, the '
+          + 'schema or the presets describes a build nobody is running, and one '
+          + 'busy evening on one setting must not push every other setting out of '
+          + 'the table. The CSV keeps everything.'
         : '')
     + '</p>';
 }
@@ -8015,7 +8017,7 @@ function legacyNote(t) {
     + '2026-09-04 &mdash; an edit distance, which charged text the page does not '
     + 'print. It is recall of the ground truth now, so those rows read '
     + '<b>lower</b> than the same transcript would score today. Nothing was reset: '
-    + 'each table covers only each model&rsquo;s latest matching runs, so these leave as '
+    + 'each table covers its own setting&rsquo;s most recent runs, so these leave as '
     + 'new ones arrive and this note goes with them. Until then, treat a rise in a '
     + 'mean that mixes the two as the metric moving rather than the model.</p>';
 }
@@ -8668,9 +8670,8 @@ function prEnvCard(env) {
    this tab has no prose by rule, and `prHead` escapes its hint. */
 function prHead(n, text, hint, what) {
   const note = logWindow
-    ? ' Figures cover each ' + (what || 'model') + "'s runs among each model's latest "
-      + logWindow + ' that match the filters — the run count on each row is what it '
-      + 'actually covers.'
+    ? ' Figures cover each ' + (what || 'model') + "'s most recent runs, up to "
+      + logWindow + ' — the run count on each row is what it actually covers.'
     : '';
   hint = (hint || '') + note;
   return '<div class="pr-h"' + (hint ? ' title="' + esc(hint) + '"' : '') + '>'
@@ -9773,9 +9774,8 @@ function paintLogControls() {
     bits.push('<b>' + t.matched + ' of ' + t.logged + ' rows</b> match the filter');
   else if (t.logged !== undefined)
     bits.push(t.logged + ' rows in the log');
-  bits.push(t.window ? 'tables over each model\'s latest ' + t.window + ' matching runs ('
-                       + (t.in_window ?? '?') + ' in all)'
-                     : 'every run, no window');
+  bits.push(t.window ? 'up to ' + t.window + ' recent runs per setting, model and '
+                       + 'document' : 'every run, no window');
   bits.push(t.min_read_pct
     ? 'field scores from reads under ' + Number(t.min_read_pct).toFixed(0)
       + '% are left out'
@@ -10921,11 +10921,9 @@ function paintTrend(t) {
     + '<div class="tr-grid">'
     + entries.map((e, i) => card('c' + i, isModel ? csModel(e.k) : e.k, e.k, e.b, false)).join('')
     + '</div>'
-    + '<p class="note">' + (logWindow
-        ? '<b>Each model\'s latest ' + logWindow + ' runs the filters match</b>, like every tab '
-          + '— set Runs averaged to 0 to see the whole history. '
-        : '<b>Every run the filters match, over its whole history.</b> ')
-    + 'Each point is '
+    + '<p class="note"><b>Every run the filters match, over its whole history</b> — '
+    + 'not the recent-runs window the other tabs use, because a trend with its past '
+    + 'cut off has nothing to show. Each point is '
     + (byRun ? per + ' consecutive runs of that card, oldest first, whenever they '
         + 'happened; each card has its own run axis, 1 to its last run, and a short '
         + 'last group is drawn with the runs it has'
@@ -11019,8 +11017,9 @@ function paintLog() {
 function paintRunStats(t) {
   const rows = (logData && logData.runs) || [];
   runStats.title = t.window
-    ? 'Every summary on this card covers each model\'s latest ' + t.window + ' runs '
-      + 'that match the filters. Each row prints how many it actually covers.'
+    ? 'Every summary on this card covers the most recent runs of that setting, '
+      + 'model or document — up to ' + t.window + ' each. Each row prints how '
+      + 'many it actually covers.'
     : 'Every summary on this card covers every run in this view.';
   runStats.textContent = [
     // Counted over each document's own window, the same rule the tables use --
@@ -11030,7 +11029,9 @@ function paintRunStats(t) {
     // Counted apart from reads: a re-extraction is a row, but it is not another
     // document read, and every other figure on this line is read against `runs`.
     t.extracts ? t.extracts + ' re-extract(s)' : null,
-    t.window ? 'latest ' + t.window + ' per model' : null,
+    // No number here either: this line is read against tables whose rows each
+    // cover a different amount. The ceiling is on the tooltip.
+    t.window ? 'recent runs per setting/document' : null,
     // Said out loud, because every figure on this line is over the filtered rows
     // and the raw table below is not.
     t.matched !== t.logged ? 'filtered to ' + t.matched + ' of ' + t.logged
