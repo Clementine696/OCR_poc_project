@@ -181,6 +181,17 @@
   .page-head { display: flex; align-items: flex-start; gap: 16px;
     flex-wrap: wrap; justify-content: space-between; }
   .theme-seg button { padding: 5px 12px; font-size: .78rem; }
+  .page-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #monToggle { padding: 5px 12px; font-size: .78rem; }
+  #monToggle.on { background: var(--accent-soft); border-color: var(--accent); }
+  .monitor-card { margin-bottom: 18px; }
+  .monitor-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .monitor-settings { margin-top: 10px; }
+  .monitor-gpus { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+  #stMon { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); }
+  #stMon .mon-server { min-width: 0; overflow-wrap: anywhere; }
+  #stMon .mon-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  @media (max-width: 600px) { #stMon .mon-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   h1 { font-size: 1.4rem; margin: 0 0 4px; }
   .sub { color: var(--muted); font-size: 0.9rem; }
   .sub code { background: var(--accent-soft); padding: 2px 6px; border-radius: 5px; }
@@ -193,8 +204,29 @@
   }
   /* The controls follow the result down the page: the side pane stays in view while
      a long transcript is being read. */
-  .side { position: sticky; top: 18px; max-height: calc(100vh - 36px); overflow-y: auto; }
+  .side { position: sticky; top: 18px; max-height: var(--side-height, calc(100dvh - 36px));
+    display: flex; flex-direction: column; overflow: hidden; }
+  .side-scroll { min-height: 0; overflow-y: auto; }
+  .test-actions { flex-shrink: 0; margin: 14px -18px -18px; padding: 12px 18px;
+    border-top: 1px solid var(--border); background: var(--panel); }
+  .test-action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .test-action-row button { white-space: nowrap; }
+  .test-action-row .primary { flex: 1; }
+  .test-status { display: inline-flex; align-items: center; gap: 6px; font-size: .76rem;
+    margin-bottom: 8px; color: var(--muted); }
+  .test-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .test-status[data-state="running"] { color: var(--accent); }
+  .test-status[data-state="stopping"] { color: var(--warn); }
+  .test-status[data-state="completed"] { color: var(--ok); }
+  .test-status[data-state="failed"] { color: var(--danger); }
   @media (max-width: 1080px) { .side { position: static; max-height: none; } }
+  @media (max-width: 1080px) {
+    body.has-test-actions { padding-bottom: var(--run-actions-space, 150px); }
+    .side-scroll { overflow: visible; }
+    .test-actions { position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
+      margin: 0; padding: 10px 18px max(12px, env(safe-area-inset-bottom));
+      box-shadow: 0 -4px 18px rgba(0,0,0,.12); }
+  }
   .side-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px; margin-bottom: 14px; }
   .side-tabs button { min-width: 0; padding: 8px 10px; font-size: .84rem;
@@ -723,7 +755,8 @@
   .lv-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
   .lv-chip { font-size: .74rem; border: 1px solid var(--border); border-radius: 999px;
              padding: 3px 10px; cursor: pointer; user-select: none;
-             background: var(--card); }
+             background: var(--card); color: var(--text); max-width: 100%;
+             white-space: normal; overflow-wrap: anywhere; text-align: left; }
   .lv-chip .n { color: var(--muted); font-size: .68rem; margin-left: 4px; }
   .lv-chip.inc { border-color: var(--accent); background: var(--accent-soft);
                  font-weight: 600; }
@@ -735,7 +768,39 @@
   table.queue th.lv-th:hover { color: var(--text); }
   table.queue th.lv-on { color: var(--text); }
   .lv-arrow { font-size: .6rem; margin-left: 4px; }
-  .lv-panel { margin-top: 4px; }
+  .lv-panel { margin-top: 4px; min-width: 0; overflow-x: auto; }
+  .log-groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 8px; margin-top: 18px; }
+  .log-groups button { white-space: normal; min-width: 0; }
+  #logTabs { flex-wrap: wrap; }
+  #logTabs[hidden], #logTabs button[hidden] { display: none; }
+  .lv-main-facets { display: grid; gap: 4px 18px;
+                   grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+  .log-filter-details { margin-top: 14px; border: 1px solid var(--border);
+                        border-radius: 10px; }
+  .log-filter-details > summary { padding: 10px 12px; cursor: pointer; font-size: .83rem; }
+  .log-filter-body { padding: 0 12px 12px; }
+  .log-filter-body .lv-bar { margin-top: 6px; }
+  .lv-filter-help { margin-top: 14px; font-size: .78rem; color: var(--muted); }
+  .lv-filter-help summary { cursor: pointer; }
+  .lv-applied { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px;
+                font-size: .74rem; color: var(--muted); }
+  .lv-applied > span { border: 1px solid var(--border); border-radius: 6px;
+                       padding: 4px 8px; overflow-wrap: anywhere; max-width: 100%; }
+  .lv-applied > .active { border-color: var(--accent); background: var(--accent-soft);
+                          color: var(--text); }
+  .run-detail td { white-space: normal; background: var(--bg); }
+  .run-detail dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+                   gap: 12px 20px; margin: 8px 0 14px; }
+  .run-detail dt { color: var(--muted); font-size: .72rem; }
+  .run-detail dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: .8rem; }
+  .run-detail pre { max-height: 360px; overflow: auto; white-space: pre-wrap;
+                    overflow-wrap: anywhere; font-size: .75rem; }
+  @media (max-width: 600px) {
+    .log-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .run-detail dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #lvPipe { flex-wrap: wrap; }
+  }
   #logTabs button { flex: none; padding: 6px 12px; font-size: .8rem; }
   .lv-seg button { flex: none; padding: 5px 9px; font-size: .76rem; border-radius: 6px; }
   #lvEmpty:not(:empty) { margin-top: 12px; padding: 12px 14px; border-radius: 10px;
@@ -749,6 +814,14 @@
   .st-metrics-box { margin-top: 16px; border: 1px solid var(--border); border-radius: 10px;
     padding: 10px 12px; }
   .st-metrics-head { font-size: .8rem; }
+  .st-advanced { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .st-advanced > summary { cursor: pointer; padding: 10px 12px; font-size: .82rem; font-weight: 600; }
+  .st-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 10px; }
+  .st-advanced-body { padding: 0 12px 12px; border-top: 1px solid var(--border); }
+  .st-settings-title { font-size: .78rem; margin: 16px 0 8px; color: var(--muted); }
+  #stSetup > .row { margin-top: 12px; }
+  #stFilesField > .row { margin-top: 8px; }
+  #stFiles { max-height: 120px; }
   .st-check { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
     color: var(--muted); }
   .st-plan { font-size: .8rem; color: var(--muted); margin: 10px 0 0; line-height: 1.5; }
@@ -1460,6 +1533,9 @@
       <p class="sub">Full-page transcription via <span id="subKind">{{ server.kind or 'no server' }}</span> ·
         <code id="subUrl">{{ server.url }}</code></p>
     </div>
+    <div class="page-actions">
+    <button type="button" id="monToggle" disabled aria-pressed="false"
+            aria-expanded="false" aria-controls="monCard">Start live monitor</button>
     <!-- Three states in one control, because "follow the desktop" is a real
          choice and not the absence of one: a two-way switch would silently
          freeze the page on whichever theme the OS happened to be showing the
@@ -1470,10 +1546,37 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <button data-theme="light">Light</button>
       <button data-theme="dark">Dark</button>
     </div>
+    </div>
   </header>
+
+  <section class="card monitor-card" id="monCard" aria-labelledby="monTitle" hidden>
+    <div class="monitor-head">
+      <h2 id="monTitle" style="margin:0">Live monitor</h2>
+      <label class="st-check">Refresh every
+        <input id="monEvery" type="number" min="1" max="60" value="2" style="width:56px"> s
+      </label>
+      <span class="note">Available across all tabs · vLLM servers</span>
+    </div>
+    <details class="monitor-settings">
+      <summary>GPU exporter settings</summary>
+      <p class="note">vLLM does not report VRAM. Use a DCGM or nvidia_gpu_exporter /metrics URL.
+        Leave blank to use GPU metrics from the vLLM scrape, or nvidia-smi when the server runs on this machine.
+        These URLs also apply to saved Stress test monitor snapshots.</p>
+      <div class="monitor-gpus">
+        <label class="field">VRAM from a GPU exporter
+          <input id="monGpu" type="text" placeholder="http://gpu-box:9400/metrics">
+        </label>
+        <label class="field" id="monGpuExtractRow" style="display:none">VRAM of the extraction server's GPU
+          <input id="monGpuExtract" type="text" placeholder="http://extract-box:9400/metrics">
+        </label>
+      </div>
+    </details>
+    <div id="stMon"></div>
+  </section>
 
   <div class="grid">
     <div class="card side">
+      <div class="side-scroll">
       <div class="side-tabs" id="sideTabs">
         <button type="button" data-pane="source" class="on">Workspace</button>
         <!-- Pass 1 alone against a document's transcript ground truth, the
@@ -1902,10 +2005,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </label>
         </div>
 
-        <div class="row">
-          <button id="rtRun" class="primary">Run random test</button>
-          <button id="rtStop" class="ghost-sm" disabled>Stop</button>
-        </div>
         <p class="note" id="rtScopeNote"></p>
 
         <p class="note">Every round is a <b>real run</b> and appends its own row
@@ -1925,21 +2024,14 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button type="button" data-st-view="history" aria-pressed="false">History</button>
         </div>
         <div id="stSetup">
-        <p class="note">A benchmark of the <b>server</b>: a queue of jobs worked
-          by as many concurrent requests as you set, against the reading and
-          extraction models selected in the Workspace. Documents are drawn the
-          way the random test draws them. Only the final metrics and scores are
-          shown and saved to <b>History</b>. Per-job accuracy logging is optional.
-          Errors, loops, token caps and stalls are flagged as they happen.</p>
-
         <div class="row">
           <label class="field" style="flex:1;min-width:210px">
-            What each job runs
+            Mode
             <select id="stMode">
-              <option value="ocr">OCR only &mdash; read the pages, score the transcript</option>
-              <option value="extract">Extract only &mdash; pass 2 from the ground truth</option>
-              <option value="classify">Classify 100+ pages &mdash; split and type a long file</option>
-              <option value="full">Full pipeline &mdash; read, then extract (stages timed apart)</option>
+              <option value="ocr">OCR only</option>
+              <option value="extract">Extract only</option>
+              <option value="classify">Classify 100+ pages</option>
+              <option value="full">Full pipeline</option>
             </select>
           </label>
         </div>
@@ -1954,6 +2046,27 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             Queue (jobs)
             <input id="stJobs" type="number" min="1" max="5000" value="20">
           </label>
+        </div>
+        <div class="rt-ex" id="stFilesField">
+          <span class="rt-ex-label">Files to test &mdash; untick any files to skip</span>
+          <div class="row">
+            <button type="button" class="ghost-sm" id="stFilesAll">Select all</button>
+            <button type="button" class="ghost-sm" id="stFilesNone">Clear selection</button>
+            <span class="note" id="stFileCount" aria-live="polite"></span>
+          </div>
+          <div class="rt-files" id="stFiles">
+            {% for c in cases|sort(attribute='id') %}
+            <label class="rt-chip"><input type="checkbox" value="{{ c.id }}"
+              data-field-truth="{{ '1' if c.field_truth else '0' }}" checked>
+              <span>{{ c.id }} &middot; {{ c.pdf }}</span></label>
+            {% endfor %}
+          </div>
+        </div>
+        <details class="st-advanced" id="stAdvanced">
+          <summary>Advanced settings</summary>
+          <div class="st-advanced-body">
+        <h3 class="st-settings-title">Run settings</h3>
+        <div class="row">
           <label class="field" style="flex:1;min-width:90px"
                  title="jobs run first at the same concurrency and left out of every figure -- loads the model and warms its caches">
             Warm-up
@@ -2005,24 +2118,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <input id="stSeed" type="text" placeholder="e.g. 1787218747">
           </label>
         </div>
-        <div class="rt-ex" id="stFilesField">
-          <span class="rt-ex-label">Files to test &mdash; untick any files to skip</span>
-          <div class="row">
-            <button type="button" class="ghost-sm" id="stFilesAll">Select all</button>
-            <button type="button" class="ghost-sm" id="stFilesNone">Clear selection</button>
-            <span class="note" id="stFileCount" aria-live="polite"></span>
-          </div>
-          <div class="rt-files" id="stFiles">
-            {% for c in cases|sort(attribute='id') %}
-            <label class="rt-chip"><input type="checkbox" value="{{ c.id }}"
-              data-field-truth="{{ '1' if c.field_truth else '0' }}" checked>
-              <span>{{ c.id }} &middot; {{ c.pdf }}</span></label>
-            {% endfor %}
-          </div>
-          <p class="note">Jobs, including warm-up, use only the selected benchmark files.
-            The draw strategy applies within this selection. Classification builds
-            its long files from the selected transcripts.</p>
-        </div>
         <div class="row" id="stLockRow">
           <label class="field" style="flex:1;min-width:150px">
             Lock document
@@ -2039,46 +2134,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </label>
         </div>
 
-        <!-- vLLM's Prometheus endpoint. Offered only when the selected server
-             says it IS vLLM; on a local llama-server or Ollama nothing is ever
-             requested, and the server refuses the route as well. -->
-        <div class="st-metrics-box" id="stMetricsBox">
-          <div class="st-metrics-head">
-            <b>Server /metrics</b>
-            <span id="stMetricsState" class="muted-inline"></span>
-          </div>
-          <div class="row" style="margin-top:8px">
-            <button id="stFetchMetrics" class="ghost-sm" disabled>Fetch /metrics now</button>
-            <label class="st-check">
-              <input id="stSample" type="checkbox" disabled> sample during the test, every
-              <input id="stEvery" type="number" min="1" max="600" value="5" style="width:56px"> s
-            </label>
-          </div>
-          <!-- The live monitor: /metrics read on a timer, on its own, whether or
-               not a stress test is running. vLLM only, like everything in this
-               box; the OCR (reading) server and the extraction server are each
-               watched in a pane of their own when both are vLLM. -->
-          <div class="row" style="margin-top:8px">
-            <button id="monToggle" class="ghost-sm" disabled>Start live monitor</button>
-            <label class="st-check">refresh every
-              <input id="monEvery" type="number" min="1" max="60" value="2" style="width:56px"> s
-            </label>
-          </div>
-          <label class="field" style="margin-top:8px">
-            VRAM from a GPU exporter
-            <span class="muted-inline" style="font-weight:400">&mdash; vLLM does not report VRAM.
-              A DCGM or nvidia_gpu_exporter /metrics URL; blank uses what the vLLM scrape
-              carries, or nvidia-smi when the server runs on this machine</span>
-            <input id="monGpu" type="text" placeholder="http://gpu-box:9400/metrics">
-          </label>
-          <label class="field" id="monGpuExtractRow" style="margin-top:8px;display:none">
-            VRAM of the extraction server's GPU
-            <span class="muted-inline" style="font-weight:400">&mdash; the same, for the
-              extraction server; the box above is the OCR server's</span>
-            <input id="monGpuExtract" type="text" placeholder="http://extract-box:9400/metrics">
-          </label>
-        </div>
-
+        <h3 class="st-settings-title">Cache and batching</h3>
         <!-- Prompt cache: a stress run repeats a few pages and one prompt, so the
              server answers most of each prompt from cache. Ticked, every request
              is sent uncacheable: a random cache_salt on vLLM, cache_prompt off on
@@ -2097,6 +2153,24 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
                   title="Send the requests that are in flight at the same moment as one vLLM /v1/chat/completions/batch request, up to the concurrency per batch. Requests are grouped only with others that share every setting but the conversation. Replies do not stream, so time to first token and per-request decode speed are not measured, and a looping reply runs to its token cap (it is still flagged as looped). vLLM only.">Batch requests: off</button>
           <span class="muted-inline" id="stBatchNote" style="font-size:.78rem"></span>
         </div>
+        <h3 class="st-settings-title">Metrics and logging</h3>
+        <!-- vLLM's Prometheus endpoint. Offered only when the selected server
+             says it IS vLLM; on a local llama-server or Ollama nothing is ever
+             requested, and the server refuses the route as well. -->
+        <div class="st-metrics-box" id="stMetricsBox">
+          <div class="st-metrics-head">
+            <b>Server /metrics</b>
+            <span id="stMetricsState" class="muted-inline"></span>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button id="stFetchMetrics" class="ghost-sm" disabled>Fetch /metrics now</button>
+            <label class="st-check">
+              <input id="stSample" type="checkbox" disabled> sample during the test, every
+              <input id="stEvery" type="number" min="1" max="600" value="5" style="width:56px"> s
+            </label>
+          </div>
+        </div>
+
         <!-- Off by default: a stress job's timings were taken under the load of
              the others. On, each measured job is one ordinary run-log row tagged
              with the run and its concurrency, so the "Run kind" chips can keep
@@ -2106,16 +2180,24 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <input id="stSaveLog" type="checkbox"> Save each job to the run log
           <span class="muted-inline" style="font-weight:400" id="stSaveLogNote">&mdash; rows are tagged as stress runs</span>
         </label>
-        <div class="row">
-          <button id="stRun" class="primary">Run stress test</button>
-          <button id="stStop" class="ghost-sm" disabled>Stop</button>
-        </div>
         <label class="st-check" style="margin-top:10px">
           <input id="stHistoryMonitor" type="checkbox" checked> Save monitor snapshots to History
         </label>
         <p class="note">On vLLM, records KV cache, VRAM and throughput at the sampling interval above,
           plus the final reading. Keeps the latest 300 snapshots per run.</p>
+        <h3 class="st-settings-title">About this test</h3>
         <p class="note" id="stModeNote"></p>
+        <p class="note">A benchmark of the <b>server</b>: a queue of jobs worked
+          by as many concurrent requests as you set, against the reading and
+          extraction models selected in the Workspace. Documents are drawn the
+          way the random test draws them. Only the final metrics and scores are
+          shown and saved to <b>History</b>. Per-job accuracy logging is optional.
+          Errors, loops, token caps and stalls are flagged as they happen.</p>
+        <p class="note">Jobs, including warm-up, use only the selected benchmark files.
+            The draw strategy applies within this selection. Classification builds
+            its long files from the selected transcripts.</p>
+          </div>
+        </details>
         </div>
         <div id="stHistoryPanel" hidden>
         <h2>Stress test history</h2>
@@ -2220,6 +2302,35 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           there is nothing to feed pass 2 here.</p>
         {% endif %}
       </div>
+      </div><!-- /side-scroll -->
+      <div class="test-actions" id="testActions" hidden>
+        <div id="sourceActions" hidden>
+          <span class="test-status" id="readStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row" id="sourceActionButtons"></div>
+        </div>
+        <div id="ocrActions" hidden>
+          <span class="test-status" id="ocStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row" id="ocrActionButtons"></div>
+        </div>
+        <div id="fieldsActions" hidden>
+          <span class="test-status" id="fxStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row" id="fieldsActionButtons"></div>
+        </div>
+        <div id="randomActions" hidden>
+          <span class="test-status" id="rtStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row">
+            <button id="rtRun" type="button" class="primary">Run random test</button>
+            <button id="rtStop" type="button" class="ghost-sm" disabled>Stop</button>
+          </div>
+        </div>
+        <div id="stressActions" hidden>
+          <span class="test-status" id="stStatus" role="status" aria-live="polite" aria-atomic="true" data-state="ready">Ready</span>
+          <div class="test-action-row">
+            <button id="stRun" type="button" class="primary">Run stress test</button>
+            <button id="stStop" type="button" class="ghost-sm" disabled>Stop</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- The random test's plan and results, in the Result card's place (moved
@@ -2230,14 +2341,13 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
          read by hand an hour ago. The controls stay in the side pane, because
          that is where the run is decided.
 
-         `Clear` puts the Result card back. Nothing is lost by it -- every round
-         is a real run and is in the run log below. -->
+         `Clear results` empties this view. Each completed round remains in the run log. -->
     <div class="card" id="rtCard" hidden>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">Random test</h2>
         <span id="rtNote" class="muted-inline" style="font-size:.8rem"></span>
         <button id="rtStop2" class="ghost-sm" style="margin-left:auto" disabled>Stop</button>
-        <button id="rtClear" class="ghost-sm">Clear</button>
+        <button id="rtClear" class="ghost-sm">Clear results</button>
       </div>
       <div id="rtOut"></div>
     </div>
@@ -2250,9 +2360,8 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         <h2 style="margin:0">Stress test</h2>
         <span id="stNote" class="muted-inline" style="font-size:.8rem"></span>
         <button id="stStop2" class="ghost-sm" style="margin-left:auto" disabled>Stop</button>
-        <button id="stClear" class="ghost-sm">Clear</button>
+        <button id="stClear" class="ghost-sm">Clear results</button>
       </div>
-      <div id="stMon"></div>
       <div id="stOut"></div>
     </div>
 
@@ -2419,19 +2528,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <button id="runRefresh" class="ghost-sm" style="margin-left:auto">Refresh</button>
       <a id="runDownload" class="ghost-sm" href="/api/runs.csv" download>Download CSV</a>
     </div>
-    <!-- The view every table below is compiled under. **Neither knob writes
-         anything and neither hides a row from the log**: the raw rows are stored
-         and shown whatever these say, and what moves is only what gets averaged.
-         A read that scored 20% still ran, still went to pass 2, and is still in
-         the CSV -- what a floor above 20% decides is that the field score it
-         produced describes the read rather than the extractor. -->
-    <div class="lv-bar">
-      <!-- Which passes a row is a record of. **Not a model filter, and it cannot
-           be one**: "read no page" is a property of the run, and the column that
-           would have to say so holds the EXTRACTING model on those rows. Turning
-           off every reading model to see the extraction half therefore emptied
-           the card instead — the fields-only rows were being matched on a pass
-           they never ran. This is that question asked directly. -->
+    <div class="lv-bar log-filter-toolbar" aria-label="Summary filters">
       <label class="lv-num" title="which passes a row is a record of. Some runs are
 half a pipeline on purpose — a read-only round never extracts, a fields-only round
 is fed the ground truth and never reads — and each half is worth looking at alone.">Pipeline
@@ -2442,6 +2539,16 @@ is fed the ground truth and never reads — and each half is worth looking at al
           <button data-pipe="extract" title="runs that extracted from a transcript they did not read — usually fed the ground truth">Extract only</button>
         </div>
       </label>
+      <span class="sp"></span>
+      <button id="lvReset" type="button" class="ghost-sm">Reset filters</button>
+    </div>
+    <div id="lvFilters">
+      <div id="lvMainFacets" class="lv-main-facets"></div>
+      <details id="lvAdvancedFilters" class="log-filter-details">
+        <summary>Advanced filters <span id="lvAdvancedCount" class="muted-inline"></span></summary>
+        <div class="log-filter-body">
+          <div class="lv-bar">
+
       <label class="lv-num" title="transcript accuracy under which a field score in
 the log is not averaged: pass 2 can only map the values pass 1 gave it, so a score
 over a broken transcript is the read's mistake wearing the extractor's name. This
@@ -2466,48 +2573,55 @@ failures are one document — from every table except the Errors one, where they
 highlighted. Dominated by a pairing, not itself hard.">
         <input type="checkbox" id="errDomToggle"> Drop single-source failures
       </label>
-      <button id="lvApply" class="ghost-sm">Apply</button>
-      <button id="lvReset" class="ghost-sm">Reset</button>
-      <span id="lvNote" class="muted-inline"></span>
-    </div>
-    <!-- Include/exclude per model, document and shape. Filled from the whole
-         log, never from what survived the filter, so a value just excluded is
-         still there to be put back. -->
-    <div id="lvFilters"></div>
-    <!-- Shown only when the filter matches nothing. An empty card is not
-         self-explanatory, and the fix is always "undo one of these". -->
-    <div id="lvEmpty"></div>
-
-    <div class="seg" id="logTabs" style="margin-top:14px">
-      <button data-panel="present" class="on" title="the six tables worth showing, at presentation size: which model reads best, which extracts best, what each costs, and what raising Detail buys. Shows everything unless you exclude models with the chips or the toggle.">Summary</button>
-      <button data-panel="rank">Full rank</button>
-      <button data-panel="ocr">Best reading</button>
-      <button data-panel="extract">Best extraction</button>
-      <button data-panel="case">Per document</button>
-      <button data-panel="weak" title="what each model and each document is WEAK at, rather than how good it is: the transcript score split into Thai, English and numerals, and the field score split into the individual keys. Every other tab averages over both.">Weak spots</button>
-      <button data-panel="types" title="every run grouped by the KIND of page rather than by the document or the setting: which document type is read and extracted well, and which model is best at each. Every other tab on this card averages that axis away.">Model × type</button>
-      <button data-panel="analysis">Time × Doc × Accuracy</button>
-      <button data-panel="error">Errors</button>
-      <button data-panel="trend" title="accuracy and error rate over TIME, one small chart per model or per document, over every run the filters match (not the recent-runs window). The code, config and server changed under the same model names, so this shows whether a model or a document got better or worse.">Trend</button>
-      <button data-panel="tokens" title="tokens sent (in) and generated (out) per document, per pass, per model. Compiled from the log on every refresh, so a new model appears as soon as it has run.">Tokens</button>
-      <button data-panel="raw">Raw data</button>
-    </div>
-
-    <!-- The presentation summary: six tables, one colour scale, one error
-         column each, and a bias that is on by default and named. The one view
-         on this card meant to be SHOWN rather than argued from -- which is why
-         it is the tab that opens, and why the bias toggle lives on it rather
-         than in the bar above: it changes this tab and nothing else. -->
-    <div class="lv-panel" id="panelPresent">
-      <div class="lv-bar">
         <label class="lv-check" title="drop by rule instead of by hand: models
 this log disqualifies for that pass, failures that came entirely from one pairing,
 and runs whose clock was a robust outlier in its own cell. Everything dropped is
 named below. OFF — the default — shows every model and every run the filters
 matched.">
-          <input type="checkbox" id="presBias"> Exclude weak models
+          <input type="checkbox" id="presBias"> Exclude weak models (Overview only)
         </label>
-      </div>
+      <button id="lvApply" class="ghost-sm">Apply</button>
+          </div>
+          <div id="lvExtraFacets"></div>
+          <details class="lv-filter-help">
+            <summary>How the filters work</summary>
+            <div id="lvFilterHelp"></div>
+          </details>
+          <p id="lvNote" class="note"></p>
+        </div>
+      </details>
+    </div>
+    <div id="lvApplied" class="lv-applied" role="status" aria-live="polite"></div>
+    <div id="lvEmpty"></div>
+
+    <div class="seg log-groups" id="logGroups" aria-label="Run log sections">
+      <button type="button" data-log-group="overview" class="on" aria-pressed="true">Overview</button>
+      <button type="button" data-log-group="compare" aria-pressed="false">Compare models</button>
+      <button type="button" data-log-group="history" aria-pressed="false">Run history</button>
+      <button type="button" data-log-group="advanced" aria-pressed="false">Advanced analysis</button>
+    </div>
+    <p class="note" id="logViewNote"></p>
+    <div class="seg" id="logTabs" style="margin-top:14px">
+      <button type="button" data-panel="present" data-group="overview" class="on" title="the six tables worth showing, at presentation size: which model reads best, which extracts best, what each costs, and what raising Detail buys. Shows everything unless you exclude models with the chips or the toggle.">Overview</button>
+      <button type="button" data-panel="rank" data-group="compare">Full rank</button>
+      <button type="button" data-panel="ocr" data-group="compare">Best reading</button>
+      <button type="button" data-panel="extract" data-group="compare">Best extraction</button>
+      <button type="button" data-panel="case" data-group="advanced">Per document</button>
+      <button type="button" data-panel="weak" data-group="advanced" title="what each model and each document is WEAK at, rather than how good it is: the transcript score split into Thai, English and numerals, and the field score split into the individual keys. Every other tab averages over both.">Weak spots</button>
+      <button type="button" data-panel="types" data-group="advanced" title="every run grouped by the KIND of page rather than by the document or the setting: which document type is read and extracted well, and which model is best at each. Every other tab on this card averages that axis away.">Model × type</button>
+      <button type="button" data-panel="analysis" data-group="advanced">Time × Doc × Accuracy</button>
+      <button type="button" data-panel="error" data-group="advanced">Errors</button>
+      <button type="button" data-panel="trend" data-group="advanced" title="accuracy and error rate over TIME, one small chart per model or per document, over every run the filters match (not the recent-runs window). The code, config and server changed under the same model names, so this shows whether a model or a document got better or worse.">Trend</button>
+      <button type="button" data-panel="tokens" data-group="advanced" title="tokens sent (in) and generated (out) per document, per pass, per model. Compiled from the log on every refresh, so a new model appears as soon as it has run.">Tokens</button>
+      <button type="button" data-panel="raw" data-group="history">Run history</button>
+    </div>
+
+    <!-- The presentation summary: six tables, one colour scale, one error
+         column each, and a bias that is on by default and named. The one view
+         on this card meant to be SHOWN rather than argued from -- which is why
+         it is the panel that opens. The bias toggle in Advanced filters is
+         labelled Overview only because it changes this panel and nothing else. -->
+    <div class="lv-panel" id="panelPresent">
       <div id="presentSum"></div>
     </div>
     <!-- Best and worst per model and per document, for each pass, ranked on
@@ -2601,6 +2715,7 @@ matched.">
          deleted from -- which is the one operation on this card that changes the
          file. -->
     <div class="lv-panel" id="panelRaw" hidden>
+      <p class="note" id="rawScope"></p>
       <div class="lv-bar">
         <span id="rawSel" class="muted-inline">Nothing selected.</span>
         <span class="sp"></span>
@@ -2862,6 +2977,7 @@ const runNote = document.getElementById('runNote');
    was no error anywhere to say why. A tab and its pane are one thing; naming
    them in two places means one of them is eventually forgotten. */
 function showPane(name) {
+  selectedPane = name;
   [...sideTabs.querySelectorAll('button[data-pane]')].forEach(b => {
     const on = b.dataset.pane === name;
     b.classList.toggle('on', on);
@@ -2876,38 +2992,88 @@ function showPane(name) {
   if (scOpen) paintSchema();
   if (historyOpen) historyLoad();
   else if (stressPaneOpen) stPaint();
+  else if (name === 'random') rtPaint();
 }
 
 /* One pane, so nothing moves between panes any more. `paintPanes` and
    `syncEngineTab` went with the second tab: the engine is a control INSIDE the
    workspace now, and a control cannot disagree with the tab it sits in. */
 
-/* Which full-width card owns the main column. Three things want it and only one
-   can have it: the Result card (with Compare, which holds that same read's page
-   images), the Random test's round table, and the Doc types reference.
-
-   **One function decides, rather than each caller hiding what it displaces.**
-   The alternative was tried on the Random test and is what `rtShowing` used to
-   do alone -- and with a third contender it stops working: opening Doc types
-   mid-test and going back would have left the round table hidden, because
-   nothing would have put it back.
-
-   `var`, and only ids inside, because `showPane` is defined long before the
-   card elements' own consts are -- a `let` read from here at parse time is a
-   temporal-dead-zone throw, which takes the whole inline script down with it. */
-var scOpen = false, historyOpen = false, rtWanted = false, stWanted = false;
-var stressPaneOpen = false, stressView = 'run';
+/* The selected menu owns the main column. Background run updates may repaint
+   their report, but cannot replace the user's current view. Keep each report
+   in its card so returning to its tab restores it without clearing the run.
+   `var` and element IDs allow early callers before the card consts exist. */
+var scOpen = false, historyOpen = false;
+var selectedPane = 'source', stressPaneOpen = false, stressView = 'run', stRunning = false;
 function paintMain() {
   const el = id => document.getElementById(id);
-  const st = !scOpen && !historyOpen && (stWanted || stressPaneOpen);
-  const rt = !scOpen && !historyOpen && !st && rtWanted;
+  const st = stressPaneOpen && !historyOpen;
+  const rt = selectedPane === 'random';
   el('historyCard').hidden = !historyOpen;
   el('schemaCard').hidden = !scOpen;
   el('stCard').hidden = !st;
   el('rtCard').hidden = !rt;
   el('resultCard').hidden = scOpen || historyOpen || rt || st;
   el('compareCard').hidden = scOpen || historyOpen || rt || st;
+  let hasActions = false;
+  for (const name of ['source', 'ocr', 'fields', 'random', 'stress']) {
+    const group = el(name + 'Actions');
+    group.hidden = name !== selectedPane || !group.querySelector('button');
+    if (!group.hidden) hasActions = true;
+  }
+  el('testActions').hidden = !hasActions;
+  document.body.classList.toggle('has-test-actions', hasActions);
 }
+
+function setTestStatus(prefix, state) {
+  const status = document.getElementById(prefix + 'Status');
+  status.dataset.state = state;
+  status.textContent = {ready: 'Ready', running: 'Running', stopping: 'Stopping',
+    completed: 'Completed', stopped: 'Stopped', failed: 'Failed'}[state];
+}
+
+function setReadStatus(state) {
+  setTestStatus('read', state);
+  setTestStatus('oc', state);
+}
+
+// Move the existing document buttons, preserving their handlers and the
+// server-rendered absence of controls when benchmark cases are unavailable.
+for (const [pane, ids] of Object.entries({source: ['run', 'stop', 'clear'],
+    ocr: ['ocRun', 'ocStop'], fields: ['fxRun']})) {
+  const target = document.getElementById(pane + 'ActionButtons');
+  for (const id of ids) {
+    const button = document.getElementById(id);
+    if (!button) continue;
+    const row = button.parentElement;
+    target.appendChild(button);
+    if (!row.children.length) row.remove();
+  }
+}
+document.getElementById('clear').textContent = 'Clear workspace';
+
+// Keep the footer inside the visible sidebar even while the page header or
+// global monitor occupies space above it. On narrow screens CSS docks it.
+const sideCard = document.querySelector('.side');
+let sideSizeFrame = null;
+function sizeSidebar() {
+  if (sideSizeFrame !== null) return;
+  sideSizeFrame = requestAnimationFrame(() => {
+    sideSizeFrame = null;
+    const top = Math.max(18, sideCard.getBoundingClientRect().top);
+    sideCard.style.setProperty('--side-height', Math.max(180, innerHeight - top - 18) + 'px');
+    const actionHeight = document.getElementById('testActions').getBoundingClientRect().height;
+    document.body.style.setProperty('--run-actions-space', (actionHeight + 18) + 'px');
+  });
+}
+window.addEventListener('resize', sizeSidebar);
+window.addEventListener('scroll', sizeSidebar, {passive: true});
+const sideSizeObserver = new ResizeObserver(sizeSidebar);
+sideSizeObserver.observe(document.querySelector('.page-head'));
+sideSizeObserver.observe(document.getElementById('monCard'));
+sideSizeObserver.observe(document.getElementById('testActions'));
+sizeSidebar();
+paintMain();
 sideTabs.addEventListener('click', e => {
   const btn = e.target.closest('button[data-pane]');
   if (btn) showPane(btn.dataset.pane);
@@ -6273,6 +6439,14 @@ const lvApply = document.getElementById('lvApply');
 const lvReset = document.getElementById('lvReset');
 const lvNote = document.getElementById('lvNote');
 const lvFilters = document.getElementById('lvFilters');
+const lvMainFacets = document.getElementById('lvMainFacets');
+const lvExtraFacets = document.getElementById('lvExtraFacets');
+const lvFilterHelp = document.getElementById('lvFilterHelp');
+const lvApplied = document.getElementById('lvApplied');
+const lvAdvancedCount = document.getElementById('lvAdvancedCount');
+const logGroups = document.getElementById('logGroups');
+const logViewNote = document.getElementById('logViewNote');
+const rawScope = document.getElementById('rawScope');
 const lvPipe = document.getElementById('lvPipe');
 const lvEmpty = document.getElementById('lvEmpty');
 const errDomToggle = document.getElementById('errDomToggle');
@@ -6502,6 +6676,10 @@ function runRow(r) {
       + esc(r.status || '') + '</span>'
       + (r.error ? '<br><span style="color:var(--danger);font-size:.72rem">'
                    + esc(r.error) + '</span>' : '') + '</td>'
+    + '<td><button type="button" class="ghost-sm" data-run-detail="' + Number(r._row)
+      + '" aria-expanded="' + (rawExpanded === runIdentity(r)) + '" aria-label="'
+      + logAttr('Details for ' + (r.file || 'run') + ' at ' + (r.timestamp || 'unknown time'))
+      + '">' + (rawExpanded === runIdentity(r) ? 'Close' : 'Details') + '</button></td>'
     + '</tr>';
 }
 
@@ -8872,15 +9050,12 @@ function rtPaintScope() {
    was a fifty-row table stacked above a Result card still showing a document
    somebody read by hand an hour ago. Compare goes with the Result card, since
    it holds that same read's page images. */
-function rtShowing(on) {
-  rtWanted = on;
-  // Whichever run was started last owns the column.
-  if (on) stWanted = false;
-  paintMain();
-}
 function rtPaint() {
-  rtShowing(!!rtRows.length);
-  if (!rtRows.length) { rtOut.innerHTML = ''; return; }
+  paintMain();
+  if (!rtRows.length) {
+    rtOut.innerHTML = '<p class="note">Run a random test to see its rounds here.</p>';
+    return;
+  }
   const body = rtRows.map(r => {
     const p = r.plan, out = r.result || {};
     const cls = r.error ? ' class="rt-bad"' : (r.pending ? ' class="rt-now"' : '');
@@ -9006,7 +9181,8 @@ function rtThroughputCells(out) {
    lies about what it will do. */
 function rtBusy(on) {
   rtRunning = on;
-  if (on) rtStopping = false;
+  if (on) { rtStopping = false; setTestStatus('rt', 'running'); }
+  rtClear.disabled = on;
   rtPaintSequence();
   // A Stop already asked for is not a Stop that can be asked for again: the
   // request is in, and a live-looking button would invite a second one that
@@ -9018,8 +9194,8 @@ function rtBusy(on) {
   if (rtExtractEndpoint) rtExtractEndpoint.disabled = on;
   // One sweep at a time: the server refuses the second with a 409 anyway.
   if (typeof stRun !== 'undefined' && stRun) stPaintFiles();
-  // The two share one card, so they cannot share the screen: a read started
-  // mid-test would stream into a Result card the next round event hides again.
+  // Reads and sweeps share server settings, so do not start a workspace read
+  // while a sweep is changing those settings between rounds.
   // `paintServer` owns this button otherwise and puts it back on its own terms.
   if (on) runBtn.disabled = true; else paintServer();
 }
@@ -9031,16 +9207,17 @@ async function rtStart() {
   rtContinuous = false;
   rtPaint();
   rtBusy(true);
+  rtStop.disabled = rtStop2.disabled = true;
   // Same reason as the Read button: the rounds below are judged by this floor,
   // so it is pushed before the first one rather than whenever the box lost
   // focus.
-  await pushReadFloor(rtReadFloorInp || readFloorInp);
-  await ensureSampling();
   rtNote.classList.remove('err');
   rtNote.textContent = 'Planning…';
-  rtShowing(true);
+  paintMain();
   rtAbort = new AbortController();
   try {
+    await pushReadFloor(rtReadFloorInp || readFloorInp);
+    await ensureSampling();
     const res = await fetch('/api/randomtest/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       signal: rtAbort.signal,
@@ -9064,6 +9241,7 @@ async function rtStart() {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || ('HTTP ' + res.status));
     }
+    rtStop.disabled = rtStop2.disabled = rtStopping;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -9133,7 +9311,9 @@ async function rtStart() {
           // The server says where it stopped. Nothing to paint: `done` follows
           // immediately and writes the one summary line a run gets.
           rtStopping = true;
+          setTestStatus('rt', 'stopping');
         } else if (ev.event === 'done') {
+          setTestStatus('rt', ev.stopped ? 'stopped' : 'completed');
           rtNote.textContent = 'Seed ' + ev.seed + ' — ' + ev.completed
             + (ev.continuous ? '' : '/' + ev.total) + ' round(s) '
             + (ev.stopped ? 'run before stopping' : 'completed')
@@ -9155,6 +9335,7 @@ async function rtStart() {
       }
     }
   } catch (err) {
+    setTestStatus('rt', 'failed');
     if (err.name === 'AbortError') {
       // Only reached when the server could not be told to stop -- an ordinary
       // Stop now ends with the stream's own `done`. Hanging up frees the page
@@ -9169,6 +9350,8 @@ async function rtStart() {
       rtNote.classList.add('err');
     }
   } finally {
+    if (['running', 'stopping'].includes(document.getElementById('rtStatus').dataset.state))
+      setTestStatus('rt', 'failed');
     rtAbort = null;
     rtBusy(false);
     // Drop rows that never ran -- on a stop or a failure, a "queued" row that
@@ -9188,6 +9371,7 @@ if (rtRun) {
   const stop = async () => {
     if (!rtAbort || rtStopping) return;
     rtStopping = true;
+    setTestStatus('rt', 'stopping');
     rtStop.disabled = rtStop2.disabled = true;
     rtNote.classList.remove('err');
     // The bound, measured rather than guessed: a read notices between tokens,
@@ -9210,7 +9394,12 @@ if (rtRun) {
   };
   rtStop.addEventListener('click', stop);
   rtStop2.addEventListener('click', stop);
-  rtClear.addEventListener('click', () => { rtRows = []; rtPaint(); });
+  rtClear.addEventListener('click', () => {
+    if (rtRunning) return;
+    rtRows = []; rtNote.textContent = ''; rtNote.classList.remove('err');
+    setTestStatus('rt', 'ready');
+    rtPaint();
+  });
 
   // Painted on change and once at load: the caveat belongs beside the choice,
   // not in the results of a run that already made it.
@@ -9261,6 +9450,9 @@ let logData = null;
 let logView = {window: null, min_read_pct: null};
 let logFilters = {include: {}, exclude: {}};
 let rawPicked = new Set();
+let rawExpanded = null;
+let currentLogGroup = 'overview';
+const lastLogPanel = {overview: 'present', compare: 'rank', history: 'raw', advanced: 'case'};
 let logBusy = false;
 
 /* The axes worth filtering on, in the user's own terms: model, sol, mode. The
@@ -9377,35 +9569,42 @@ function lvActive() {
                           || (logFilters.exclude[f.field] || []).length);
 }
 
+function logAttr(value) {
+  return esc(String(value)).replace(/"/g, '&quot;');
+}
+
 function paintFilters() {
   const facets = (logData && logData.facets) || {};
+  const primary = new Set(['model', 'extract_model', 'extract_mode']);
   const blocks = LV_FIELDS.map(f => {
     const values = facets[f.field] || [];
-    if (!values.length) return '';
-    return '<div class="lv-field"><b title="' + esc(f.hint) + '">' + esc(f.label)
+    if (!values.length) return null;
+    return {field: f.field, html: '<div class="lv-field"><b title="' + logAttr(f.hint) + '">' + esc(f.label)
       + '</b><div class="lv-chips">'
       + values.map(v => {
           const at = lvState(f.field, v.value);
-          return '<span class="lv-chip' + (at ? ' ' + at : '')
-            + '" data-field="' + esc(f.field) + '" data-value="' + esc(v.value)
-            + '" title="' + esc(v.value) + ' — ' + v.runs + ' row(s) in the log. '
+          return '<button type="button" class="lv-chip' + (at ? ' ' + at : '')
+            + '" aria-label="' + logAttr(f.label + ': ' + lvChipLabel(f.field, v.value)
+              + (at === 'inc' ? ' (included)' : at === 'exc' ? ' (excluded)' : ' (any)'))
+            + '" data-field="' + logAttr(f.field) + '" data-value="' + logAttr(v.value)
+            + '" title="' + logAttr(v.value) + ' — ' + v.runs + ' row(s) in the log. '
             + (at === 'inc' ? 'Kept. Click to drop it.'
                : at === 'exc' ? 'Dropped. Click to clear.'
                : 'Click to keep only this, again to drop it.') + '">'
             + esc(lvChipLabel(f.field, v.value)) + '<span class="n">' + v.runs
-            + '</span></span>';
+            + '</span></button>';
         }).join('')
-      + '</div></div>';
-  }).filter(Boolean).join('');
-  if (!blocks) { lvFilters.innerHTML = ''; return; }
-  lvFilters.innerHTML = blocks
-    + '<p class="note" style="margin-top:8px">Click a chip to keep <b>only</b> '
+      + '</div></div>'};
+  }).filter(Boolean);
+  lvMainFacets.innerHTML = blocks.filter(b => primary.has(b.field)).map(b => b.html).join('');
+  lvExtraFacets.innerHTML = blocks.filter(b => !primary.has(b.field)).map(b => b.html).join('');
+  lvFilterHelp.innerHTML = '<p class="note" style="margin-top:8px">Click a chip to keep <b>only</b> '
     + 'that value, again to <b>drop</b> it, again to clear. Chips are counted '
     + 'over the whole log, never over what survived the filter, so a value you '
     + 'have just dropped is still here to put back. <b>A dropped row is absent '
     + 'from every table</b> — not hidden but uncounted: it is out of the run '
     + 'counts, the failure rates and the window, exactly as if it had not been '
-    + 'run. The Raw data panel is never filtered, because a row nobody can see '
+    + 'run. The Run history panel is never filtered, because a row nobody can see '
     + 'is a row nobody can delete. <b>Reading model is blank on a run that read '
     + 'no page</b> — a fields-only run carries the model that extracted, not one '
     + 'that read — so those runs are not in that picker at all. To see one half '
@@ -9526,13 +9725,14 @@ function lvInForce() {
 }
 
 function paintEmpty(t) {
+  lvEmpty.hidden = currentLogGroup === 'history';
   if (t.matched !== 0) { lvEmpty.innerHTML = ''; return; }
   const forced = lvInForce();
-  lvEmpty.innerHTML = '<b>No runs match.</b> Every table below is empty because '
+  lvEmpty.innerHTML = '<b>No runs match the summary filters.</b> The summary tables are empty because '
     + 'nothing in the log got past the filter'
     + (forced.length ? ' — in force: ' + forced.join(' &middot; ') : '')
-    + '. The log itself is untouched (' + t.logged + ' rows) and the <b>Raw data</b> '
-    + 'panel still shows it. Clear a chip above, or press <b>Reset</b>.';
+    + '. The log itself is untouched (' + t.logged + ' rows) and the <b>Run history</b> '
+    + 'panel still shows it. Clear a chip above, or press <b>Reset filters</b>.';
 }
 
 function paintLogControls() {
@@ -9578,6 +9778,22 @@ function paintLogControls() {
   lvNote.innerHTML = bits.join(' &middot; ')
     + (moved ? ' &middot; <b>not the server default</b> (' + d.window + ' runs, '
                + Number(d.min_read_pct).toFixed(0) + '%)' : '');
+  const applied = lvInForce();
+  if (t.min_read_pct) applied.push('Read floor: <b>' + esc(String(t.min_read_pct)) + '%</b>');
+  if (t.window) applied.push('Runs averaged: <b>' + esc(String(t.window)) + '</b> per group');
+  if (errDropSingle) applied.push('Drop single-source failures');
+  if (presBiased) applied.push('Exclude weak models <b>(Overview only)</b>');
+  lvApplied.innerHTML = '<span>' + (t.matched ?? 0) + ' / ' + (t.logged ?? 0)
+    + ' rows match summary filters</span>'
+    + (applied.length ? applied.map(x => '<span class="active">' + x + '</span>').join('')
+       : '<span>No summary filters · all runs averaged</span>');
+  const primary = new Set(['model', 'extract_model', 'extract_mode']);
+  const extraCount = LV_FIELDS.filter(f => !primary.has(f.field)).reduce((n, f) => n
+    + (logFilters.include[f.field] || []).length + (logFilters.exclude[f.field] || []).length, 0)
+    + (t.min_read_pct ? 1 : 0) + (t.window ? 1 : 0)
+    + (errDropSingle ? 1 : 0) + (presBiased ? 1 : 0);
+  lvAdvancedCount.textContent = extraCount ? '· ' + extraCount + ' active' : '';
+  paintLogScope();
 }
 
 /* ---------- raw rows ---------- */
@@ -9586,9 +9802,8 @@ function lvNum(v) {
   const n = Number(v);
   return isNaN(n) ? null : n;
 }
-/* Header labels and sortable values for the log itself. The CELLS come from
-   `runRow`, which is unchanged -- this names what each column is worth so the
-   sort and the display cannot describe different things. */
+/* Header labels and sortable values for the log itself. Values correspond to
+   runRow; the selection and details controls are deliberately not sortable. */
 const RAW_COLS = [
   {key: 'pick', label: '', sortable: false, cls: 'pick'},
   {key: 'when', label: 'When', n: true, value: r => r.timestamp || ''},
@@ -9604,15 +9819,39 @@ const RAW_COLS = [
    title: 'grounded: found on the page. fields: correct against the field ground '
         + 'truth, where there is one',
    value: r => lvNum(r.grounded_pct)},
-  {key: 'status', label: 'Status', value: r => r.status || ''}
+  {key: 'status', label: 'Status', value: r => r.status || ''},
+  {key: 'details', label: 'Details', sortable: false}
 ];
 
+function runIdentity(r) {
+  return JSON.stringify([r._row, r.timestamp, r.file]);
+}
+
+function runDetails(r, jsonOpen) {
+  const fields = [
+    ['Timestamp', r.timestamp], ['Document', r.file], ['Run type', r.run_type],
+    ['Logged model', r.model], ['Extraction model', r.extract_model],
+    ['Extraction shape', r.extract_mode], ['Detail', r.detail], ['Status', r.status],
+    ['Reading time (s)', r.seconds], ['Extraction time (s)', r.extract_seconds],
+    ['Reading output tokens', r.tokens], ['Extraction output tokens', r.extract_tokens]
+  ].filter(([, value]) => value !== undefined && value !== null && value !== '');
+  return '<tr class="run-detail"><td colspan="' + RAW_COLS.length + '">'
+    + '<b>Saved run details</b><p class="note">Only values stored in this log row are shown. '
+    + 'Full Stress test settings and reports are in Stress test → History.</p><dl>'
+    + fields.map(([label, value]) => '<div><dt>' + esc(label) + '</dt><dd>'
+      + esc(String(value)) + '</dd></div>').join('') + '</dl>'
+    + '<details' + (jsonOpen ? ' open' : '') + '><summary>All saved values (JSON)</summary><pre>'
+    + esc(JSON.stringify(r, null, 2)) + '</pre></details></td></tr>';
+}
+
 function paintRunRows() {
+  const jsonOpen = runBody.querySelector('.run-detail details')?.open || false;
   const rows = (logData && logData.runs) || [];
   runBody.innerHTML = rows.length
     ? '<table class="queue">' + lvHead('raw', RAW_COLS)
-      + lvSorted('raw', rows, RAW_COLS).map(runRow).join('') + '</table>'
-    : '';
+      + lvSorted('raw', rows, RAW_COLS).map(r => runRow(r)
+        + (rawExpanded === runIdentity(r) ? runDetails(r, jsonOpen) : '')).join('') + '</table>'
+    : '<p class="note">No runs have been logged yet.</p>';
   const n = rawPicked.size;
   rawSel.textContent = n ? n + ' row(s) selected — deleting archives them to '
                            + 'logs/runs.deleted.csv'
@@ -9620,6 +9859,16 @@ function paintRunRows() {
   rawDelete.disabled = !n || logBusy;
   rawNone.disabled = !n || logBusy;
 }
+
+runBody.addEventListener('click', ev => {
+  const button = ev.target.closest ? ev.target.closest('button[data-run-detail]') : null;
+  if (!button) return;
+  const row = ((logData && logData.runs) || []).find(r => r._row === Number(button.dataset.runDetail));
+  if (!row) return;
+  rawExpanded = rawExpanded === runIdentity(row) ? null : runIdentity(row);
+  paintRunRows();
+  runBody.querySelector('button[data-run-detail="' + Number(row._row) + '"]')?.focus({preventScroll: true});
+});
 
 runBody.addEventListener('change', ev => {
   const box = ev.target.closest ? ev.target.closest('input[data-pick]') : null;
@@ -9680,17 +9929,52 @@ rawDelete.addEventListener('click', async () => {
    hit, where a fourth tab left every pane hidden with the button highlighted and
    no error anywhere. A tab and its pane are one thing; naming them in two places
    means one is eventually forgotten. */
-logTabs.addEventListener('click', ev => {
-  const btn = ev.target.closest ? ev.target.closest('button[data-panel]') : null;
-  if (!btn) return;
-  logTabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
-  const want = btn.dataset.panel;
+function paintLogScope() {
+  const t = (logData && logData.totals) || {};
+  const rows = (logData && logData.runs) || [];
+  const history = currentLogGroup === 'history';
+  logViewNote.textContent = history
+    ? 'Individual logged runs. Summary filters above do not apply here.'
+    : 'Aggregated results using the summary filters above. Open Run history to inspect individual runs.';
+  rawScope.textContent = 'Showing the latest ' + rows.length + ' of ' + (t.logged ?? rows.length)
+    + ' logged rows (up to 50). Summary filters do not hide these rows. Download CSV for the complete log.';
+  lvEmpty.hidden = history;
+  runStats.hidden = history;
+}
+
+function showLogPanel(want) {
+  const selected = logTabs.querySelector('button[data-panel="' + want + '"]');
+  if (!selected) return;
+  currentLogGroup = selected.dataset.group;
+  lastLogPanel[currentLogGroup] = want;
+  let count = 0;
   logTabs.querySelectorAll('button[data-panel]').forEach(b => {
     const name = b.dataset.panel;
+    const active = name === want;
+    b.hidden = b.dataset.group !== currentLogGroup;
+    if (!b.hidden) count++;
+    b.classList.toggle('on', active);
+    b.setAttribute('aria-pressed', String(active));
     const el = document.getElementById('panel' + name[0].toUpperCase() + name.slice(1));
-    if (el) el.hidden = name !== want;
+    if (el) el.hidden = !active;
   });
+  logTabs.hidden = count < 2;
+  logGroups.querySelectorAll('button[data-log-group]').forEach(b => {
+    const active = b.dataset.logGroup === currentLogGroup;
+    b.classList.toggle('on', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
+  paintLogScope();
+}
+logGroups.addEventListener('click', ev => {
+  const button = ev.target.closest ? ev.target.closest('button[data-log-group]') : null;
+  if (button) showLogPanel(lastLogPanel[button.dataset.logGroup]);
 });
+logTabs.addEventListener('click', ev => {
+  const button = ev.target.closest ? ev.target.closest('button[data-panel]') : null;
+  if (button) showLogPanel(button.dataset.panel);
+});
+showLogPanel(lastLogPanel[currentLogGroup]);
 
 lvFilters.addEventListener('click', ev => {
   const chip = ev.target.closest ? ev.target.closest('.lv-chip') : null;
@@ -10334,7 +10618,7 @@ function tmPass(key, pass, labels, unit, noun, title, hint, t) {
           : forced.length
           ? '<p class="note"><b>Nothing left to place against a document type.</b> '
             + 'In force: ' + forced.join(' &middot; ')
-            + '. Clear a chip above, or press <b>Reset</b>.</p>'
+            + '. Clear a chip above, or press <b>Reset filters</b>.</p>'
           : '<p class="note">No run in view could be placed against a document '
             + 'type. The type comes from the benchmark manifest for a fixture and '
             + 'from the run&rsquo;s own classification otherwise, so an upload '
@@ -12142,7 +12426,10 @@ window.addEventListener('paste', e => {
 }));
 
 clearBtn.addEventListener('click', () => {
-  if (controller) controller.abort();
+  if (controller || fxBusy) return;
+  setReadStatus('ready');
+  setTestStatus('fx', 'ready');
+  if (fxNote) fxNote.textContent = '';
   text = ''; fileInput.value = '';
   // The folder picker was left selected here, so a "cleared" page would still
   // run whatever was chosen in it.
@@ -12165,7 +12452,9 @@ copyBtn.addEventListener('click', async () => {
   copyBtn.textContent = 'Copied';
   setTimeout(() => copyBtn.textContent = 'Copy', 1200);
 });
-stopBtn.addEventListener('click', () => { if (controller) controller.abort(); });
+stopBtn.addEventListener('click', () => {
+  if (controller) { setReadStatus('stopping'); controller.abort(); }
+});
 
 /* ---------- streaming run ---------- */
 /* ---------- one read driver, two buttons ----------
@@ -12185,7 +12474,7 @@ stopBtn.addEventListener('click', () => { if (controller) controller.abort(); })
    `extract=0`, which the route already understands -- it is what a read-only
    random-test round sends. */
 async function startRead(opts) {
-  if (rtRows.length) { rtRows = []; rtPaint(); }
+  if (rtRows.length) { rtRows = []; setTestStatus('rt', 'ready'); rtPaint(); }
   // The read floor on screen, before the read that will be judged by it. The
   // change handler has almost always sent it already; this makes "the floor this
   // run used" the one the reader is looking at rather than the one that happened
@@ -12377,7 +12666,9 @@ async function startRead(opts) {
       }
     }
     paint();
+    setReadStatus('completed');
   } catch (err) {
+    setReadStatus(err.name === 'AbortError' ? 'stopped' : 'failed');
     stopTicker();
     pagebar.textContent = '';
     if (err.name === 'AbortError') {
@@ -12404,6 +12695,8 @@ async function startRead(opts) {
    looking at is a control lying about what it will do. `paintServer` owns the
    Workspace button's enabled state otherwise, so it is asked rather than set. */
 function readBusy(on) {
+  if (on) setReadStatus('running');
+  clearBtn.disabled = on;
   if (on) { runBtn.disabled = true; if (ocRun) ocRun.disabled = true; }
   else { paintServer(); paintOcrOnly(); }
   stopBtn.disabled = !on;
@@ -12482,11 +12775,14 @@ if (ocRun) {
     if (!ocCase.value) return;
     startRead({ case: ocCase.value, detail: ocDetail.value, extract: false });
   });
-  ocStop.addEventListener('click', () => { if (controller) controller.abort(); });
+  ocStop.addEventListener('click', () => {
+    if (controller) { setReadStatus('stopping'); controller.abort(); }
+  });
 }
 
 function paintFieldsOnly() {
   if (!fxRun) return;
+  clearBtn.disabled = fxBusy || !!controller;
   // Vision is deliberately NOT required, unlike the workspace's Run button:
   // pass 2 sends text and gets text back, so a model that cannot read a page can
   // still be measured on the form -- and measuring exactly that is what this
@@ -12540,6 +12836,7 @@ async function runFieldsOnly() {
   const id = fxCase.value;
   if (!id || fxBusy) return;
   fxBusy = true; paintFieldsOnly();
+  setTestStatus('fx', 'running');
   fxNote.classList.remove('err');
   fxNote.textContent = 'Extracting from ' + id + '.md …';
 
@@ -12547,6 +12844,7 @@ async function runFieldsOnly() {
   if (t.error) {
     fxNote.textContent = t.error; fxNote.classList.add('err');
     fxBusy = false; paintFieldsOnly();
+    setTestStatus('fx', 'failed');
     return;
   }
 
@@ -12579,7 +12877,8 @@ async function runFieldsOnly() {
   const r = await extractInto({ case: id, from_truth: true }) || {};
   fxBusy = false; paintFieldsOnly();
   fxNote.classList.toggle('err', !!r.error);
-  if (r.error) { fxNote.textContent = r.error; return; }
+  if (r.error) { setTestStatus('fx', 'failed'); fxNote.textContent = r.error; return; }
+  setTestStatus('fx', 'completed');
   const o = (r.field_score || {}).overall || {};
   fxNote.textContent = modeLabel(r) + ' · ' + r.seconds + 's · ' + (r.model || '')
     + (o.expected
@@ -12868,7 +13167,7 @@ function stPaintMode() {
   stEl('stLockRow').style.display = m === 'classify' ? 'none' : '';
   stEl('stStrategyField').style.display = m === 'classify' ? 'none' : '';
   // Classification writes no row, so the box is not offered there.
-  const busy = !stStop.disabled;
+  const busy = stRunning;
   stEl('stSaveLog').disabled = m === 'classify' || busy;
   stEl('stSaveLogNote').textContent = m === 'classify'
     ? '— not for classification: a glued file is no benchmark case'
@@ -12890,7 +13189,7 @@ function stPaintBatch() {
     ? extractInfo.kind === 'vllm' : readVllm;
   const m = mode.value;
   const ok = m === 'ocr' ? readVllm : m === 'full' ? (readVllm || extractVllm) : extractVllm;
-  const busy = !!document.getElementById('stStop') && !document.getElementById('stStop').disabled;
+  const busy = stRunning;
   if (!ok && !busy) stBatchOn = false;
   btn.disabled = !ok || busy;
   btn.classList.toggle('on', stBatchOn);
@@ -12913,7 +13212,7 @@ function stPaintServer() {
   const sample = document.getElementById('stSample');
   if (!btn) return;
   const vllm = server && server.kind === 'vllm';
-  const busy = !!document.getElementById('stStop') && !document.getElementById('stStop').disabled;
+  const busy = stRunning;
   const extractVllm = !!(extractInfo && extractInfo.separate && extractInfo.kind === 'vllm');
   btn.disabled = !(vllm || extractVllm) || busy;
   sample.disabled = !(vllm || extractVllm) || busy;
@@ -12927,6 +13226,7 @@ function stPaintServer() {
   const monVllm = vllm || !!(extractInfo && extractInfo.separate && extractInfo.kind === 'vllm');
   if (monBtn) {
     monBtn.disabled = !monVllm;
+    monBtn.title = monVllm ? 'Show live server metrics on any tab' : 'Live monitor requires a vLLM server';
     if (!monVllm && typeof monState !== 'undefined' && monState && monState.on) monSet(false);
     if (monVllm && !vllm) document.getElementById('stMetricsState').textContent =
       '— the reading server is not vLLM; the live monitor and the stress sampler watch the '
@@ -12937,12 +13237,6 @@ function stPaintServer() {
   }
   if (typeof monState !== 'undefined' && monState && monState.on) { monSync(); paintMon(); }
   stPaintBatch();
-}
-
-function stShowing(on) {
-  stWanted = on;
-  if (on) rtWanted = false;
-  paintMain();
 }
 
 function showStressView(view) {
@@ -12960,7 +13254,9 @@ function showStressView(view) {
 }
 
 function stBusy(on) {
-  if (on) stStopping = false;
+  stRunning = on;
+  if (on) { stStopping = false; setTestStatus('st', 'running'); }
+  stClear.disabled = on;
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
   stEl('stSaveLog').disabled = on || stMode.value === 'classify';
@@ -13134,8 +13430,7 @@ function stAlertsHtml(alerts) {
 }
 
 function stPaint() {
-  // The live monitor keeps the card up on its own, with or without a report.
-  stShowing(!!(stState || stSnapshot || (typeof monState !== 'undefined' && monState.on)));
+  paintMain();
   if (!stState && !stSnapshot) {
     stOut.innerHTML = '<p class="note">Run a stress test to see its report here, or open History to review a saved run.</p>';
     return;
@@ -13451,6 +13746,7 @@ async function stStart() {
           stNote.textContent = (ev.phase === 'warmup' ? 'Warming up — ' : 'Running — ')
             + ev.done + '/' + ev.total;
         } else if (ev.event === 'done') {
+          setTestStatus('st', ev.stopped ? 'stopped' : 'completed');
           stState.report = ev.report;
           stState.monitor_samples = ev.monitor_samples;
           stState.monitor_samples_total = ev.monitor_samples_total;
@@ -13473,10 +13769,13 @@ async function stStart() {
       if (now - lastPaint > 300) { lastPaint = now; stPaint(); }
     }
   } catch (err) {
+    setTestStatus('st', 'failed');
     stNote.textContent = err.name === 'AbortError'
       ? 'Hung up on the test; the server may still be running it.' : err.message;
     stNote.classList.add('err');
   } finally {
+    if (['running', 'stopping'].includes(stEl('stStatus').dataset.state))
+      setTestStatus('st', 'failed');
     if (stState) stState.draining = 0;
     stAbort = null;
     stBusy(false);
@@ -13499,15 +13798,21 @@ if (stRun) {
   const stop = async () => {
     if (!stAbort || stStopping) return;
     stStopping = true;
+    setTestStatus('st', 'stopping');
     stStop.disabled = stStop2.disabled = true;
     stNote.textContent = 'Stopping — no new job starts, reads in flight are hung up…';
-    try { await fetch('/api/stress/stop', { method: 'POST' }); } catch { stAbort.abort(); }
+    try {
+      const res = await fetch('/api/stress/stop', { method: 'POST' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+    } catch { if (stAbort) stAbort.abort(); }
   };
   stStop.addEventListener('click', stop);
   stStop2.addEventListener('click', stop);
   stClear.addEventListener('click', () => {
     if (stAbort) return;
     stState = null; stSnapshot = null; stNote.textContent = '';
+    stNote.classList.remove('err');
+    setTestStatus('st', 'ready');
     stPaint();
   });
   stFetchBtn.addEventListener('click', async () => {
@@ -13527,7 +13832,7 @@ if (stRun) {
     } catch (err) {
       stNote.textContent = err.message;
       stNote.classList.add('err');
-      stShowing(true);
+      paintMain();
     } finally {
       stPaintServer();
       stPaint();
@@ -13656,13 +13961,15 @@ function monSet(on) {
   monState.on = on;
   monEach(p => clearTimeout(p.timer));
   monToggleBtn.textContent = on ? 'Stop live monitor' : 'Start live monitor';
+  monToggleBtn.classList.toggle('on', on);
+  monToggleBtn.setAttribute('aria-pressed', String(on));
+  monToggleBtn.setAttribute('aria-expanded', String(on));
+  stEl('monCard').hidden = !on;
   if (on) {
     monState.panes = {};
-    stShowing(true);
     monSync();
   }
   paintMon();
-  if (!on) stPaint();
 }
 
 /* One series per tile, so no legend: the tile label names it. The line is the
@@ -13710,9 +14017,10 @@ function paintMon() {
   const panes = Object.values(monState.panes)
     .sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
   const exRow = stEl('monGpuExtractRow');
-  if (exRow) exRow.style.display = monTargets().length > 1 ? '' : 'none';
+  if (exRow) exRow.style.display = monTargets().some(t => t.key === 'extract') ? '' : 'none';
   if (!monState.on && !panes.some(p => p.last)) { monOut.innerHTML = ''; return; }
-  monOut.innerHTML = panes.map(p => monPaneHtml(p, panes.length > 1)).join('');
+  monOut.innerHTML = panes.map(p => '<section class="mon-server">'
+    + monPaneHtml(p, panes.length > 1) + '</section>').join('');
 }
 
 function monPaneHtml(p, many, on = monState.on) {

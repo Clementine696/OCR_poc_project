@@ -1529,7 +1529,7 @@ fifty of them, which a 380px pane cannot show without clipping the numbers the f
 exists to produce.
 
 The two never share the screen, and the Read button is disabled while a test is running.
-**Clear** on the card — or simply reading a document by hand — puts the Result card back;
+**Clear results** empties the Random test card; choose Workspace, OCR only or Fields only to return to document results.
 nothing is lost, because every round is a real run and is in the run log.
 
 ### Contest — CLI only
@@ -1642,9 +1642,26 @@ The **Stress test** tab benchmarks the **server**: a queue of jobs worked by as 
 concurrent requests as you set, and one report at the end. It uses the reading and extraction
 models selected in the Workspace and never switches them.
 
+The setup shows **Mode**, **Concurrent**, **Queue (jobs)** and **Files to test** by default.
+Open **Advanced settings** for warm-up, time limit, extraction options, seed, cache,
+batching, metrics sampling and logging. Advanced settings start collapsed; closing the
+section keeps its selected values and still applies them to the next run.
+
+The selected menu determines the results shown on the right. Switching to Workspace,
+OCR only or Fields only shows the document results; Random test and Stress test retain
+their reports in their own tabs. A running test continues updating its report in the
+background without changing the selected view.
+
+Workspace, OCR only, Fields only, Random test and Stress test keep their run controls in
+a footer outside the scrolling settings. On narrow screens the footer docks to the bottom of the window.
+Its status shows **Ready**, **Running**, **Stopping**, **Completed**, **Stopped** or
+**Failed**. **Clear results** empties the current report and resets its status to Ready;
+it is disabled until the active run finishes and does not delete saved History or run logs.
+Workspace uses **Clear workspace**, since it also removes the selected input file.
+
 | Setting | What it does |
 |---|---|
-| **What each job runs** | **OCR only** — read one document, score the transcript. **Extract only** — pass 2 on a ground-truth transcript, score the fields. **Classify 100+ pages** — glue ground-truth transcripts into one long file, split it into documents and classify each one, score the grouping and the types. **Full pipeline** — read, then extract, with the two stages timed apart |
+| **Mode** | **OCR only** — read one document, score the transcript. **Extract only** — pass 2 on a ground-truth transcript, score the fields. **Classify 100+ pages** — glue ground-truth transcripts into one long file, split it into documents and classify each one, score the grouping and the types. **Full pipeline** — read, then extract, with the two stages timed apart |
 | **Concurrent** | how many requests are in flight at once (1–256) |
 | **Queue (jobs)** | how many jobs in total; the concurrent workers take them in order |
 | **Warm-up** | jobs run first at the same concurrency and left out of every figure |
@@ -1752,9 +1769,11 @@ requested** — the route refuses with `409` as well.
 
 ### Live monitor
 
-**Start live monitor** (same box, vLLM only) reads `/metrics` every few seconds — 2 by default,
-set beside the button — whether or not a stress test is running, and shows it at the top of the
-Stress test card with a line of the recent readings under each figure.
+**Start live monitor** is in the top-right page menu beside the theme selector (vLLM only).
+It reads `/metrics` every few seconds — 2 by default — whether or not a stress test is running.
+Its own panel below the page header stays available across all tabs without replacing their
+results. Set the refresh interval and GPU exporter URLs in that panel; **Stop live monitor**
+stops polling and hides the panel. Each figure includes a line of recent readings.
 
 The polling is throttled at both ends. The server scrapes one vLLM at most once per
 `MONITOR_MIN_INTERVAL` seconds (default 2) and hands the last reading to any call inside that
@@ -1904,13 +1923,35 @@ Pick **Light** for projecting or screenshotting — it is what the Summary panel
 shown in. Light is a soft grey ground with an off-white card rather than white-on-white, so it
 does not glare on a projector.
 
-### Reading the card: ten panels, sortable, filterable
+### Reading the card: four groups, twelve panels
 
-The card is twelve panels, and only the last of them is the log:
+The Run log stays at the bottom of the page. Its twelve existing panels are grouped as:
+
+| Group | Panels |
+|---|---|
+| **Overview** | the presentation summary (opens by default) |
+| **Compare models** | Full rank, Best reading, Best extraction |
+| **Run history** | the latest 50 unfiltered log rows, with per-row **Details** and saved JSON |
+| **Advanced analysis** | Per document, Weak spots, Model × type, Time × Doc × Accuracy, Errors, Trend, Tokens |
+
+Switching groups remembers the last panel used in each group. Refreshing results preserves
+that selection. Full Stress test settings and reports remain under **Stress test → History**.
+
+All existing filters remain available. Pipeline, Reading model, Extraction model and
+Extraction shape are shown directly. **Advanced filters** contains Document, Reading engine,
+quantisation, engine versions, Detail, Hardware, Start, Run kind, Outcome, Read floor,
+Runs averaged, Drop single-source failures, and Exclude weak models (Overview only).
+Active filters remain visible as badges when Advanced filters is closed; **Reset filters**
+resets the whole summary view. Chip behaviour is unchanged: click to include, again to
+exclude, again to clear. Run history explicitly ignores the summary filters, and **Download
+CSV** exports the complete log. Details show values actually saved in each row; they do not
+reconstruct settings that were not logged.
+
+The twelve panels retain their calculations:
 
 | Panel | |
 |---|---|
-| **Summary** | the six tables worth showing, at presentation size, with two banner cards above them. Opens by default |
+| **Overview** | the six tables worth showing, at presentation size, with two banner cards above them. Opens by default |
 | **Full rank** | best and worst per model and per document, for each pass. The chips above it are each document's best score |
 | **Best reading** | pass 1 per setting — which model, backend, Detail and profile to read a page with |
 | **Best extraction** | pass 2 per setting — which model and shape to extract fields with |
@@ -1921,7 +1962,7 @@ The card is twelve panels, and only the last of them is the log:
 | **Errors** | what is failing, ranked on the failures rather than folded into an accuracy |
 | **Trend** | accuracy and error rate over **time**, one small chart per model or per document, for either pass, by day, by week, or by **run number** (every N consecutive runs of that model or document — runs 1–10, 11–20, …; N is editable, default 10). Over every run the filters match — not the recent-runs window — so a model whose results moved as the code, config or server changed shows it |
 | **Tokens** | tokens **in** (prompt, page image included) and **out** (generated) per document, for reading (per Detail) and extraction (per shape, every pass-2 request of the file, classify included), **by model** (each document counted once) or **by document**. Compiled from the log on every refresh, so a model you run shows up as soon as its run is logged. Extraction input exists only for runs from 2026-10-15 on |
-| **Raw data** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
+| **Run history** | the rows of `logs/runs.csv` themselves — unfiltered, and the only place a run can be deleted |
 
 **Every column sorts**, including the one each table is ranked by. Click a header to sort
 descending, again for ascending. The highlighted row stays the best by the table's own
@@ -1929,7 +1970,7 @@ ranking however you sort it, so re-ordering never re-labels the winner. Rows wit
 sort — *not scored*, *no complete run* — go last in both directions: no score is not a low
 score.
 
-#### The Summary panel
+#### The Overview panel
 
 Built for showing — projected, or read from across a room — so everything on it is a size up
 from the rest of the card. Two banner cards, then six numbered tables.
@@ -2043,7 +2084,7 @@ means and the window, exactly as if it had not been run — which is the only re
 which the question above has an answer. The chip counts are taken over the **whole** log
 rather than over what survived, so a value you have just dropped is still there to put back.
 
-**The Raw data panel is never filtered.** It is the log, and a row nobody can see is a row
+**The Run history panel is never filtered.** It is the log, and a row nobody can see is a row
 nobody can delete. If a filter matches nothing, a banner says so and names what is in force —
 the tables go empty, the log does not.
 
@@ -2098,7 +2139,7 @@ changed, so the tables always report the rule you are looking at.
 
 #### Deleting a run
 
-Tick rows in **Raw data** and press **Delete selected**. That is the one control on this card
+Tick rows in **Run history** and press **Delete selected**. That is the one control on this card
 that changes the file: the rows leave `runs.csv` and therefore every table, every mean and
 every count.
 
