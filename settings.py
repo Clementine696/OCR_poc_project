@@ -1023,7 +1023,7 @@ SEGMENT_MAX_TOKENS = config.env_int("SEGMENT_MAX_TOKENS", 200, minimum=32)
 # Above it the file is not read as one document any more (2026-09-16): it goes
 # to `SEGMENT_CHAT`, and only falls back to one document where that is off or
 # there is no model server to ask.
-SEGMENT_MAX_PAGES = config.env_int("SEGMENT_MAX_PAGES", 20, minimum=2)
+SEGMENT_MAX_PAGES = config.env_int("SEGMENT_MAX_PAGES", 5, minimum=2)
 # Past that cap, walk the file page by page instead of asking about all of it at
 # once: one short question per unsettled boundary, carrying the document so far
 # as the conversation, and the memory reset the moment a document ends.

@@ -2947,7 +2947,7 @@ which is what the truth file describes and what the extractor is scored on.
 ### A long file is walked instead of asked about all at once
 
 The question above carries a digest of every page, so its prompt grows with the file. Past
-`SEGMENT_MAX_PAGES` (20) it is not asked at all: the file is **walked** instead, one short
+`SEGMENT_MAX_PAGES` (5) it is not asked at all: the file is **walked** instead, one short
 question per unsettled boundary, carrying the document so far as the conversation — and the
 conversation is reset the moment a document ends, so each question is about one document
 rather than about the file. The prompt is then bounded by the length of a document, and a
