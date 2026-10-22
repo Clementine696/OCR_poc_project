@@ -5713,7 +5713,15 @@ def context_set():
 def servers_list():
     """Configured endpoints, what each one is, and which is active."""
     force = request.args.get("probe") == "1"
-    response = jsonify(backends.overview(force=force))
+    previous = backends.known() or {}
+    previous_model = (backends._chosen_map().get(backends.active_url())
+                      or previous.get("model"))
+    overview = backends.overview(force=force)
+    current = overview["server"]
+    if (force and current.get("available") and current.get("model")
+            and current["model"] != previous_model):
+        set_ocr_profile(backends.profile_for_model(current["model"]))
+    response = jsonify(**overview, ocr_profile=ocr_profile())
     response.headers["Cache-Control"] = "no-store"
     return response
 

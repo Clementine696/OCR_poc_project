@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="th">
 <head>
 <meta charset="utf-8">
@@ -188,16 +188,64 @@ document.addEventListener("DOMContentLoaded", function () {
     font-family: "Segoe UI", "Noto Sans Thai", system-ui, sans-serif;
     line-height: 1.55;
   }
-  /* The result panel is the working space, so the page runs wide and the
-     controls are kept to a fixed, narrow column beside it. */
+  /* Leave room for the result beside the adjustable controls. */
   .wrap { max-width: 1720px; margin: 0 auto; }
   header { margin-bottom: 16px; }
-  .page-head { display: flex; align-items: flex-start; gap: 16px;
-    flex-wrap: wrap; justify-content: space-between; }
+  .page-head { position: sticky; top: 0; z-index: 40; display: flex; align-items: flex-start;
+    gap: 16px; flex-wrap: wrap; justify-content: space-between; padding: 12px 0;
+    background: var(--bg); border-bottom: 1px solid var(--border); }
+  .global-model-area { position: relative; flex: 1 1 680px; max-width: 940px; min-width: 0; }
+  .model-toolbar { display: flex; align-items: stretch; gap: 8px; }
+  .model-summaries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1; min-width: 0; gap: 8px; }
+  .model-summary { display: flex; align-items: center; gap: 8px; min-width: 0; height: 38px;
+    padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; }
+  .model-summary-head { display: contents;
+    font-size: .68rem; color: var(--muted); font-weight: 600; }
+  .model-summary-head > span:first-child { flex-shrink: 0; white-space: nowrap; }
+  .model-health { order: 3; flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
+    background: currentColor; font-size: 0; }
+  .model-summary strong, .model-summary code { display: block; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .model-summary strong { order: 1; flex: 1; min-width: 0; font-size: .78rem; margin: 0; }
+  .model-summary code { order: 2; max-width: 36%; flex-shrink: 1; font-size: .65rem; color: var(--muted); }
+  .model-health[data-ready="true"] { color: var(--ok); }
+  .model-health[data-ready="false"] { color: var(--danger); }
+  #recheck { align-self: center; min-height: 38px; font-size: .78rem; }
+  .model-settings { position: static; }
+  .model-settings > summary { list-style: none; cursor: pointer; font-size: .78rem; padding: 6px 12px;
+    border: 1px solid var(--border); border-radius: 8px; }
+  .model-settings > summary::-webkit-details-marker { display: none; }
+  .model-settings[open] > summary { border-color: var(--accent); background: var(--accent-soft); }
+  .model-settings-panel { position: absolute; right: 0; top: calc(100% + 8px);
+    width: min(740px, calc(100vw - 36px)); max-height: 60dvh; overflow: auto;
+    padding: 18px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.25); }
+  .model-settings-panel .pipe-h { margin-top: 0; padding-top: 0; border-top: 0; }
+  .model-settings-panel #serverGroupNote { display: none; }
+  @media (max-width: 700px) {
+    .page-head { gap: 8px; padding: 8px 0; }
+    .page-head h1 { font-size: 1.1rem; }
+    .page-head .sub { display: none; }
+    .global-model-area { flex-basis: 100%; }
+    .model-toolbar, .model-summaries { gap: 6px; }
+    .model-summaries { grid-template-columns: minmax(0, 1fr); }
+    .model-summary { padding: 0 8px; }
+    .model-summary-head { font-size: .62rem; gap: 4px; }
+    .model-summary strong { font-size: .76rem; }
+    .model-summary code { font-size: .64rem; }
+    #recheck { padding: 6px 8px; font-size: .72rem; }
+    .model-settings-panel { width: 100%; }
+  }
   .theme-seg button { padding: 5px 12px; font-size: .78rem; }
-  .page-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .page-actions { display: flex; align-items: center; justify-content: flex-end;
+    gap: 10px; flex-wrap: wrap; margin-top: 8px; }
   #monToggle { padding: 5px 12px; font-size: .78rem; }
   #monToggle.on { background: var(--accent-soft); border-color: var(--accent); }
+  @media (max-width: 700px) {
+    .page-actions { gap: 6px; margin-top: 6px; }
+    .model-settings > summary, #monToggle { padding: 5px 8px; font-size: .72rem; }
+    .theme-seg button { padding: 4px 8px; font-size: .72rem; }
+  }
   .monitor-card { margin-bottom: 18px; }
   .monitor-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .monitor-settings { margin-top: 10px; }
@@ -210,15 +258,32 @@ document.addEventListener("DOMContentLoaded", function () {
   .sub { color: var(--muted); font-size: 0.9rem; }
   .sub code { background: var(--accent-soft); padding: 2px 6px; border-radius: 5px; }
   /* minmax(0, 1fr), not 1fr: an auto minimum lets wide cell content stretch the page. */
-  .grid { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 18px; align-items: start; }
-  @media (max-width: 1080px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .grid { --sidebar-size: clamp(320px, var(--sidebar-width, 420px), min(640px, calc(100% - 498px)));
+    position: relative; display: grid; grid-template-columns: var(--sidebar-size) minmax(0, 1fr);
+    gap: 18px; align-items: start; }
+  .sidebar-resize { position: absolute; left: calc(var(--sidebar-size) + 3px);
+    top: 0; bottom: 0; width: 12px; cursor: col-resize; touch-action: none;
+    border-radius: 6px; z-index: 2; }
+  .sidebar-resize::before { content: ''; position: absolute; left: 5px; width: 2px;
+    top: 12px; bottom: 12px; background: var(--border); border-radius: 2px; }
+  .sidebar-resize::after { content: ''; position: absolute; top: 28px; left: 3px;
+    width: 6px; height: 28px; border-left: 2px solid var(--muted);
+    border-right: 2px solid var(--muted); border-radius: 2px; }
+  .sidebar-resize:hover, .sidebar-resize:focus-visible,
+  .resizing-sidebar .sidebar-resize { background: var(--accent-soft); }
+  .sidebar-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .resizing-sidebar, .resizing-sidebar * { cursor: col-resize !important; user-select: none !important; }
+  @media (max-width: 1080px) {
+    .grid { grid-template-columns: minmax(0, 1fr); }
+    .sidebar-resize { display: none; }
+  }
   .card {
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 14px; padding: 18px;
   }
   /* The controls follow the result down the page: the side pane stays in view while
      a long transcript is being read. */
-  .side { position: sticky; top: 18px; max-height: var(--side-height, calc(100dvh - 36px));
+  .side { min-width: 0; position: sticky; top: var(--sidebar-top, 18px); max-height: var(--side-height, calc(100dvh - 36px));
     display: flex; flex-direction: column; overflow: hidden; }
   .side-scroll { min-height: 0; overflow-y: auto; }
   .test-actions { flex-shrink: 0; margin: 14px -18px -18px; padding: 12px 18px;
@@ -825,17 +890,49 @@ document.addEventListener("DOMContentLoaded", function () {
   #rtOut { margin-top: 10px; }
   /* Include/exclude chips. An excluded model stays visible and greyed rather
      than disappearing: a pool you cannot see is a pool you cannot put back. */
-  .st-metrics-box { margin-top: 16px; border: 1px solid var(--border); border-radius: 10px;
-    padding: 10px 12px; }
-  .st-metrics-head { font-size: .8rem; }
-  .st-advanced { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; }
-  .st-advanced > summary { cursor: pointer; padding: 10px 12px; font-size: .82rem; font-weight: 600; }
-  .st-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 10px; }
-  .st-advanced-body { padding: 0 12px 12px; border-top: 1px solid var(--border); }
   .st-settings-title { font-size: .78rem; margin: 16px 0 8px; color: var(--muted); }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) .row { align-items: flex-end; gap: 12px; }
   #stSetup > .row { margin-top: 12px; }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) .field { gap: 6px; }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) :is(input[type=number], input[type=text], select) {
+    width: 100%; min-width: 0; height: 40px; padding: 8px 12px;
+    font: inherit; font-variant-numeric: tabular-nums; line-height: 1.4;
+    color: var(--text); background: var(--tint);
+    border: 1px solid var(--border); border-radius: 9px;
+  }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) input::placeholder { color: var(--muted); opacity: .8; }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) button { min-height: 40px; padding: 8px 12px; font-size: .8rem; font-weight: 600; }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) :is(input[type=number], input[type=text], select):hover:not(:disabled),
+  :is(.side-scroll, .model-settings-panel, .monitor-card) button:hover:not(:disabled):not(.on) { border-color: var(--muted); }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) :is(input, select, button):focus-visible,
+  .model-settings > summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  :is(.side-scroll, .model-settings-panel, .monitor-card) :is(input[type=number], input[type=text], select):disabled { opacity: .5; cursor: not-allowed; }
+  .side-scroll label.check { min-height: 40px; padding: 8px 12px; border: 1px solid var(--border);
+    border-radius: 9px; background: var(--tint); color: var(--text); cursor: pointer; }
+  .side-scroll label.check:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+  .side-scroll input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--accent); flex-shrink: 0; }
+  #stExtrasField { align-self: flex-end; min-height: 40px; padding: 8px 12px; gap: 10px;
+    border: 1px solid var(--border); border-radius: 9px; background: var(--tint);
+    color: var(--text); font-size: .8rem; cursor: pointer; }
+  #stExtrasField:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+  #stExtrasField:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+  #stSetup .row:has(#stExtrasField) > label { flex-basis: 110px !important; }
   #stFilesField > .row { margin-top: 8px; }
-  #stFiles { max-height: 120px; }
+  .st-file-sets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .st-file-sets button { min-width: 0; white-space: normal; }
+  .st-file-controls { display: flex; align-items: stretch; gap: 6px; }
+  .st-file-controls .st-file-sets { flex: 1; }
+  #stFileAdvanced { flex-shrink: 0; }
+  #stFileAdvanced.on { background: var(--accent-soft); border-color: var(--accent); }
+  .st-options { display: grid; gap: 8px; margin-top: 16px; }
+  .st-option { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px; font-size: .82rem; cursor: pointer; }
+  .st-option input, #stExtras { width: 17px; height: 17px; margin: 0;
+    accent-color: var(--accent); flex-shrink: 0; }
+  .st-option:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); }
+  .st-option:has(input:disabled) { opacity: .55; cursor: not-allowed; }
   .st-check { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
     color: var(--muted); }
   .st-plan { font-size: .8rem; color: var(--muted); margin: 10px 0 0; line-height: 1.5; }
@@ -919,9 +1016,12 @@ document.addEventListener("DOMContentLoaded", function () {
              padding: 3px 9px 3px 7px; cursor: pointer; user-select: none; }
   .rt-chip input { margin: 0; }
   .rt-chip.off { opacity: .45; text-decoration: line-through; }
-  .rt-files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-              gap: 6px; max-height: 260px; overflow-y: auto; margin-top: 8px; }
-  .rt-files .rt-chip { border-radius: 6px; overflow-wrap: anywhere; }
+  /* Five document rows, with wheel scrolling contained inside the picker. */
+  .rt-files { display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: 32px;
+              gap: 6px; max-height: 184px; overflow-y: auto; overscroll-behavior-y: contain;
+              margin-top: 8px; }
+  .rt-files .rt-chip { min-width: 0; border-radius: 6px; }
+  .rt-files .rt-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rt-files .rt-chip input { flex-shrink: 0; }
   /* The bottom toggle sits in a row of fields, so it has to line up with
      their boxes rather than with their labels. */
@@ -1547,7 +1647,94 @@ document.addEventListener("DOMContentLoaded", function () {
       <p class="sub">Full-page transcription via <span id="subKind">{{ server.kind or 'no server' }}</span> ·
         <code id="subUrl">{{ server.url }}</code></p>
     </div>
+    <div class="global-model-area">
+      <div class="model-toolbar" aria-label="Active model servers" aria-live="polite">
+        <div class="model-summaries">
+          <section class="model-summary" aria-label="OCR model">
+            <div class="model-summary-head"><span>OCR</span><span class="model-health" id="globalOcrHealth"></span></div>
+            <strong id="globalOcrModel">{{ server.model or 'No model' }}</strong>
+            <code id="globalOcrUrl">{{ server.url }}</code>
+          </section>
+          <section class="model-summary" aria-label="Extraction model">
+            <div class="model-summary-head"><span>EXTRACTION</span><span class="model-health" id="globalExtractHealth"></span></div>
+            <strong id="globalExtractModel">{{ extract.model or 'No model' }}</strong>
+            <code id="globalExtractUrl">{{ extract.url }}</code>
+          </section>
+        </div>
+        <button type="button" id="recheck" class="ghost-sm" title="Fetch the models currently served at both URLs">Refresh</button>
+      </div>
+      <p id="globalModelNotice" class="note err" role="alert" hidden></p>
     <div class="page-actions">
+      <details class="model-settings" id="globalModelSettings">
+        <summary>Model settings</summary>
+        <div class="model-settings-panel" aria-label="Model server settings">
+        <h3 class="pipe-h" id="serverGroupHead">Model server</h3>
+        <p class="note" id="serverGroupNote"></p>
+      <div class="row">
+        <label class="field" style="flex:1;min-width:200px">
+          <span id="serverFieldLabel">Model server</span>
+          <select id="endpointSel">
+            {% for e in endpoints %}
+            <option value="{{ e }}" {% if e == server.url %}selected{% endif %}>{{ e }}</option>
+            {% endfor %}
+            <option value="__custom__">Other address…</option>
+          </select>
+        </label>
+        <!-- Which engine the server is (2026-10-05). Auto detects it; pinned, it
+             is asked only that engine's requests, so a vLLM server is not sent
+             /props or /api/tags, and only vLLM is ever asked /metrics. -->
+        <label class="field" style="flex:0 0 auto;min-width:150px"
+               title="Auto detects the engine by probing /props, /api/tags, then /v1/models, and remembers what it found. Pinned, the server is asked only that engine's requests -- no 404s from probing the others. Only vLLM is ever asked /metrics.">
+          Server type
+          <select id="serverKindSel"></select>
+        </label>
+        <label class="field" id="modelField" style="flex:1;min-width:200px;display:none">
+          <span id="modelRole">Model &middot; reads the page</span>
+          <select id="modelSel"></select>
+        </label>
+        <!-- Pass 2 may run on a different model from pass 1. The two passes ask
+             for different things: reading Thai off an image, and mapping a
+             transcript onto a form. A model can be good at one and bad at the
+             other, and on this project's own fixtures the best extractor cannot
+             read a page at all. -->
+      </div>
+      <div class="row" id="customRow" style="display:none">
+        <input id="endpointCustom" type="text" placeholder="http://127.0.0.1:8000" style="flex:1">
+        <button id="endpointUse" class="ghost-sm">Use</button>
+      </div>
+      <!-- Pass 2 may run on a server of its own (2026-10-01): page images go to
+           the server above, extraction to this one. "Same as the reading
+           server" is the one-URL setup -- local llama-server or Ollama -- and
+           the default. Any OpenAI-compatible server works on either side. -->
+      <div class="row">
+        <label class="field" style="flex:1;min-width:200px">
+          Extraction server
+          <select id="extractEndpointSel"></select>
+        </label>
+        <label class="field" id="extractKindField" style="flex:0 0 auto;min-width:150px;display:none"
+               title="The extraction server's engine. Auto detects it; pinned, it is asked only that engine's requests.">
+          Server type
+          <select id="extractKindSel"></select>
+        </label>
+        <label class="field" id="extractModelField" style="flex:1;min-width:200px;display:none">
+          Model &middot; extracts fields
+          <select id="extractModelSel"></select>
+        </label>
+      </div>
+      <div class="row" id="extractCustomRow" style="display:none">
+        <input id="extractEndpointCustom" type="text" placeholder="http://127.0.0.1:8001" style="flex:1">
+        <button id="extractEndpointUse" class="ghost-sm">Use</button>
+      </div>
+      <p class="note" id="extractServerNote"></p>
+
+      <div class="serverbar">
+        <span class="dot" id="dot"></span>
+        <span id="serverText"></span>
+      </div>
+      <p class="note err" id="serverReason"></p>
+      <p class="note" id="serverNote"></p>
+        </div>
+      </details>
     <button type="button" id="monToggle" disabled aria-pressed="false"
             aria-expanded="false" aria-controls="monCard">Start live monitor</button>
     <!-- Three states in one control, because "follow the desktop" is a real
@@ -1559,6 +1746,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <button data-theme="auto">Auto</button>
       <button data-theme="light">Light</button>
       <button data-theme="dark">Dark</button>
+    </div>
     </div>
     </div>
   </header>
@@ -1589,7 +1777,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
   </section>
 
   <div class="grid">
-    <div class="card side">
+    <div class="card side" id="sidebar">
       <div class="side-scroll">
       <div class="side-tabs" id="sideTabs">
         <button type="button" data-pane="source" class="on">Workspace</button>
@@ -1628,72 +1816,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <div id="filechip"><strong>📄</strong><span id="filechipname"></span></div>
       <div id="mapchip"></div>
 
-        <h3 class="pipe-h" id="serverGroupHead">Model server</h3>
-        <p class="note" id="serverGroupNote"></p>
-      <div class="row">
-        <label class="field" style="flex:1;min-width:200px">
-          <span id="serverFieldLabel">Model server</span>
-          <select id="endpointSel">
-            {% for e in endpoints %}
-            <option value="{{ e }}" {% if e == server.url %}selected{% endif %}>{{ e }}</option>
-            {% endfor %}
-            <option value="__custom__">Other address…</option>
-          </select>
-        </label>
-        <!-- Which engine the server is (2026-10-05). Auto detects it; pinned, it
-             is asked only that engine's requests, so a vLLM server is not sent
-             /props or /api/tags, and only vLLM is ever asked /metrics. -->
-        <label class="field" style="flex:0 0 auto;min-width:150px"
-               title="Auto detects the engine by probing /props, /api/tags, then /v1/models, and remembers what it found. Pinned, the server is asked only that engine's requests -- no 404s from probing the others. Only vLLM is ever asked /metrics.">
-          Server type
-          <select id="serverKindSel"></select>
-        </label>
-        <label class="field" id="modelField" style="flex:1;min-width:200px;display:none">
-          <span id="modelRole">Model &middot; reads the page</span>
-          <select id="modelSel"></select>
-        </label>
-        <!-- Pass 2 may run on a different model from pass 1. The two passes ask
-             for different things: reading Thai off an image, and mapping a
-             transcript onto a form. A model can be good at one and bad at the
-             other, and on this project's own fixtures the best extractor cannot
-             read a page at all. -->
-      </div>
-      <div class="row" id="customRow" style="display:none">
-        <input id="endpointCustom" type="text" placeholder="http://127.0.0.1:8081" style="flex:1">
-        <button id="endpointUse" class="ghost-sm">Use</button>
-      </div>
-      <!-- Pass 2 may run on a server of its own (2026-10-01): page images go to
-           the server above, extraction to this one. "Same as the reading
-           server" is the one-URL setup -- local llama-server or Ollama -- and
-           the default. Any OpenAI-compatible server works on either side. -->
-      <div class="row">
-        <label class="field" style="flex:1;min-width:200px">
-          Extraction server
-          <select id="extractEndpointSel"></select>
-        </label>
-        <label class="field" id="extractKindField" style="flex:0 0 auto;min-width:150px;display:none"
-               title="The extraction server's engine. Auto detects it; pinned, it is asked only that engine's requests.">
-          Server type
-          <select id="extractKindSel"></select>
-        </label>
-        <label class="field" id="extractModelField" style="flex:1;min-width:200px;display:none">
-          Model &middot; extracts fields
-          <select id="extractModelSel"></select>
-        </label>
-      </div>
-      <div class="row" id="extractCustomRow" style="display:none">
-        <input id="extractEndpointCustom" type="text" placeholder="http://gpu-box:8000" style="flex:1">
-        <button id="extractEndpointUse" class="ghost-sm">Use</button>
-      </div>
-      <p class="note" id="extractServerNote"></p>
 
-      <div class="serverbar">
-        <span class="dot" id="dot"></span>
-        <span id="serverText"></span>
-        <button id="recheck" class="ghost-sm">Re-check</button>
-      </div>
-      <p class="note err" id="serverReason"></p>
-      <p class="note" id="serverNote"></p>
         <div class="row">
         <label class="field" style="flex:1;min-width:150px">
           <span id="ctxFieldLabel">Context</span>
@@ -1929,11 +2052,12 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </div>
           <div class="rt-files" id="rtFiles">
             {% for c in cases|selectattr('field_truth')|sort(attribute='id') %}
-            <label class="rt-chip"><input type="checkbox" value="{{ c.id }}" checked>
+            <label class="rt-chip" title="{{ c.id }} · {{ c.pdf }}"><input type="checkbox" value="{{ c.id }}"
+              {% if c.id not in ['sol021', 'sol022', 'sol023'] %}checked{% endif %}>
               <span>{{ c.id }} &middot; {{ c.pdf }}</span></label>
             {% endfor %}
           </div>
-          <p class="note">All available benchmark files are selected initially.
+          <p class="note">Files are selected initially except sol021–sol023; use Select all to include them.
             Runs top to bottom, then starts again at the first selected file until Stop.
             Other settings repeat with each cycle; use the locks below to fix a model
             or shape. Shows the latest 200 rounds; every completed run is kept in the run log.</p>
@@ -1958,18 +2082,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             </select>
           </label>
         </div>
-        <!-- Where pass 2 goes for every round of the run: the same setting as
-             the Workspace's Extraction server, painted from the server, so
-             moving one moves both. Hidden on a read-only run, which never
-             extracts. A switch is refused while a test is running (the 409),
-             so the picker is disabled for the length of one. -->
-        <div class="row" id="rtExtractServerRow">
-          <label class="field" style="flex:1;min-width:210px">
-            Extraction server
-            <select id="rtExtractEndpoint"></select>
-          </label>
-        </div>
-        <p class="note" id="rtExtractServerNote"></p>
+
         <div class="row">
           <label class="field" style="flex:1;min-width:150px" id="rtLockReaderField">
             Lock OCR model
@@ -2062,23 +2175,27 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </label>
         </div>
         <div class="rt-ex" id="stFilesField">
-          <span class="rt-ex-label">Files to test &mdash; untick any files to skip</span>
-          <div class="row">
-            <button type="button" class="ghost-sm" id="stFilesAll">Select all</button>
-            <button type="button" class="ghost-sm" id="stFilesNone">Clear selection</button>
-            <span class="note" id="stFileCount" aria-live="polite"></span>
+          <span class="rt-ex-label">Files to test</span>
+          <div class="st-file-controls">
+            <div class="st-file-sets seg" id="stFileSets" role="group" aria-label="Document set">
+              <button type="button" data-st-file-set="1-20" aria-pressed="true" class="on">1–20</button>
+              <button type="button" data-st-file-set="21-23" aria-pressed="false">21–23</button>
+            </div>
+            <button type="button" class="ghost-sm" id="stFileAdvanced"
+              aria-expanded="false" aria-controls="stFilePicker">Advanced</button>
           </div>
+          <span class="note" id="stFileCount" aria-live="polite"></span>
+          <div id="stFilePicker" hidden>
           <div class="rt-files" id="stFiles">
             {% for c in cases|sort(attribute='id') %}
-            <label class="rt-chip"><input type="checkbox" value="{{ c.id }}"
-              data-field-truth="{{ '1' if c.field_truth else '0' }}" checked>
+            <label class="rt-chip" title="{{ c.id }} · {{ c.pdf }}"><input type="checkbox" value="{{ c.id }}"
+              data-field-truth="{{ '1' if c.field_truth else '0' }}"
+              {% if 'sol001' <= c.id <= 'sol020' %}checked{% endif %}>
               <span>{{ c.id }} &middot; {{ c.pdf }}</span></label>
             {% endfor %}
           </div>
+          </div>
         </div>
-        <details class="st-advanced" id="stAdvanced">
-          <summary>Advanced settings</summary>
-          <div class="st-advanced-body">
         <h3 class="st-settings-title">Run settings</h3>
         <div class="row">
           <label class="field" style="flex:1;min-width:90px"
@@ -2128,8 +2245,8 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             </select>
           </label>
           <label class="field" style="flex:1;min-width:120px">
-            Seed <span class="muted-inline" style="font-weight:400">&mdash; blank for new</span>
-            <input id="stSeed" type="text" placeholder="e.g. 1787218747">
+            Seed
+            <input id="stSeed" type="text" placeholder="Random">
           </label>
         </div>
         <div class="row" id="stLockRow">
@@ -2148,70 +2265,20 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           </label>
         </div>
 
-        <h3 class="st-settings-title">Cache and batching</h3>
-        <!-- Prompt cache: a stress run repeats a few pages and one prompt, so the
-             server answers most of each prompt from cache. Ticked, every request
-             is sent uncacheable: a random cache_salt on vLLM, cache_prompt off on
-             llama-server. Ollama has no per-request switch. -->
-        <label class="st-check" style="margin-top:8px"
-               title="Every request is sent so the server cannot reuse a cached prefix: a random cache_salt per request on vLLM, cache_prompt off on llama-server. Ollama has no per-request switch, so it is unchanged there. Prefill is then measured in full, as it would be for documents the server has never seen.">
-          <input id="stNoCache" type="checkbox"> Bypass the server's prompt cache
-          <span class="muted-inline" style="font-weight:400">&mdash; measure full prefill, not cache hits</span>
+        <div class="st-options">
+        <label class="st-option">
+          <input id="stNoCache" type="checkbox"> Bypass cache
         </label>
-        <!-- vLLM's /v1/chat/completions/batch: requests in flight together are
-             sent as ONE request holding all their conversations, up to the
-             concurrency each. vLLM only; nothing streams, so time to first
-             token and the mid-reply loop cut are not available. See vllmbatch.py. -->
-        <div class="row" style="margin-top:8px;align-items:center">
-          <button id="stBatch" type="button" class="ghost-sm" aria-pressed="false" disabled
-                  title="Send the requests that are in flight at the same moment as one vLLM /v1/chat/completions/batch request, up to the concurrency per batch. Requests are grouped only with others that share every setting but the conversation. Replies do not stream, so time to first token and per-request decode speed are not measured, and a looping reply runs to its token cap (it is still flagged as looped). vLLM only.">Batch requests: off</button>
-          <span class="muted-inline" id="stBatchNote" style="font-size:.78rem"></span>
+        <label class="st-option" id="stSaveLogRow">
+          <input id="stSaveLog" type="checkbox"> Save each job
+        </label>
+        <label class="st-option">
+          <input id="stHistoryMonitor" type="checkbox" checked> Save monitor snapshots
+        </label>
         </div>
-        <h3 class="st-settings-title">Metrics and logging</h3>
-        <!-- vLLM's Prometheus endpoint. Offered only when the selected server
-             says it IS vLLM; on a local llama-server or Ollama nothing is ever
-             requested, and the server refuses the route as well. -->
-        <div class="st-metrics-box" id="stMetricsBox">
-          <div class="st-metrics-head">
-            <b>Server /metrics</b>
-            <span id="stMetricsState" class="muted-inline"></span>
-          </div>
-          <div class="row" style="margin-top:8px">
-            <button id="stFetchMetrics" class="ghost-sm" disabled>Fetch /metrics now</button>
-            <label class="st-check">
-              <input id="stSample" type="checkbox" disabled> sample during the test, every
-              <input id="stEvery" type="number" min="1" max="600" value="5" style="width:56px"> s
-            </label>
-          </div>
+        <div class="row" style="margin-top:12px">
+          <button id="stBatch" type="button" class="ghost-sm" aria-pressed="false" disabled>Batch requests: off</button>
         </div>
-
-        <!-- Off by default: a stress job's timings were taken under the load of
-             the others. On, each measured job is one ordinary run-log row tagged
-             with the run and its concurrency, so the "Run kind" chips can keep
-             or drop them. -->
-        <label class="st-check" id="stSaveLogRow"
-               title="Write one run-log row per measured job, the same row a normal run writes, tagged with this stress run and its concurrency. The rows then feed every table on the run-log card; the Run kind chips keep or drop them. Warm-up, cancelled and skipped jobs are not written. Classification is never written: a glued file is no benchmark case.">
-          <input id="stSaveLog" type="checkbox"> Save each job to the run log
-          <span class="muted-inline" style="font-weight:400" id="stSaveLogNote">&mdash; rows are tagged as stress runs</span>
-        </label>
-        <label class="st-check" style="margin-top:10px">
-          <input id="stHistoryMonitor" type="checkbox" checked> Save monitor snapshots to History
-        </label>
-        <p class="note">On vLLM, records KV cache, VRAM and throughput at the sampling interval above,
-          plus the final reading. Keeps the latest 300 snapshots per run.</p>
-        <h3 class="st-settings-title">About this test</h3>
-        <p class="note" id="stModeNote"></p>
-        <p class="note">A benchmark of the <b>server</b>: a queue of jobs worked
-          by as many concurrent requests as you set, against the reading and
-          extraction models selected in the Workspace. Documents are drawn the
-          way the random test draws them. Only the final metrics and scores are
-          shown and saved to <b>History</b>. Per-job accuracy logging is optional.
-          Errors, loops, token caps and stalls are flagged as they happen.</p>
-        <p class="note">Jobs, including warm-up, use only the selected benchmark files.
-            The draw strategy applies within this selection. Classification builds
-            its long files from the selected transcripts.</p>
-          </div>
-        </details>
         </div>
         <div id="stHistoryPanel" hidden>
         <h2>Stress test history</h2>
@@ -2262,30 +2329,6 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </div>
         <p class="note" id="fxTruthNote"></p>
 
-        <div class="row">
-          <label class="field" style="flex:1;min-width:200px">
-            Model server
-            <select id="fxEndpoint">
-              {% for e in endpoints %}
-              <option value="{{ e }}" {% if e == server.url %}selected{% endif %}>{{ e }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label class="field" id="fxModelField" style="flex:1;min-width:200px;display:none">
-            Model &middot; reads the page
-            <select id="fxModel"></select>
-          </label>
-        </div>
-        <div class="row">
-          <label class="field" style="flex:1;min-width:200px">
-            Extraction server
-            <select id="fxExtractEndpoint"></select>
-          </label>
-          <label class="field" id="fxExtractField" style="flex:1;min-width:200px;display:none">
-            Model &middot; extracts fields
-            <select id="fxExtract"></select>
-          </label>
-        </div>
         <div class="serverbar">
           <span class="dot" id="fxDot"></span>
           <span id="fxServerText"></span>
@@ -2306,9 +2349,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
           <button id="fxRun" class="primary" disabled>Extract fields</button>
         </div>
         <p class="note" id="fxNote"></p>
-        <p class="note">Server, model and extraction shape are the same settings the
-          Workspace pane uses &mdash; one process, one choice, so changing one here
-          changes it there. The results land on the <b>Fields</b> tab with their
+        <p class="note">Uses the model servers selected above. The results land on the <b>Fields</b> tab with their
           score against <code>solution/&lt;id&gt;.fields.json</code>, and each run
           appends its own <code>extract</code> row to the run log.</p>
         {% else %}
@@ -2346,6 +2387,11 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </div>
       </div>
     </div>
+
+    <div class="sidebar-resize" id="sidebarResize" role="separator" tabindex="0"
+      aria-label="Menu width" aria-orientation="vertical" aria-controls="sidebar"
+      aria-valuemin="320" aria-valuemax="640" aria-valuenow="420"
+      title="Drag to resize menu · arrow keys to adjust · double-click or Enter to reset"></div>
 
     <!-- The random test's plan and results, in the Result card's place (moved
          2026-08-21 at the user's request: *not in compare space, move it to
@@ -3084,7 +3130,9 @@ function sizeSidebar() {
   if (sideSizeFrame !== null) return;
   sideSizeFrame = requestAnimationFrame(() => {
     sideSizeFrame = null;
-    const top = Math.max(18, sideCard.getBoundingClientRect().top);
+    const stickyTop = Math.max(18, document.querySelector('.page-head').getBoundingClientRect().bottom + 12);
+    sideCard.style.setProperty('--sidebar-top', stickyTop + 'px');
+    const top = Math.max(stickyTop, sideCard.getBoundingClientRect().top);
     sideCard.style.setProperty('--side-height', Math.max(180, innerHeight - top - 18) + 'px');
     const actionHeight = document.getElementById('testActions').getBoundingClientRect().height;
     document.body.style.setProperty('--run-actions-space', (actionHeight + 18) + 'px');
@@ -3097,6 +3145,74 @@ sideSizeObserver.observe(document.querySelector('.page-head'));
 sideSizeObserver.observe(document.getElementById('monCard'));
 sideSizeObserver.observe(document.getElementById('testActions'));
 sizeSidebar();
+
+// Remember the preferred width, while keeping at least 480px for the result.
+// A smaller window temporarily clamps it; returning to a larger screen restores it.
+(() => {
+  const grid = sideCard.closest('.grid');
+  const handle = document.getElementById('sidebarResize');
+  const desktop = matchMedia('(min-width: 1081px)');
+  const key = 'ocrSidebarWidth:' + window.OCR_BASE;
+  let preferred = 420, drag = null;
+  try {
+    const saved = Number(localStorage.getItem(key));
+    if (Number.isFinite(saved) && saved >= 320) preferred = Math.min(640, saved);
+  } catch { /* Storage can be unavailable in a private window. */ }
+  const limits = () => ({min: 320, max: Math.max(320, Math.min(640, grid.clientWidth - 498))});
+  function apply() {
+    const {min, max} = limits();
+    grid.style.setProperty('--sidebar-width', preferred + 'px');
+    handle.setAttribute('aria-valuemax', max);
+    handle.setAttribute('aria-valuenow', Math.round(Math.max(min, Math.min(max, preferred))));
+    sizeSidebar();
+  }
+  function save() {
+    try { localStorage.setItem(key, String(preferred)); } catch { /* Keep the current layout. */ }
+  }
+  function change(width) {
+    const {min, max} = limits();
+    preferred = Math.round(Math.max(min, Math.min(max, width)));
+    apply();
+  }
+  function finish(event) {
+    if (!drag || event.pointerId !== drag.id) return;
+    drag = null;
+    document.body.classList.remove('resizing-sidebar');
+    save();
+  }
+  handle.addEventListener('pointerdown', event => {
+    if (!desktop.matches || event.button !== 0 || drag) return;
+    event.preventDefault();
+    drag = {id: event.pointerId, x: event.clientX, width: sideCard.getBoundingClientRect().width};
+    handle.setPointerCapture(event.pointerId);
+    handle.focus();
+    document.body.classList.add('resizing-sidebar');
+  });
+  handle.addEventListener('pointermove', event => {
+    if (drag && event.pointerId === drag.id) change(drag.width + event.clientX - drag.x);
+  });
+  for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    handle.addEventListener(name, finish);
+  }
+  function reset() { preferred = 420; apply(); save(); }
+  handle.addEventListener('dblclick', reset);
+  handle.addEventListener('keydown', event => {
+    if (!desktop.matches) return;
+    const {min, max} = limits();
+    const current = sideCard.getBoundingClientRect().width;
+    const step = event.shiftKey ? 40 : 20;
+    if (event.key === 'ArrowLeft') change(current - step);
+    else if (event.key === 'ArrowRight') change(current + step);
+    else if (event.key === 'Home') change(min);
+    else if (event.key === 'End') change(max);
+    else if (event.key === 'Enter') reset();
+    else return;
+    event.preventDefault();
+    save();
+  });
+  window.addEventListener('resize', apply);
+  apply();
+})();
 paintMain();
 sideTabs.addEventListener('click', e => {
   const btn = e.target.closest('button[data-pane]');
@@ -9435,6 +9551,7 @@ if (rtRun) {
     box.parentElement.classList.toggle('off', !box.checked);
   };
   for (const box of rtFiles.querySelectorAll('input')) {
+    selectFile(box);
     box.addEventListener('change', () => { selectFile(box); rtPaintSequence(); });
   }
   const selectFiles = checked => {
@@ -11676,6 +11793,8 @@ const modelField = document.getElementById('modelField');
 const fxEndpoint = document.getElementById('fxEndpoint');
 const fxModel = document.getElementById('fxModel');
 const fxModelField = document.getElementById('fxModelField');
+const fxExtract = document.getElementById('fxExtract');
+const fxExtractField = document.getElementById('fxExtractField');
 const customRow = document.getElementById('customRow');
 const endpointCustom = document.getElementById('endpointCustom');
 const endpointUse = document.getElementById('endpointUse');
@@ -11703,6 +11822,35 @@ function paintServerGroup() {
   subKind.textContent = server.kind || 'no server';
   subUrl.textContent = server.url || '';
 }
+
+function paintGlobalModels() {
+  for (const [role, info, ready] of [
+    ['Ocr', server, !!server.available],
+    ['Extract', extractInfo || server, !!(extractInfo ? extractInfo.available : server.text_available)]
+  ]) {
+    const model = document.getElementById('global' + role + 'Model');
+    const url = document.getElementById('global' + role + 'Url');
+    const health = document.getElementById('global' + role + 'Health');
+    model.textContent = info.model || 'No model';
+    model.title = info.model || '';
+    url.textContent = info.url || '';
+    url.title = info.url || '';
+    health.textContent = ready ? 'Ready' : 'Unavailable';
+    health.dataset.ready = String(ready);
+    health.title = ready ? 'Ready' : (info.reason || info.text_reason || 'Server unavailable');
+  }
+}
+
+const globalModelSettings = document.getElementById('globalModelSettings');
+document.addEventListener('pointerdown', event => {
+  if (globalModelSettings.open && !globalModelSettings.contains(event.target)) globalModelSettings.open = false;
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && globalModelSettings.open) {
+    globalModelSettings.open = false;
+    globalModelSettings.querySelector('summary').focus();
+  }
+});
 
 // Add the active URL to a list if it was typed in rather than configured.
 function addUrlOption(sel, url) {
@@ -11807,6 +11955,7 @@ function paintModelPicker(sel, field, models) {
    on the page showing what is really active, not what was asked for. */
 function paintEndpoint() {
   paintServerGroup();
+  paintGlobalModels();
   for (const sel of [endpointSel, fxEndpoint]) {
     if (!sel) continue;
     addUrlOption(sel, server.url);
@@ -12015,6 +12164,7 @@ function paintServer() {
     : (server.model ? server.model + ' · unusable'
                     : 'No model server at ' + server.url);
   serverReason.textContent = ok ? '' : ('⚠ ' + (server.reason || ''));
+  paintGlobalModels();
   runBtn.disabled = !ok || !current;
   // Whether the context picker does anything depends on which kind is active.
   paintCtx();
@@ -12030,6 +12180,9 @@ function paintServer() {
 
 async function refreshServer() {
   recheckBtn.disabled = true;
+  document.getElementById('globalModelNotice').hidden = true;
+  recheckBtn.textContent = 'Refreshing…';
+  document.querySelector('.model-toolbar').setAttribute('aria-busy', 'true');
   const was = serverText.textContent;
   serverText.textContent = 'Checking…';
   try {
@@ -12040,15 +12193,24 @@ async function refreshServer() {
     if (!res.ok) throw new Error(data.error || 'Could not re-check the servers.');
     server = data.server;
     if (data.extract) extractInfo = data.extract;
+    if (data.ocr_profile) {
+      ocrProfileSel.value = data.ocr_profile;
+      paintOcrProfile();
+    }
     // The last switch's "Now using ..." note may name a model that was just
     // replaced on this port. The freshly painted status is authoritative.
     setServerNote('');
     paintEndpoint();
   } catch (err) {
     setServerNote(err.message || 'Could not re-check the servers.', true);
+    const notice = document.getElementById('globalModelNotice');
+    notice.textContent = err.message || 'Could not refresh the servers.';
+    notice.hidden = false;
     serverText.textContent = was;
   } finally {
     recheckBtn.disabled = false;
+    recheckBtn.textContent = 'Refresh';
+    document.querySelector('.model-toolbar').removeAttribute('aria-busy');
     paintServer();
   }
 }
@@ -13145,10 +13307,8 @@ const stEl = id => document.getElementById(id);
 const stMode = stEl('stMode'), stRun = stEl('stRun'), stStop = stEl('stStop');
 const stStop2 = stEl('stStop2'), stClear = stEl('stClear');
 const stOut = stEl('stOut'), stNote = stEl('stNote');
-const stFetchBtn = stEl('stFetchMetrics'), stSample = stEl('stSample');
 let stAbort = null, stStopping = false;
 let stState = null;          // {plan, progress, report, metrics, draining, alerts}
-let stSnapshot = null;       // manual /metrics snapshots [{label, data}], shown until the next run
 
 function stFileBoxes() {
   return [...stEl('stFiles').querySelectorAll('input')];
@@ -13159,6 +13319,10 @@ function stEligibleFile(box) {
 function stSelectedCases() {
   return stFileBoxes().filter(box => stEligibleFile(box) && box.checked)
     .map(box => box.value);
+}
+function stFileInSet(box, name) {
+  const number = Number(/^sol(\d+)$/.exec(box.value)?.[1]);
+  return name === '1-20' ? number >= 1 && number <= 20 : number >= 21 && number <= 23;
 }
 function stPaintFiles() {
   const busy = !!stAbort || rtRunning;
@@ -13173,7 +13337,14 @@ function stPaintFiles() {
   }
   stEl('stFileCount').textContent = selected.size + ' / ' + eligible.length
     + ' files selected' + (selected.size ? '' : ' — select at least one file');
-  stEl('stFilesAll').disabled = stEl('stFilesNone').disabled = busy;
+  for (const button of stEl('stFileSets').querySelectorAll('button')) {
+    const name = button.dataset.stFileSet;
+    const available = eligible.some(box => stFileInSet(box, name));
+    const on = available && eligible.every(box => box.checked === stFileInSet(box, name));
+    button.disabled = busy || !available;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-pressed', String(on));
+  }
   const lock = stEl('stLock');
   for (const option of lock.options) {
     option.disabled = !!option.value && !selected.has(option.value);
@@ -13183,21 +13354,6 @@ function stPaintFiles() {
   stMode.disabled = busy;
   stRun.disabled = busy || !selected.size;
 }
-
-const ST_MODE_TEXT = {
-  ocr: 'Each job reads one document with the Workspace reading model and scores '
-    + 'the transcript. Pages are decoded, trimmed, resized and encoded once '
-    + 'before the clock starts, so what is timed is the server.',
-  extract: 'Each job sends one ground-truth transcript to pass 2 on the extraction '
-    + 'model and scores the fields. No page is read.',
-  classify: 'Each job glues ground-truth transcripts into one long file, then '
-    + 'splits it into documents (the walk asks the extraction model only where '
-    + 'the pages do not settle a boundary) and classifies each one. Scored on '
-    + 'grouping and type. No page is read and no field is extracted.',
-  full: 'Each job reads a document, then extracts from that transcript. The OCR '
-    + 'stage and the extraction stage are timed apart, and the chart shows how '
-    + 'many jobs are in each at every moment.'
-};
 
 function stPaintMode() {
   const m = stMode.value;
@@ -13210,10 +13366,7 @@ function stPaintMode() {
   // Classification writes no row, so the box is not offered there.
   const busy = stRunning;
   stEl('stSaveLog').disabled = m === 'classify' || busy;
-  stEl('stSaveLogNote').textContent = m === 'classify'
-    ? '— not for classification: a glued file is no benchmark case'
-    : '— rows are tagged as stress runs';
-  stEl('stModeNote').textContent = ST_MODE_TEXT[m] || '';
+  stEl('stSaveLogRow').title = m === 'classify' ? 'Unavailable for classification' : '';
   stPaintBatch();
   stPaintFiles();
 }
@@ -13236,45 +13389,27 @@ function stPaintBatch() {
   btn.classList.toggle('on', stBatchOn);
   btn.setAttribute('aria-pressed', String(stBatchOn));
   btn.textContent = 'Batch requests: ' + (stBatchOn ? 'on' : 'off');
-  document.getElementById('stBatchNote').textContent = !ok
-    ? '— vLLM only; the server this mode uses is not vLLM'
-    : stBatchOn ? '— up to ' + (Number(document.getElementById('stConc').value) || 1)
-        + ' requests per /v1/chat/completions/batch call (the concurrency); no streaming'
-    : '— each request sent on its own, streamed';
+  btn.title = !ok ? 'Requires vLLM' : '';
 }
 
-/* The metrics controls follow the SERVER, not a setting: only a server that
-   says it is vLLM gets /metrics asked of it. */
+/* Live monitoring and saved snapshots are offered only for vLLM servers. */
 // A function declaration, so it is hoisted and `paintEndpoint` can call it at
 // parse time -- which is why it looks its elements up rather than reading the
 // consts below, whose temporal dead zone would take the whole script down.
 function stPaintServer() {
-  const btn = document.getElementById('stFetchMetrics');
-  const sample = document.getElementById('stSample');
-  if (!btn) return;
   const vllm = server && server.kind === 'vllm';
-  const busy = stRunning;
   const extractVllm = !!(extractInfo && extractInfo.separate && extractInfo.kind === 'vllm');
-  btn.disabled = !(vllm || extractVllm) || busy;
-  sample.disabled = !(vllm || extractVllm) || busy;
-  if (!(vllm || extractVllm)) sample.checked = false;
-  document.getElementById('stMetricsState').textContent = vllm
-    ? '— vLLM at ' + server.url
-    : '— ' + (server && server.kind ? server.kind : 'no server')
-      + ' is not vLLM, so /metrics is never requested';
-  // The live monitor may watch the extraction server where only that is vLLM.
+  const monVllm = vllm || extractVllm;
+  const snapshots = document.getElementById('stHistoryMonitor');
+  if (snapshots) {
+    snapshots.disabled = stRunning || !monVllm;
+    snapshots.parentElement.title = monVllm ? '' : 'Requires vLLM';
+  }
   const monBtn = document.getElementById('monToggle');
-  const monVllm = vllm || !!(extractInfo && extractInfo.separate && extractInfo.kind === 'vllm');
   if (monBtn) {
     monBtn.disabled = !monVllm;
     monBtn.title = monVllm ? 'Show live server metrics on any tab' : 'Live monitor requires a vLLM server';
     if (!monVllm && typeof monState !== 'undefined' && monState && monState.on) monSet(false);
-    if (monVllm && !vllm) document.getElementById('stMetricsState').textContent =
-      '— the reading server is not vLLM; the live monitor and the stress sampler watch the '
-      + 'extraction server at ' + extractInfo.url;
-    else if (vllm && extractVllm && extractInfo.url !== server.url)
-      document.getElementById('stMetricsState').textContent = '— vLLM at ' + server.url
-        + ' (OCR) and ' + extractInfo.url + ' (extraction); both are watched, side by side';
   }
   if (typeof monState !== 'undefined' && monState && monState.on) { monSync(); paintMon(); }
   stPaintBatch();
@@ -13472,11 +13607,11 @@ function stAlertsHtml(alerts) {
 
 function stPaint() {
   paintMain();
-  if (!stState && !stSnapshot) {
+  if (!stState) {
     stOut.innerHTML = '<p class="note">Run a stress test to see its report here, or open History to review a saved run.</p>';
     return;
   }
-  stOut.innerHTML = stReportHtml(stState || {}, stSnapshot, stOut);
+  stOut.innerHTML = stReportHtml(stState, null, stOut);
   stWireChart();
   stWireChatContext(stOut, (stState || {}).report);
 }
@@ -13724,20 +13859,19 @@ function stBody() {
     strategy: val('stStrategy'), seed: val('stSeed').trim() || null,
     lock_case: stMode.value === 'classify' ? '' : val('stLock'),
     cases: stSelectedCases(),
-    metrics: stSample.checked && !stSample.disabled,
+    metrics: false,
     no_cache: stEl('stNoCache').checked,
     vllm_batch: stBatchOn && !stEl('stBatch').disabled,
     save_log: stEl('stSaveLog').checked && stMode.value !== 'classify',
-    history_monitor: stEl('stHistoryMonitor').checked,
+    history_monitor: stEl('stHistoryMonitor').checked && !stEl('stHistoryMonitor').disabled,
     gpu_url: stEl('monGpu').value.trim(),
     gpu_extract_url: stEl('monGpuExtract').value.trim(),
-    metrics_every: Number(val('stEvery')) || 5
+    metrics_every: Math.max(1, Math.min(60, Number(val('monEvery')) || 2))
   };
 }
 
 async function stStart() {
-  // Read the form BEFORE going busy: busy disables the sampling checkbox, and
-  // a body built after that would never ask for /metrics.
+  // Read the form before busy disables the snapshot option.
   const body = stBody();
   if (!body.cases.length) {
     stNote.textContent = 'Select at least one file to stress test.';
@@ -13745,7 +13879,6 @@ async function stStart() {
     return;
   }
   stState = { draining: 0, alerts: [] };
-  stSnapshot = null;
   stNote.textContent = 'Preparing…';
   stNote.classList.remove('err');
   stAbort = new AbortController();
@@ -13826,12 +13959,26 @@ async function stStart() {
 
 if (stRun) {
   stEl('stFiles').addEventListener('change', stPaintFiles);
-  const selectFiles = checked => {
-    for (const box of stFileBoxes().filter(stEligibleFile)) box.checked = checked;
-    stPaintFiles();
+  const scrollToSelection = () => {
+    if (stEl('stFilePicker').hidden) return;
+    const list = stEl('stFiles');
+    const first = stFileBoxes().find(box => stEligibleFile(box) && box.checked);
+    if (first) list.scrollTop += first.parentElement.getBoundingClientRect().top - list.getBoundingClientRect().top;
   };
-  stEl('stFilesAll').addEventListener('click', () => selectFiles(true));
-  stEl('stFilesNone').addEventListener('click', () => selectFiles(false));
+  stEl('stFileAdvanced').addEventListener('click', () => {
+    const panel = stEl('stFilePicker'), button = stEl('stFileAdvanced');
+    panel.hidden = !panel.hidden;
+    button.setAttribute('aria-expanded', String(!panel.hidden));
+    button.classList.toggle('on', !panel.hidden);
+    scrollToSelection();
+  });
+  stEl('stFileSets').addEventListener('click', event => {
+    const button = event.target.closest('button[data-st-file-set]');
+    if (!button || button.disabled) return;
+    for (const box of stFileBoxes()) box.checked = stFileInSet(box, button.dataset.stFileSet);
+    stPaintFiles();
+    scrollToSelection();
+  });
   stMode.addEventListener('change', stPaintMode);
   stEl('stBatch').addEventListener('click', () => { stBatchOn = !stBatchOn; stPaintBatch(); });
   stEl('stConc').addEventListener('input', stPaintBatch);
@@ -13851,33 +13998,10 @@ if (stRun) {
   stStop2.addEventListener('click', stop);
   stClear.addEventListener('click', () => {
     if (stAbort) return;
-    stState = null; stSnapshot = null; stNote.textContent = '';
+    stState = null; stNote.textContent = '';
     stNote.classList.remove('err');
     setTestStatus('st', 'ready');
     stPaint();
-  });
-  stFetchBtn.addEventListener('click', async () => {
-    stFetchBtn.disabled = true;
-    try {
-      const snaps = [];
-      for (const t of monTargets()) {
-        const res = await fetch(API + '/stress/metrics' + (t.key === 'extract' ? '?server=extract' : ''));
-        const data = await res.json();
-        if (!res.ok) throw new Error(t.label + ': ' + (data.error || ('HTTP ' + res.status)));
-        snaps.push({ label: t.label, data });
-      }
-      if (!snaps.length) throw new Error('Neither server is vLLM, so /metrics was not requested.');
-      stSnapshot = snaps;
-      stNote.textContent = 'Fetched ' + snaps.map(x => x.data.url + '/metrics').join(' and ') + '.';
-      stNote.classList.remove('err');
-    } catch (err) {
-      stNote.textContent = err.message;
-      stNote.classList.add('err');
-      paintMain();
-    } finally {
-      stPaintServer();
-      stPaint();
-    }
   });
   stPaintMode();
   stPaintServer();
