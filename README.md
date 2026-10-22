@@ -1693,7 +1693,7 @@ Workspace uses **Clear workspace**, since it also removes the selected input fil
 | **Warm-up** | jobs run first at the same concurrency and left out of every figure |
 | **Time limit** | stop starting new jobs after this many seconds; `0` runs the whole queue |
 | **Detail** / **Extraction shape** / **Pages per file** | shown for the modes that use them |
-| **How documents are drawn**, **Seed** | the same draw strategies as the random test; the report records the seed so a run can be repeated |
+| **How documents are drawn**, **Seed** | Balanced uses the least-read file; Random shuffles complete passes; Sequential uses selected files in sorted order and loops after the last. Sequential ignores the seed and past runs; measured jobs restart at the first selected file after warm-up. The report records the strategy and seed |
 | **Files to test** | choose **1–20**, **21–23** or **All**, or open **Advanced** to tick individual files. Warm-up and measured jobs draw only from this selection; classification builds its long files from these transcripts. Select one file to run only that document |
 
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
@@ -1718,6 +1718,24 @@ model's `max_model_len`; the UI context picker does not override it. Other backe
 a **requested** context limit instead. Missing figures stay blank, and chunk counts from an
 aborted stream are not presented as exact tokens. Records are saved in Stress test History
 and its JSON download. Older History entries cannot recover measurements that were not saved.
+
+**Save detail log** is an optional Stress test checkbox for Extract only and Full pipeline,
+off by default. It automatically downloads `extraction-details-*.json` to the computer
+running the browser when the run finishes. The file contains each measured job's full
+extraction, raw step replies and retry questions, final field values, expected values and
+verdicts, document/page boundaries, timings, settings, and the prompt source/hash. Unscored
+fields have a null expected value. Warm-up jobs are excluded; cancelled or skipped jobs
+have no invented answers. A Stop exports the results available when the report was made.
+
+Diagnostics are formatted and streamed after benchmark timing ends, independently of
+**Save each job** (the accuracy CSV). They are never written into server History, CSV,
+or a diagnostic file on the server. The server temporarily retains enabled results in
+memory until export. History's Download JSON still contains settings and metrics only.
+The **Download detail log** link in Current run downloads the browser's copy again. It
+survives switching menus inside this page, but Refresh, closing/leaving the page, starting
+another run, or Clear results removes that in-memory copy. Already downloaded files remain.
+Automatic downloads follow the browser's download settings; the link is also available
+when the browser blocks an automatic download.
 
 History lives in `OCR_LOG_DIR/run_history.sqlite3` and stays separate from the accuracy
 ranking CSV. No per-job run-log row, transcript or page image is written by this feature.

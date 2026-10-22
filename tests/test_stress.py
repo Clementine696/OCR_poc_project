@@ -32,6 +32,22 @@ class StressMathTests(unittest.TestCase):
                                 history={"a": 5, "b": 5})
         self.assertEqual(got[0], "c")
 
+    def test_sequential_cycles_all_twenty_files_in_order(self):
+        cases = [f"sol{i:03}" for i in range(1, 21)]
+        for seed in (1, 99):
+            got = stress.draw_cases(45, list(reversed(cases)), "sequential",
+                                    random.Random(seed), history={"sol001": 100})
+            self.assertEqual(got, cases * 2 + cases[:5])
+
+    def test_sequential_honors_subsets_and_handles_empty_or_single_file(self):
+        rng = random.Random(1)
+        self.assertEqual(stress.draw_cases(7, ["sol023", "sol021", "sol022"],
+                                          "sequential", rng),
+                         ["sol021", "sol022", "sol023"] * 2 + ["sol021"])
+        self.assertEqual(stress.draw_cases(3, ["a"], "sequential", rng), ["a"] * 3)
+        self.assertEqual(stress.draw_cases(3, [], "sequential", rng), [])
+        self.assertEqual(stress.draw_cases(0, ["a"], "sequential", rng), [])
+
     def test_pack_never_glues_a_case_to_itself_and_covers_every_page(self):
         truths = {"x": "one", "y": "a\n--- page 2 ---\nb", "z": "three"}
         docs = {"y": [{"pages": [1], "doc_types": ["A"]}, {"pages": [2], "doc_types": ["B"]}],
