@@ -16,6 +16,7 @@ import base64
 import gzip
 import io
 import json
+import mimetypes
 import os
 import re
 import sys
@@ -6423,6 +6424,69 @@ def files_list():
     return jsonify(folder=str(MOCK_DIR), files=mock_files())
 
 
+REAL_DIR = config.REAL_DIR
+
+
+def real_files():
+    """Everything readable under realData/, at any depth.
+
+    Real documents, with no ground truth: they are read and extracted, never
+    scored, so nothing here looks for a case. `name` is the path under the
+    folder, which is what every other realData call takes.
+    """
+    if not REAL_DIR.exists():
+        return []
+    listing = []
+    for path in sorted(REAL_DIR.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in ACCEPTED_SUFFIXES:
+            continue
+        listing.append({
+            "name": path.relative_to(REAL_DIR).as_posix(),
+            "type": real_type(path.name),
+            "size_mb": round(path.stat().st_size / 1024 ** 2, 2),
+        })
+    return listing
+
+
+def real_type(name: str) -> str:
+    """A realData file's type as the page filters on it: its suffix, `.jpeg` as `jpg`."""
+    suffix = Path(name).suffix.lower().lstrip(".")
+    return {"jpeg": "jpg", "tif": "tiff", "heif": "heic"}.get(suffix, suffix)
+
+
+def resolve_real(name: str) -> bytes:
+    """Read a file from realData/ by name, refusing anything outside it."""
+    if not REAL_DIR.exists():
+        raise ValueError("There is no realData folder on this server.")
+    candidate = (REAL_DIR / name).resolve()
+    if REAL_DIR.resolve() not in candidate.parents:
+        raise ValueError("File is outside the realData folder.")
+    if not candidate.is_file():
+        raise ValueError(f"No such file in realData: {name}")
+    if candidate.suffix.lower() not in ACCEPTED_SUFFIXES:
+        raise ValueError(f"Unsupported file type: {candidate.suffix}")
+    return candidate.read_bytes()
+
+
+@app.get("/api/realdata")
+def realdata_list():
+    files = real_files()
+    return jsonify(folder=str(REAL_DIR), exists=REAL_DIR.exists(), files=files,
+                   types=sorted({f["type"] for f in files}))
+
+
+@app.get("/api/realdata/file")
+def realdata_file():
+    """One realData file's bytes, so the page can load it like a dropped file."""
+    name = request.args.get("name") or ""
+    try:
+        data = resolve_real(name)
+    except ValueError as err:
+        return jsonify(error=str(err)), 404
+    kind = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    return Response(data, mimetype=kind)
+
+
 @app.post("/api/match")
 def match_case():
     """Which ground-truth case does this file correspond to?
@@ -7123,12 +7187,34 @@ def _stress_config(body: dict) -> dict:
     strategy = (body.get("strategy") or randomtest.DEFAULT_STRATEGY).strip().lower()
     if strategy not in ("balanced", "uniform"):
         raise ValueError("strategy must be 'balanced' or 'uniform'.")
-    cases = _stress_cases(mode)
+    # `realdata`: the files in realData/, which have no ground truth -- so only
+    # the modes that start from a read, and nothing they produce is scored.
+    source = (body.get("source") or "benchmark").strip().lower()
+    if source not in ("benchmark", "realdata"):
+        raise ValueError("source must be 'benchmark' or 'realdata'.")
+    if source == "realdata":
+        if mode not in REAL_STRESS_MODES:
+            raise ValueError("realData files have no ground truth, so only OCR only "
+                             "and Full pipeline can run on them.")
+        cases = [f["name"] for f in real_files()]
+        if not cases:
+            raise ValueError(f"The realData folder ({REAL_DIR}) has no readable files.")
+        if "types" in body:
+            types = body["types"]
+            if not isinstance(types, list) or any(not isinstance(t, str) for t in types):
+                raise ValueError("types must be a list of file types, such as ['pdf', 'jpg'].")
+            wanted = {real_type("x." + t.strip().lstrip(".")) for t in types}
+            cases = [name for name in cases if real_type(name) in wanted]
+            if not cases:
+                raise ValueError("No realData file is of the chosen type(s).")
+    else:
+        cases = _stress_cases(mode)
     if "cases" in body:
         selected = body["cases"]
         if not isinstance(selected, list) or any(
                 not isinstance(cid, str) for cid in selected):
-            raise ValueError("cases must be a list of benchmark document IDs.")
+            raise ValueError("cases must be a list of benchmark document IDs"
+                             " or realData file names.")
         if not selected:
             raise ValueError("Select at least one file to stress test.")
         unknown = sorted(set(selected) - set(cases))
@@ -7188,26 +7274,38 @@ def _stress_config(body: dict) -> dict:
         "strategy": strategy,
         "seed": body.get("seed"),
         "lock": lock,
+        "source": source,
         "cases": cases,
     }
 
 
-def _stress_pages(case_id: str, detail: str) -> tuple:
+# The stress modes a realData file can run in: both start from a read. Extract
+# and classify start from a ground-truth transcript, which realData has none of.
+REAL_STRESS_MODES = ("ocr", "full")
+
+
+def _stress_pages(case_id: str, detail: str, source: str = "benchmark") -> tuple:
     """A case's pages, prepared exactly as `prepare_input` does it, encoded once.
 
     Not `prepare_input` itself, because that registers a page job -- and a
     stress run's pages in the compare-view cache would evict the reads somebody
     is looking at, `MAX_JOBS` being a RAM ceiling. Returns `(pages, source)`,
-    the source being what a saved row names the input as.
+    the source being what a saved row names the input as. With `source`
+    `realdata`, `case_id` is a file name under realData/.
     """
-    data, case = case_bytes(case_id)
+    if source == "realdata":
+        data = resolve_real(case_id)
+        name, origin = case_id, "realdata"
+    else:
+        data, case = case_bytes(case_id)
+        name, origin = case["pdf"], "case"
     pages, _ = load_pages(data)
     budget = DETAIL_PRESETS[detail]
     prepared = [fit_pixels(trim_margins(page) if TRIM_MARGINS else page, budget)
                 for page in pages]
     for page in prepared:
         page._data_uri = image_data_uri(page)
-    return prepared, describe_source(case["pdf"], data, "case")
+    return prepared, describe_source(name, data, origin)
 
 
 def _stress_read(pages, cancel, rec: dict, live: _StressLive,
@@ -7374,7 +7472,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
             _stress_classify(prepared["packs"][spec["index"]], rec, live, cancel, job)
         else:
             case_id = spec["case"]
-            case = scoring.cases_index()[case_id]
+            # A realData file has no case: nothing it reads or extracts is scored.
+            real = cfg.get("source") == "realdata"
+            case = None if real else scoring.cases_index()[case_id]
             texts, looped, truncated, truth = None, False, False, None
             if mode in ("ocr", "full"):
                 read_began = time.perf_counter()
@@ -7383,7 +7483,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     stats_out=all_stats if log else None, job=job, case=who)
                 text = join_page_texts(texts) if len(texts) > 1 else texts[0]
                 try:
-                    truth = scoring.evaluate(case, text)
+                    truth = scoring.evaluate(case, text) if case else None
                 except Exception:                   # noqa: BLE001
                     truth = None
                 rec["char_accuracy"] = (truth or {}).get("char_accuracy")
@@ -7399,7 +7499,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     text = prepared["truths"][case_id]
                 started = time.perf_counter()
                 result = extract_fields(
-                    text, cfg["extract_mode"], case_id, pages=texts,
+                    text, cfg["extract_mode"], None if real else case_id, pages=texts,
                     truth_fed=mode == "extract", extras=cfg.get("extras"),
                     each=lambda event: live.extract_event(job, event))
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
@@ -7687,7 +7787,10 @@ def _stress_run(cfg: dict, cancel):
 
     specs = [{"index": i} for i in range(total)]
     if mode != "classify":
-        history = runlog.case_counts() if cfg["strategy"] == "balanced" else {}
+        # realData files are never in the run log's case counts, so "balanced"
+        # balances over this run's own draws.
+        history = (runlog.case_counts() if cfg["strategy"] == "balanced"
+                   and cfg.get("source") != "realdata" else {})
         for spec, case_id in zip(specs, stress.draw_cases(
                 total, cfg["cases"], cfg["strategy"], rng, history, cfg["lock"])):
             spec["case"] = case_id
@@ -7697,6 +7800,7 @@ def _stress_run(cfg: dict, cancel):
         "concurrency": cfg["concurrency"], "jobs": cfg["jobs"],
         "warmup": cfg["warmup"], "max_seconds": cfg["max_seconds"],
         "strategy": cfg["strategy"], "lock": cfg["lock"],
+        "source": cfg.get("source", "benchmark"),
         "cases": cfg["cases"],
         "detail": cfg["detail"] if mode in ("ocr", "full") else "",
         "extract_mode": cfg["extract_mode"] if mode in ("extract", "full") else "",
@@ -7746,7 +7850,8 @@ def _stress_run(cfg: dict, cancel):
                 break
             if mode in ("ocr", "full"):
                 prepared["pages"][case_id], prepared["sources"][case_id] = \
-                    _stress_pages(case_id, cfg["detail"])
+                    _stress_pages(case_id, cfg["detail"], *(
+                        ("realdata",) if cfg.get("source") == "realdata" else ()))
             else:
                 path = index[case_id]["ground_truth"]
                 prepared["truths"][case_id] = path.read_text("utf-8")
@@ -8819,6 +8924,8 @@ def preflight():
     say(f"[ocr] ground truth: {config.SOLUTION_DIR} ({len(cases)} scored cases)"
         if cases else
         f"[ocr] ground truth: {config.SOLUTION_DIR} (absent -- accuracy scoring off)")
+    say(f"[ocr] real data: {REAL_DIR} ({len(real_files())} readable, unscored)"
+        if REAL_DIR.exists() else f"[ocr] real data: {REAL_DIR} (absent)")
 
     # The one directory that must be writable. Checked by actually creating it,
     # because a read-only mount or a wrong owner is the failure this is for, and
