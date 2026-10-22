@@ -1,6 +1,8 @@
 """realData/: real files with no solution, listed, served and stress-tested."""
 import json
 import tempfile
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -90,7 +92,10 @@ class RealDataTests(unittest.TestCase):
                 patch.object(app.scoring, "evaluate") as evaluate, \
                 patch.object(app.runlog, "case_counts") as counts:
             events = [json.loads(line) for line in app._stress_run(cfg, app.MultiCancel())]
-        pages.assert_called_once_with("a.pdf", cfg["detail"], "realdata")
+        self.assertTrue(pages.called)
+        for call in pages.call_args_list:
+            self.assertEqual(call.args, ("a.pdf", cfg["detail"], "realdata"))
+        self.assertFalse([e for e in events if e["event"] == "preparing"])
         evaluate.assert_not_called()
         counts.assert_not_called()
         self.assertEqual({call.args[2] for call in extract.call_args_list}, {None})
@@ -99,6 +104,101 @@ class RealDataTests(unittest.TestCase):
         self.assertEqual(report["completed"], 2)
         self.assertIsNone(report["ocr"]["char_accuracy"])
         self.assertIsNone(report["extract"]["field_accuracy"])
+
+    def test_pages_are_prepared_once_and_freed_after_the_last_job(self):
+        prepared = {"pages": {}, "sources": {}}
+        specs = [{"case": "a.pdf"}, {"case": "a.pdf"}, {"case": "b.JPEG"}]
+        lazy = app._StressPages(specs, "low", prepared)
+        with patch.object(app, "_stress_pages",
+                          side_effect=lambda cid, *_: (["page of " + cid], {"name": cid})) as pages:
+            threads = [threading.Thread(target=lazy.take, args=("a.pdf",)) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(pages.call_count, 1)
+            self.assertEqual(prepared["pages"]["a.pdf"], ["page of a.pdf"])
+            lazy.release("a.pdf")
+            self.assertIn("a.pdf", prepared["pages"])     # one job still to come
+            lazy.release("a.pdf")
+            self.assertNotIn("a.pdf", prepared["pages"])
+            self.assertEqual(prepared["sources"]["a.pdf"], {"name": "a.pdf"})
+            lazy.take("b.JPEG")
+            lazy.release("b.JPEG")
+        self.assertEqual(prepared["pages"], {})
+
+    def test_preparation_runs_a_bounded_number_at_once(self):
+        prepared = {"pages": {}, "sources": {}}
+        names = [f"f{i}.pdf" for i in range(8)]
+        lazy = app._StressPages([{"case": n} for n in names], "low", prepared)
+        inside, peak, lock = [0], [0], threading.Lock()
+
+        def pages(cid, *_):
+            with lock:
+                inside[0] += 1
+                peak[0] = max(peak[0], inside[0])
+            time.sleep(0.05)
+            with lock:
+                inside[0] -= 1
+            return [], {}
+        with patch.object(app, "_stress_pages", side_effect=pages):
+            threads = [threading.Thread(target=lazy.take, args=(n,)) for n in names]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(len(prepared["pages"]), 8)
+        self.assertLessEqual(peak[0], app.STRESS_PREPARE_PARALLEL)
+
+    def test_pdf_rendering_is_never_run_by_two_threads_at_once(self):
+        inside, peak, lock = [0], [0], threading.Lock()
+
+        class Pix:
+            width = height = 1
+            samples = b"\xff\xff\xff"
+
+        class Page:
+            def get_pixmap(self, matrix):
+                return Pix()
+
+        class Doc:
+            needs_pass, page_count = False, 1
+
+            def __enter__(self):
+                with lock:
+                    inside[0] += 1
+                    peak[0] = max(peak[0], inside[0])
+                time.sleep(0.05)
+                return self
+
+            def __exit__(self, *exc):
+                with lock:
+                    inside[0] -= 1
+
+            def pages(self, start, stop):
+                return [Page()]
+        with patch.object(app.fitz, "open", side_effect=lambda **_: Doc()):
+            threads = [threading.Thread(target=app.load_pages, args=(b"%PDF-1.4",))
+                       for _ in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(peak[0], 1)
+
+    def test_a_file_that_will_not_open_fails_its_jobs_only(self):
+        cfg = self.cfg(cases=["a.pdf", "b.JPEG"], jobs=6, concurrency=3,
+                       strategy="uniform", seed=1, history_monitor=False)
+
+        def pages(cid, *_):
+            if cid == "b.JPEG":
+                raise ValueError("cannot open")
+            return [], {}
+        with patch.object(app, "_stress_pages", side_effect=pages), \
+                patch.object(app, "_stress_read", return_value=(["text"], False, False)):
+            events = [json.loads(line) for line in app._stress_run(cfg, app.MultiCancel())]
+        counts = events[-1]["report"]["counts"]
+        self.assertEqual((counts["ok"], counts["error"]), (3, 3))
 
     def test_pages_are_named_as_realdata(self):
         page = types.SimpleNamespace()
