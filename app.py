@@ -196,6 +196,11 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     PDF_OK = False
 
+# PyMuPDF is not thread-safe: two threads inside MuPDF at once can crash the
+# whole process, which the page sees as a stream cut off mid-run
+# (ERR_INCOMPLETE_CHUNKED_ENCODING). Every PDF open and render holds this.
+_PDF_LOCK = threading.Lock()
+
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
@@ -5148,7 +5153,7 @@ def load_pages(data: bytes):
             raise ValueError("PDF support needs PyMuPDF: pip install pymupdf")
         pages = []
         zoom = PDF_DPI / 72.0
-        with fitz.open(stream=data, filetype="pdf") as doc:
+        with _PDF_LOCK, fitz.open(stream=data, filetype="pdf") as doc:
             if doc.needs_pass:
                 raise ValueError("That PDF is password-protected.")
             total = doc.page_count
@@ -7011,6 +7016,11 @@ STRESS_METRICS_TIMEOUT = (1.5, 5)
 # stalled, once -- a hung request or a server that stopped answering, which no
 # other alert catches because nothing comes back to look at.
 STRESS_STALL_SECONDS = 300
+# How many realData files a stress run prepares at once. Preparing is a 300 DPI
+# render, a resize and a PNG encode -- several times the page's final size in
+# memory while it runs -- so fifty jobs each starting a different file at once
+# must not all do it together.
+STRESS_PREPARE_PARALLEL = config.env_int("STRESS_PREPARE_PARALLEL", 2, minimum=1)
 _STAGE_VERB = {"ocr": "reading", "extract": "extracting", "segment": "splitting",
                "classify": "classifying"}
 
@@ -7332,6 +7342,7 @@ class _StressPages:
             self.uses[spec["case"]] = self.uses.get(spec["case"], 0) + 1
         self.lock = threading.Lock()
         self.locks = {}
+        self.slots = threading.Semaphore(STRESS_PREPARE_PARALLEL)
 
     def take(self, case_id: str) -> float:
         """Make sure `case_id` is prepared. Returns the seconds this call spent."""
@@ -7345,7 +7356,8 @@ class _StressPages:
                 # still saved as the failure it was.
                 self.prepared["sources"].setdefault(
                     case_id, describe_source(case_id, b"", "realdata"))
-                pages, source = _stress_pages(case_id, self.detail, "realdata")
+                with self.slots:
+                    pages, source = _stress_pages(case_id, self.detail, "realdata")
                 self.prepared["pages"][case_id] = pages
                 self.prepared["sources"][case_id] = source
         return time.perf_counter() - started
