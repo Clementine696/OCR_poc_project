@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -24,6 +25,24 @@ class HistoryTests(unittest.TestCase):
     def stream(self, events, configuration=None):
         return app._history_stream((json.dumps(e) + "\n" for e in events),
                                    "stress", configuration or {"concurrency": 4, "jobs": 20})
+
+    def monitored_stream(self, events, configuration):
+        """Let one background sampling cycle finish before ending a short run."""
+        sampled = threading.Event()
+        collect = app._HistoryMonitor._sample
+
+        def sample(sampler):
+            collect(sampler)
+            sampled.set()
+
+        def source():
+            yield json.dumps(events[0])
+            self.assertTrue(sampled.wait(2), "History monitor did not complete a reading")
+            for event in events[1:]:
+                yield json.dumps(event)
+
+        with patch.object(app._HistoryMonitor, "_sample", sample):
+            return [json.loads(line) for line in app._history_stream(source(), "stress", configuration)]
 
     def test_round_trip_and_list_does_not_include_large_report(self):
         configuration = {"concurrency": 4, "jobs": 20, "label": "ทดสอบ"}
@@ -105,17 +124,17 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(events[-1]["report"]["completed"], 5)
         self.assertIn("read-only disk", events[-1]["history_error"])
 
-    def test_saved_monitor_snapshots_include_final_reading_and_gpu(self):
-        cfg = {"history_monitor": True, "metrics_every": 0, "gpu_url": "http://gpu",
+    def test_saved_monitor_snapshots_include_latest_completed_reading_and_gpu(self):
+        cfg = {"history_monitor": True, "metrics_every": 5, "gpu_url": "http://gpu",
                "reader": {"kind": "vllm", "url": "http://vllm"}}
         sample = {"at": 123, "snapshot": {"kv_free": 0.5, "running": 4},
                   "gpu": {"free_mb": 3584}, "rates": {"generation_tps": 100}}
         with patch.object(app, "_monitor_scrape", return_value=(sample, 200)) as scrape:
-            events = [json.loads(line) for line in self.stream([
+            events = self.monitored_stream([
                 {"event": "plan"}, {"event": "progress"},
-                {"event": "done", "report": {}}], cfg)]
+                {"event": "done", "report": {}}], cfg)
         item = runhistory.get(events[-1]["history_id"])
-        self.assertEqual(len(item["result"]["monitor_samples"]), 3)
+        self.assertEqual(len(item["result"]["monitor_samples"]), 1)
         self.assertEqual(item["result"]["monitor_samples"][-1], {**sample, "role": "reader"})
         scrape.assert_called_with({**cfg["reader"], "role": "reader"}, "http://vllm", "http://gpu")
 
@@ -130,15 +149,15 @@ class HistoryTests(unittest.TestCase):
         cfg = {"history_monitor": True, "metrics_every": 0,
                "reader": {"kind": "vllm", "url": "http://vllm"}}
         samples = iter(({"at": i, "snapshot": {}}, 200) for i in range(306))
-        source = [{"event": "plan"}] + [{"event": "progress"}] * 304 + [
-            {"event": "done", "report": {}}]
+        sampler = app._HistoryMonitor(cfg)
         with patch.object(app, "_monitor_scrape", side_effect=lambda *_: next(samples)):
-            events = [json.loads(line) for line in self.stream(source, cfg)]
-        result = runhistory.get(events[-1]["history_id"])["result"]
-        self.assertEqual(len(result["monitor_samples"]), 300)
-        self.assertEqual(result["monitor_samples"][0]["at"], 6)
-        self.assertEqual(result["monitor_samples"][-1]["at"], 305)
-        self.assertEqual(result["monitor_samples_total"], 306)
+            for _ in range(306):
+                sampler._sample()
+        retained, total = sampler.stop()
+        self.assertEqual(len(retained), 300)
+        self.assertEqual(retained[0]["at"], 6)
+        self.assertEqual(retained[-1]["at"], 305)
+        self.assertEqual(total, 306)
 
     def test_both_monitor_servers_and_live_alerts_are_retained(self):
         cfg = {"history_monitor": True, "metrics_every": 5,
@@ -148,13 +167,150 @@ class HistoryTests(unittest.TestCase):
         alert = {"event": "alert", "job": 2, "case": "sol002", "message": "looped"}
         with patch.object(app, "_monitor_scrape", side_effect=lambda info, url, gpu: (
                 {"url": url, "gpu_url": gpu, "snapshot": {}, "at": 1}, 200)):
-            events = [json.loads(line) for line in self.stream([
-                {"event": "plan"}, alert, {"event": "done", "report": {}}], cfg)]
+            events = self.monitored_stream([
+                {"event": "plan"}, alert, {"event": "done", "report": {}}], cfg)
         result = runhistory.get(events[-1]["history_id"])["result"]
         self.assertEqual(result["alerts"], [alert])
         self.assertEqual({s["url"] for s in result["monitor_samples"]},
                          {"http://reader", "http://extractor"})
         self.assertEqual(result["monitor_samples"][-1]["gpu_url"], "http://extractor-gpu")
+
+    def test_slow_monitor_does_not_block_completion_stop_error_or_disconnect(self):
+        for terminal in ("completed", "stopped", "error", "disconnect"):
+            with self.subTest(terminal=terminal):
+                entered, release = threading.Event(), threading.Event()
+                samplers = []
+                monitor_class = app._HistoryMonitor
+                cfg = {"history_monitor": True, "metrics_every": 5,
+                       "reader": {"kind": "vllm", "url": "http://slow-metrics"},
+                       "concurrency": 1, "max_seconds": 0, "save_log": False}
+
+                def make_sampler(configuration):
+                    sampler = monitor_class(configuration)
+                    samplers.append(sampler)
+                    return sampler
+
+                def slow_scrape(*_):
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("mock metrics timed out")
+                    return {"snapshot": {"running": 0}}, 200
+
+                def source():
+                    yield json.dumps({"event": "plan"})
+                    if not entered.wait(2):
+                        raise AssertionError("monitor never started")
+                    yield json.dumps({"event": "progress", "done": 1})
+                    if terminal == "error":
+                        raise ValueError("mock job failed")
+                    _, wall, _, _, _ = yield from app._stress_phase(
+                        [{"index": 0}], cfg, {}, app.MultiCancel(), "run")
+                    yield json.dumps({"event": "done", "stopped": terminal == "stopped",
+                                      "report": {"wall_seconds": wall}})
+
+                def consume():
+                    stream, events = app._history_stream(source(), "stress", cfg), []
+                    try:
+                        for line in stream:
+                            events.append(json.loads(line))
+                            if terminal == "disconnect" and events[-1]["event"] == "progress":
+                                stream.close()
+                                break
+                    except ValueError as err:
+                        if terminal != "error":
+                            raise
+                        self.assertEqual(str(err), "mock job failed")
+                    return events
+
+                with patch.object(app, "_HistoryMonitor", side_effect=make_sampler), \
+                     patch.object(app, "_monitor_scrape", side_effect=slow_scrape), \
+                     patch.object(app, "_stress_job", return_value={"status": "ok"}), \
+                     ThreadPoolExecutor(max_workers=1) as pool:
+                    consumer = pool.submit(consume)
+                    try:
+                        self.assertTrue(entered.wait(2))
+                        # The scrape stays blocked throughout progress, timing,
+                        # History persistence and client completion/closure.
+                        events = consumer.result(timeout=1)
+                        item = runhistory.get(events[0]["history_id"])
+                        self.assertEqual(item["status"],
+                                         "interrupted" if terminal == "disconnect" else terminal)
+                        self.assertEqual(item["result"]["monitor_samples"], [])
+                        if terminal in ("completed", "stopped"):
+                            self.assertEqual(events[-1]["event"], "done")
+                            self.assertLess(events[-1]["report"]["wall_seconds"], 0.5)
+                    finally:
+                        release.set()
+                        for sampler in samplers:
+                            sampler._thread.join(2)
+                            self.assertFalse(sampler._thread.is_alive())
+                    # Late metrics cannot mutate the saved report.
+                    self.assertEqual(runhistory.get(events[0]["history_id"]), item)
+                    self.assertEqual(samplers[0].stop(), ([], 0))
+
+    def test_monitor_samples_on_its_clock_and_keeps_workspace_settings(self):
+        workspace = app.workspace
+        ws = workspace.Workspace("history-monitor-tab")
+        ws.put("loop_guard", False)
+        second = threading.Event()
+        records = []
+        cfg = {"history_monitor": True, "metrics_every": 1,
+               "reader": {"kind": "vllm", "url": "http://clock-metrics"}}
+        sampler = None
+
+        def scrape(*_):
+            records.append((workspace.current_id(), app.loop_guard()))
+            if len(records) == 2:
+                second.set()
+            return {"snapshot": {}}, 200
+
+        with workspace.use(ws), patch.object(app, "_monitor_scrape", side_effect=scrape):
+            sampler = app._HistoryMonitor(cfg).start()
+            try:
+                # No source/progress events drive this sampler.
+                self.assertTrue(second.wait(3))
+            finally:
+                sampler.stop()
+                sampler._thread.join(2)
+        self.assertEqual(records[:2], [(ws.id, False), (ws.id, False)])
+
+    def test_monitor_deduplicates_servers_and_saves_scrape_errors(self):
+        info = {"kind": "vllm", "url": "http://same-server"}
+        sampler = app._HistoryMonitor({"history_monitor": True,
+                                       "reader": info, "extractor": info})
+        with patch.object(app, "_monitor_scrape", side_effect=TimeoutError("slow metrics")) as scrape:
+            sampler._sample()
+        samples, total = sampler.stop()
+        self.assertEqual(scrape.call_count, 1)
+        self.assertEqual(total, 1)
+        self.assertEqual(samples[0]["role"], "reader")
+        self.assertEqual(samples[0]["url"], info["url"])
+        self.assertIn("slow metrics", samples[0]["error"])
+
+    def test_slow_monitor_skips_missed_ticks_instead_of_catching_up(self):
+        sampler = app._HistoryMonitor({"history_monitor": True, "metrics_every": 1})
+        with patch.object(app.time, "monotonic", side_effect=[0.0, 3.4, 3.4]), \
+             patch.object(sampler, "_sample") as scrape, \
+             patch.object(sampler._stop, "wait", return_value=True) as pause:
+            sampler._run()
+        self.assertEqual(scrape.call_count, 1)
+        pause.assert_called_once()
+        self.assertAlmostEqual(pause.call_args.args[0], 0.6)
+
+    def test_monitor_stop_does_not_start_another_server_scrape(self):
+        sampler = app._HistoryMonitor({
+            "history_monitor": True,
+            "reader": {"kind": "vllm", "url": "http://reader"},
+            "extractor": {"kind": "vllm", "url": "http://extractor"}})
+
+        def stopped_during_read(*_):
+            sampler.stop()
+            return {"snapshot": {}}, 200
+
+        with patch.object(app, "_monitor_scrape", side_effect=stopped_during_read) as scrape:
+            sampler._sample()
+        self.assertEqual(scrape.call_count, 1)
+        self.assertEqual(sampler.stop(), ([], 0))
 
     def test_routes_return_exact_saved_data_and_json_download(self):
         run_id = runhistory.start("stress", {"concurrency": 8, "jobs": 50})

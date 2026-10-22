@@ -920,7 +920,7 @@ document.addEventListener("DOMContentLoaded", function () {
   #stExtrasField:has(input:disabled) { opacity: .55; cursor: not-allowed; }
   #stSetup .row:has(#stExtrasField) > label { flex-basis: 110px !important; }
   #stFilesField > .row { margin-top: 8px; }
-  .st-file-sets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .st-file-sets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .st-file-sets button { min-width: 0; white-space: normal; }
   .st-file-controls { display: flex; align-items: stretch; gap: 6px; }
   .st-file-controls .st-file-sets { flex: 1; }
@@ -2180,6 +2180,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <div class="st-file-sets seg" id="stFileSets" role="group" aria-label="Document set">
               <button type="button" data-st-file-set="1-20" aria-pressed="true" class="on">1–20</button>
               <button type="button" data-st-file-set="21-23" aria-pressed="false">21–23</button>
+              <button type="button" data-st-file-set="all" aria-pressed="false">All</button>
             </div>
             <button type="button" class="ghost-sm" id="stFileAdvanced"
               aria-expanded="false" aria-controls="stFilePicker">Advanced</button>
@@ -2249,23 +2250,11 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <input id="stSeed" type="text" placeholder="Random">
           </label>
         </div>
-        <div class="row" id="stLockRow">
-          <label class="field" style="flex:1;min-width:150px">
-            Lock document
-            <select id="stLock">
-              <option value="">&mdash; spread over selected files &mdash;</option>
-              {% for doc_type, group in cases|selectattr('field_truth')|list|groupby('doc_type') %}
-              <optgroup label="{{ doc_type or 'unclassified' }}">
-                {% for c in group %}
-                <option value="{{ c.id }}">{{ c.id }} &middot; {{ c.kind }}</option>
-                {% endfor %}
-              </optgroup>
-              {% endfor %}
-            </select>
-          </label>
-        </div>
-
         <div class="st-options">
+        <label class="st-option" id="stSchemaFirstField"
+               title="Constrain each agentic step to its JSON schema from the first request">
+          <input id="stSchemaFirst" type="checkbox" disabled> JSON schema first
+        </label>
         <label class="st-option">
           <input id="stNoCache" type="checkbox"> Bypass cache
         </label>
@@ -2344,6 +2333,9 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             </select>
           </label>
         </div>
+        <label class="check" title="Constrain each agentic step to its JSON schema from the first request">
+          <input id="fxSchemaFirst" type="checkbox" disabled> JSON schema first
+        </label>
 
         <div class="row">
           <button id="fxRun" class="primary" disabled>Extract fields</button>
@@ -2932,6 +2924,7 @@ function showDocument(index) {
    that touches them checks first. */
 const fxCase = document.getElementById('fxCase');
 const fxMode = document.getElementById('fxMode');
+const fxSchemaFirst = document.getElementById('fxSchemaFirst');
 const fxRun = document.getElementById('fxRun');
 const fxNote = document.getElementById('fxNote');
 const fxTruthNote = document.getElementById('fxTruthNote');
@@ -4345,6 +4338,7 @@ function paintMode() {
       + 'field instead.';
   if (extractSel.value !== extractMode) extractSel.value = extractMode;
   if (fxMode && fxMode.value !== extractMode) fxMode.value = extractMode;
+  if (fxSchemaFirst) fxSchemaFirst.disabled = !on;
   extractNote.textContent = on
     ? 'One to three fields per request, against the same transcript. A field can only '
       + 'be filled from the labels its own step names, and a step that answers with '
@@ -5140,7 +5134,8 @@ function modeLabel(r) {
   const mode = r && r.mode;
   if (mode === 'agentic') {
     const steps = (r.steps || []).length;
-    return 'agentic' + (steps ? ' · ' + steps + ' steps' : '');
+    return 'agentic' + (steps ? ' · ' + steps + ' steps' : '')
+      + (r.schema_first ? ' · Schema first' : ' · JSON first');
   }
   if (mode === 'single') return 'single prompt';
   return mode ? esc(mode) : 'extraction';
@@ -6455,8 +6450,9 @@ async function runExtract() {
      so Re-extract asks for it by case and keeps the field score. It is re-read
      server-side rather than posted back: the same bytes either way, and the
      run-log row then names the file that was actually fed in. */
-  return extractInto(truthOnlyCase ? { case: truthOnlyCase, from_truth: true }
-                                   : { text, job });
+  const schema_first = !!(extracted && extracted.schema_first);
+  return extractInto(truthOnlyCase ? { case: truthOnlyCase, from_truth: true, schema_first }
+                                   : { text, job, schema_first });
 }
 /* The streaming half, shared by Re-extract and by the Fields-only pane. */
 async function extractInto(payload) {
@@ -8169,7 +8165,9 @@ function paintExtractSummary(t) {
   const top = scored ? settings[0] : null;
   const cols = [
     {key: 'setting', label: 'Setting', value: e => csModel(e.model),
-     cell: e => msCell(e, [e.quant, e.engine || e.backend, e.extract_mode],
+     cell: e => msCell(e, [e.quant, e.engine || e.backend, e.extract_mode,
+                           e.extract_mode === 'agentic'
+                             ? (e.extract_schema_first === '1' ? 'Schema first' : 'JSON first') : ''],
              // Two lines, both about what the row does not otherwise say.
              //
              // `read_by` names the model that produced the transcript, where
@@ -8650,7 +8648,7 @@ function prHeroes(p) {
     + prHero('Best extractor', best, '%', secs(best),
              best ? '<span class="pr-shape pr-shape-' + esc(best.mode)
                     + ' pr-hero-pill">' + esc(best.mode) + '</span> '
-                    + prExtrasLabel(best.extras) : '')
+                    + prExtrasLabel(best.extras) + ' ' + prSchemaLabel(best.schema_first) : '')
     + '</div>';
 }
 
@@ -8808,6 +8806,10 @@ function prExtrasLabel(extras) {
   return '<span class="pr-shape">Extra fields ' + (extras === false ? 'off' : 'on') + '</span>';
 }
 
+function prSchemaLabel(on) {
+  return '<span class="pr-shape">' + (on ? 'Schema first' : 'JSON first') + '</span>';
+}
+
 function paintPresent(t) {
   const p = (t && t.presentation) || null;
   if (!presentSum) return;
@@ -8830,6 +8832,11 @@ function paintPresent(t) {
     title: 'Whether other_fields was requested. Older runs used Extra fields on. '
       + 'Zero extra values found still counts as on.',
     cell: e => prExtrasLabel(e.extras)
+  };
+  const schemaColumn = {
+    key: 'schema_first', label: 'JSON schema first', value: e => !!e.schema_first,
+    title: 'Agentic schema from the first request. Older runs used JSON first.',
+    cell: e => prSchemaLabel(e.schema_first)
   };
 
   // 1. Which model to read a page with.
@@ -8893,7 +8900,7 @@ function paintPresent(t) {
   const exRank = [
     {key: 'model', label: 'Model', cls: 'pr-model', value: e => csModel(e.model),
      cell: e => prModel(e, exRankAt.get(e))},
-    extrasColumn,
+    extrasColumn, schemaColumn,
     {key: 'field', label: 'Field accuracy', n: true, value: e => e.value.mean,
      title: 'priority-1 values that are the value the field ground truth says '
           + 'belongs in that key. A partial match counts half.',
@@ -8914,7 +8921,7 @@ function paintPresent(t) {
           + 'of one to three fields, then the answers merged.',
      cell: e => '<span class="pr-shape pr-shape-' + esc(e.mode) + '">'
        + esc(e.mode) + '</span>'},
-    extrasColumn,
+    extrasColumn, schemaColumn,
     {key: 'field', label: 'Field accuracy', n: true, value: e => e.value.mean,
      title: 'the same score as the table above, split by the shape of the request',
      cell: e => prFig(e.value, '%', 1, presColour, (e.value.mean || 0) / 100)},
@@ -8928,7 +8935,7 @@ function paintPresent(t) {
   const exTime = [
     {key: 'model', label: 'Model', cls: 'pr-model', value: e => csModel(e.model),
      cell: e => prModel(e, exRankAt.get(e))},
-    extrasColumn,
+    extrasColumn, schemaColumn,
     {key: 'secs', label: 'Time per document', n: true, value: e => e.seconds.mean,
      title: 'wall clock for the extraction alone, meaned over documents',
      cell: e => prFig(e.seconds, 's', 1, null, (e.seconds.mean || 0) / exSecsMax)},
@@ -9632,6 +9639,8 @@ const LV_FIELDS = [
   {field: 'extract_mode', label: 'Extraction shape',
    hint: 'single: one request for the whole form. agentic: a step per group of '
        + 'one to three fields'},
+  {field: 'extract_schema_first', label: 'JSON schema first',
+   hint: 'on: agentic steps start with a JSON schema. Older runs are off'},
   {field: 'detail', label: 'Detail',
    hint: 'the pixel budget the page was rasterised to: low 2 MP, medium 4 MP '
        + '(the default), original uncapped'},
@@ -9972,7 +9981,9 @@ function runDetails(r, jsonOpen) {
   const fields = [
     ['Timestamp', r.timestamp], ['Document', r.file], ['Run type', r.run_type],
     ['Logged model', r.model], ['Extraction model', r.extract_model],
-    ['Extraction shape', r.extract_mode], ['Detail', r.detail], ['Status', r.status],
+    ['Extraction shape', r.extract_mode],
+    ['JSON schema first', ['1', 'true', 'on'].includes(String(r.extract_schema_first).toLowerCase())],
+    ['Detail', r.detail], ['Status', r.status],
     ['Reading time (s)', r.seconds], ['Extraction time (s)', r.extract_seconds],
     ['Reading output tokens', r.tokens], ['Extraction output tokens', r.extract_tokens]
   ].filter(([, value]) => value !== undefined && value !== null && value !== '');
@@ -13007,6 +13018,8 @@ function paintFieldsOnly() {
       + ' · text only, no image'
     : 'No model server at ' + server.url;
   fxRun.disabled = !ok || !fxCase.value || fxBusy;
+  fxMode.disabled = fxBusy;
+  if (fxSchemaFirst) fxSchemaFirst.disabled = fxBusy || extractMode !== 'agentic';
 }
 
 /* What is about to be fed in, and whether the result can be scored. The two are
@@ -13038,6 +13051,8 @@ async function runFieldsOnly() {
   if (!fxCase) return;
   const id = fxCase.value;
   if (!id || fxBusy) return;
+  const mode = extractMode;
+  const schemaFirst = mode === 'agentic' && fxSchemaFirst.checked;
   fxBusy = true; paintFieldsOnly();
   setTestStatus('fx', 'running');
   fxNote.classList.remove('err');
@@ -13077,7 +13092,7 @@ async function runFieldsOnly() {
   truthOnlyCase = id;
   showTab('fields');
 
-  const r = await extractInto({ case: id, from_truth: true }) || {};
+  const r = await extractInto({ case: id, from_truth: true, mode, schema_first: schemaFirst }) || {};
   fxBusy = false; paintFieldsOnly();
   fxNote.classList.toggle('err', !!r.error);
   if (r.error) { setTestStatus('fx', 'failed'); fxNote.textContent = r.error; return; }
@@ -13321,6 +13336,7 @@ function stSelectedCases() {
     .map(box => box.value);
 }
 function stFileInSet(box, name) {
+  if (name === 'all') return true;
   const number = Number(/^sol(\d+)$/.exec(box.value)?.[1]);
   return name === '1-20' ? number >= 1 && number <= 20 : number >= 21 && number <= 23;
 }
@@ -13345,12 +13361,6 @@ function stPaintFiles() {
     button.classList.toggle('on', on);
     button.setAttribute('aria-pressed', String(on));
   }
-  const lock = stEl('stLock');
-  for (const option of lock.options) {
-    option.disabled = !!option.value && !selected.has(option.value);
-  }
-  if (lock.value && !selected.has(lock.value)) lock.value = '';
-  lock.disabled = busy || !selected.size;
   stMode.disabled = busy;
   stRun.disabled = busy || !selected.size;
 }
@@ -13360,8 +13370,10 @@ function stPaintMode() {
   stEl('stDetailField').style.display = (m === 'ocr' || m === 'full') ? '' : 'none';
   stEl('stShapeField').style.display = (m === 'extract' || m === 'full') ? '' : 'none';
   stEl('stExtrasField').style.display = (m === 'extract' || m === 'full') ? '' : 'none';
+  stEl('stSchemaFirstField').style.display = ['extract', 'full'].includes(m) ? '' : 'none';
+  stEl('stSchemaFirst').disabled = stRunning || !['extract', 'full'].includes(m)
+    || stEl('stShape').value !== 'agentic';
   stEl('stPagesField').style.display = m === 'classify' ? '' : 'none';
-  stEl('stLockRow').style.display = m === 'classify' ? 'none' : '';
   stEl('stStrategyField').style.display = m === 'classify' ? 'none' : '';
   // Classification writes no row, so the box is not offered there.
   const busy = stRunning;
@@ -13435,6 +13447,8 @@ function stBusy(on) {
   stClear.disabled = on;
   stRun.disabled = on;
   stEl('stNoCache').disabled = on;
+  stEl('stSchemaFirst').disabled = on || !['extract', 'full'].includes(stMode.value)
+    || stEl('stShape').value !== 'agentic';
   stEl('stSaveLog').disabled = on || stMode.value === 'classify';
   stPaintBatch();
   stStop.disabled = stStop2.disabled = !on || stStopping;
@@ -13855,9 +13869,10 @@ function stBody() {
     jobs: Number(val('stJobs')) || 1, warmup: Number(val('stWarm')) || 0,
     max_seconds: Number(val('stMax')) || 0, detail: val('stDetail'),
     extract_mode: val('stShape'), extras: stEl('stExtras').checked,
+    schema_first: stEl('stSchemaFirst').checked && ['extract', 'full'].includes(stMode.value)
+      && val('stShape') === 'agentic',
     pack_pages: Number(val('stPages')) || 100,
     strategy: val('stStrategy'), seed: val('stSeed').trim() || null,
-    lock_case: stMode.value === 'classify' ? '' : val('stLock'),
     cases: stSelectedCases(),
     metrics: false,
     no_cache: stEl('stNoCache').checked,
@@ -13980,6 +13995,7 @@ if (stRun) {
     scrollToSelection();
   });
   stMode.addEventListener('change', stPaintMode);
+  stEl('stShape').addEventListener('change', stPaintMode);
   stEl('stBatch').addEventListener('click', () => { stBatchOn = !stBatchOn; stPaintBatch(); });
   stEl('stConc').addEventListener('input', stPaintBatch);
   stRun.addEventListener('click', () => stStart());
@@ -14384,6 +14400,7 @@ function historyRender(item) {
     ['Warm-up', cfg.warmup], ['Time limit (s)', cfg.max_seconds],
     ['Detail', cfg.detail], ['Extraction shape', cfg.extract_mode],
     ['Extra fields', cfg.extras ?? true],
+    ['JSON schema first', cfg.schema_first ?? false],
     ['Seed', plan.seed ?? cfg.seed],
     ['Pages per file', cfg.pack_pages], ['Draw strategy', cfg.strategy],
     ['Lock document', cfg.lock || 'None'],

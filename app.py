@@ -2867,7 +2867,7 @@ def _ask_step(content: str, step: dict, status: dict, collect: list = None):
 
     Returns (values, replies, truncated, tokens, salvaged).
 
-    Asked plain first, exactly as the baselines were measured. A reply that will
+    By default asked plain first, exactly as the baselines were measured. A reply that will
     not parse is asked once more with decoding constrained to this step's own
     keys, which is a different question rather than a repeat -- under greedy
     decoding, asking again in the same words returns the same answer.
@@ -2893,6 +2893,8 @@ def _ask_step(content: str, step: dict, status: dict, collect: list = None):
     finished are already in hand. Everywhere else the parse failure stands and
     the schema attempt runs exactly as it did.
     """
+    # Schema-first runs also use the schema on grounding re-asks. A malformed
+    # constrained reply is surfaced rather than repeated with an identical schema.
     replies, tokens = [], 0
     collect = replies if collect is None else collect
     extras = _extras_only(step)
@@ -2902,7 +2904,11 @@ def _ask_step(content: str, step: dict, status: dict, collect: list = None):
         if collect is not replies:
             collect.append(text)
 
-    raw, truncated, used = _chat(content, step["max_tokens"], status)
+    schema_first = bool(step.get("schema_first"))
+    if schema_first:
+        raw, truncated, used = _chat(content, step["max_tokens"], status, _step_schema(step))
+    else:
+        raw, truncated, used = _chat(content, step["max_tokens"], status)
     keep(raw)
     tokens += used
     try:
@@ -2911,7 +2917,7 @@ def _ask_step(content: str, step: dict, status: dict, collect: list = None):
         kept = _salvage_step(step, raw) if extras else None
         if kept:
             return kept, replies, truncated, tokens, True
-        if not EXTRACT_SCHEMA:
+        if schema_first or not EXTRACT_SCHEMA:
             raise
     raw, truncated, used = _chat(content, step["max_tokens"], status,
                                  _step_schema(step))
@@ -3166,6 +3172,9 @@ def _extract_agentic(text: str, status: dict, form: dict, only=None):
     # and is a complete run of its own form, not a partial run of someone else's.
     full_table = steps_for_types(form["doc_types"], form.get("extras", True))
     table = _steps_for(only, form["doc_types"], form.get("extras", True))
+    if form.get("schema_first"):
+        # Copy shared definitions so concurrent JSON-first runs stay unchanged.
+        table = [{**step, "schema_first": True} for step in table]
     source = grounding.Source(text)
     started = time.perf_counter()
     fields, steps, replies = {}, [], []
@@ -4259,7 +4268,8 @@ def _score_item_table(result: dict, case_id: str, pages=None, text: str = "") ->
 
 def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
                           steps=None, doc_type: str = None, pages=None,
-                          truth_fed: bool = False, extras: bool = None):
+                          truth_fed: bool = False, extras: bool = None,
+                          schema_first: bool = False):
     """Turn a finished transcript into structured JSON, yielding progress.
 
     A separate text-only pass rather than part of the OCR prompt: mixing
@@ -4291,8 +4301,10 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     result is produced is a score that quietly disappears depending on which
     button was pressed.
     """
+    mode = mode or extract_mode()
+    schema_first = bool(schema_first and mode == "agentic")
     if not text.strip():
-        return {"error": "Nothing to extract from."}
+        return {"error": "Nothing to extract from.", "schema_first": schema_first}
     # The EXTRACTION model's status, which is the reading model's unless one has
     # been chosen separately. Handing this dict to the request builders is the
     # whole of what makes a second model work: they all read `info["model"]`.
@@ -4303,8 +4315,7 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     # read `available` until 2026-08-20, which refused every text-only model
     # with a complaint about images.
     if not status["text_available"]:
-        return {"error": status["text_reason"]}
-    mode = mode or extract_mode()
+        return {"error": status["text_reason"], "schema_first": schema_first}
     # Whether `other_fields` is asked for, decided once for every document of
     # the file so a switch flipped mid-file cannot split it.
     extras = extract_extras() if extras is None else bool(extras)
@@ -4315,16 +4326,18 @@ def extract_fields_stream(text: str, mode: str = None, case_id: str = None,
     previous = servertime.open_tally()
     try:
         result = yield from _extract_file(text, mode, case_id, steps, doc_type,
-                                          pages, truth_fed, status, extras)
+                                          pages, truth_fed, status, extras, schema_first)
     finally:
         served = servertime.close_tally(previous)
     if isinstance(result, dict) and served:
         result["server_time"] = served
+    if isinstance(result, dict):
+        result["schema_first"] = schema_first
     return result
 
 
 def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status,
-                  extras=True):
+                  extras=True, schema_first=False):
     """The body of `extract_fields_stream`, split out so the server-time tally
     can be wrapped round all of it."""
     segments, split_from = yield from _segment_stream(text, pages, status)
@@ -4339,11 +4352,12 @@ def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status
     if len(segments) > 1:
         result = yield from _extract_documents(segments, records, mode, case_id,
                                                steps, doc_type, status,
-                                               truth_fed, extras)
+                                               truth_fed, extras, schema_first)
     else:
         result = yield from _extract_document(segments[0]["text"], mode, case_id,
                                               steps, doc_type, status,
-                                              truth_fed=truth_fed, extras=extras)
+                                              truth_fed=truth_fed, extras=extras,
+                                              schema_first=schema_first)
     if isinstance(result, dict):
         # On every result, however many documents: what the file was read as is
         # a fact about the run, and a reader looking at one document's fields
@@ -4359,7 +4373,8 @@ def _extract_file(text, mode, case_id, steps, doc_type, pages, truth_fed, status
 
 def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
                       status: dict, record: dict = None,
-                      truth_fed: bool = False, extras: bool = True):
+                      truth_fed: bool = False, extras: bool = True,
+                      schema_first: bool = False):
     """One document: classify it, ask for its form, ground it, validate it, score it.
 
     The whole of what `extract_fields_stream` used to be, lifted out unchanged so
@@ -4378,6 +4393,7 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
     # one dict, so the two modes cannot disagree about which document this is.
     form = _field_set(text, case_id, doc_type, status,
                       (record or {}).get("pages"), extras)
+    form["schema_first"] = bool(schema_first and mode == "agentic")
     # Stage 0, announced before either shape starts. It is the one part of a
     # pass-2 run that is finished before the first request goes out, so a page
     # that shows it immediately is showing something true rather than a
@@ -4397,6 +4413,8 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
             return {"error": "steps only apply to agentic extraction."}
         result = _extract_single(text, status, form)
     result = _validate_fields(result, form, text, mode)
+    if isinstance(result, dict):
+        result["schema_first"] = form["schema_first"]
     # The item table, read out of the same transcript. Attached whether or not
     # the extraction itself produced fields -- the table does not depend on it --
     # and skipped for a run restricted to some steps, which asked a narrower
@@ -4415,7 +4433,7 @@ def _extract_document(text: str, mode: str, case_id: str, steps, doc_type,
 
 def _extract_documents(segments, records, mode: str, case_id: str, steps,
                        doc_type, status: dict, truth_fed: bool = False,
-                       extras: bool = True):
+                       extras: bool = True, schema_first: bool = False):
     """Every document in the file, one at a time, merged into one result.
 
     **The fields are independent and are kept that way.** Each document is
@@ -4439,7 +4457,7 @@ def _extract_documents(segments, records, mode: str, case_id: str, steps,
                "page_range": record["page_range"]}
         result = yield from _extract_document(seg["text"], mode, case_id,
                                               steps, doc_type, status, record,
-                                              truth_fed, extras)
+                                              truth_fed, extras, schema_first)
         if not isinstance(result, dict):
             result = {"error": "extraction returned nothing"}
         result["document"] = record["document"]
@@ -4767,12 +4785,12 @@ def _drain(generator, each=None):
 def extract_fields(text: str, mode: str = None, case_id: str = None,
                    steps=None, doc_type: str = None, pages=None,
                    truth_fed: bool = False, extras: bool = None,
-                   each=None) -> dict:
+                   each=None, schema_first: bool = False) -> dict:
     """`extract_fields_stream` for callers with nowhere to show progress.
     `each`, where given, sees every event (the stress test reads which document
     is being extracted off them)."""
     return _drain(extract_fields_stream(text, mode, case_id, steps, doc_type,
-                                        pages, truth_fed, extras), each)
+                                        pages, truth_fed, extras, schema_first), each)
 
 
 def strip_fence(text: str) -> str:
@@ -6059,6 +6077,14 @@ def _requested_mode(body):
     return mode
 
 
+def _requested_schema_first(body):
+    """A per-request option; omitted and legacy callers use JSON first."""
+    value = body.get("schema_first", False)
+    if not isinstance(value, bool):
+        raise ValueError("schema_first must be true or false.")
+    return value
+
+
 def _requested_steps(body):
     """Which agentic steps one request runs, where it asks for only some.
 
@@ -6147,6 +6173,7 @@ def extract_endpoint():
         text, case_id, context = _extract_input(body)
         mode = _requested_mode(body)
         steps = _requested_steps(body)
+        schema_first = _requested_schema_first(body)
     except ValueError as err:
         return jsonify(error=str(err)), 400
     # `doc_type` accepts one code or a list -- a document is often more than
@@ -6155,7 +6182,7 @@ def extract_endpoint():
     result = extract_fields(text, mode, case_id, steps,
                             doc_type=body.get("doc_types")
                             or body.get("doc_type"),
-                            truth_fed=_is_truth_fed(context))
+                            truth_fed=_is_truth_fed(context), schema_first=schema_first)
     log_extract(result, body.get("job"), context)
     return jsonify(result)
 
@@ -6177,6 +6204,7 @@ def extract_stream_endpoint():
         text, case_id, context = _extract_input(body)
         mode = _requested_mode(body)
         steps = _requested_steps(body)
+        schema_first = _requested_schema_first(body)
     except ValueError as err:
         return jsonify(error=str(err)), 400
 
@@ -6187,7 +6215,8 @@ def extract_stream_endpoint():
             stream = extract_fields_stream(text, mode, case_id, steps,
                                            doc_type=body.get("doc_types")
                                            or body.get("doc_type"),
-                                           truth_fed=_is_truth_fed(context))
+                                           truth_fed=_is_truth_fed(context),
+                                           schema_first=schema_first)
             while True:
                 try:
                     yield json.dumps(next(stream)) + "\n"
@@ -6198,7 +6227,9 @@ def extract_stream_endpoint():
                     yield json.dumps({"event": "fields", **stop.value}) + "\n"
                     return
         except Exception as err:  # surface failures inside the stream body
-            log_extract({"error": str(err)}, job_id, context)
+            log_extract({"error": str(err), "mode": mode or extract_mode(),
+                         "schema_first": schema_first and (mode or extract_mode()) == "agentic"},
+                        job_id, context)
             yield json.dumps({"event": "error", "error": str(err)}) + "\n"
 
     return Response(generate(), mimetype="application/x-ndjson")
@@ -7120,6 +7151,7 @@ def _stress_config(body: dict) -> dict:
     shape = (body.get("extract_mode") or extract_mode()).strip().lower()
     if shape not in ("single", "agentic"):
         raise ValueError("extract_mode must be 'single' or 'agentic'.")
+    schema_first = _requested_schema_first(body) and shape == "agentic" and mode in ("extract", "full")
     strategy = (body.get("strategy") or randomtest.DEFAULT_STRATEGY).strip().lower()
     if strategy not in ("balanced", "uniform"):
         raise ValueError("strategy must be 'balanced' or 'uniform'.")
@@ -7182,6 +7214,7 @@ def _stress_config(body: dict) -> dict:
         "gpu_extract_url": str(body.get("gpu_extract_url") or "").strip() or MONITOR_GPU_URL,
         "detail": resolve_detail(body.get("detail") or "medium"),
         "extract_mode": shape,
+        "schema_first": schema_first,
         # Whether `other_fields` is asked for, fixed for the run like the shape.
         "extras": (body["extras"] if isinstance(body.get("extras"), bool)
                    else extract_extras()),
@@ -7401,6 +7434,7 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                 result = extract_fields(
                     text, cfg["extract_mode"], case_id, pages=texts,
                     truth_fed=mode == "extract", extras=cfg.get("extras"),
+                    schema_first=cfg.get("schema_first", False),
                     each=lambda event: live.extract_event(job, event))
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
                 rec["extract_tokens"] = result.get("tokens") or 0
@@ -7488,7 +7522,9 @@ def _stress_log_error(mode, spec, prepared, all_stats, read_began, cfg, tag,
             row = {**summarise(all_stats, cfg["detail"], read_began), **tag}
             log_run(row, prepared["sources"][case_id], error=err)
         else:
-            log_extract({"error": f"{type(err).__name__}: {err}"}, None,
+            log_extract({"error": f"{type(err).__name__}: {err}",
+                         "mode": cfg.get("extract_mode"),
+                         "schema_first": bool(cfg.get("schema_first"))}, None,
                         {"case": case_id, "source": prepared["sources"][case_id]},
                         extra=tag)
     except Exception:                               # noqa: BLE001
@@ -7700,6 +7736,7 @@ def _stress_run(cfg: dict, cancel):
         "cases": cfg["cases"],
         "detail": cfg["detail"] if mode in ("ocr", "full") else "",
         "extract_mode": cfg["extract_mode"] if mode in ("extract", "full") else "",
+        "schema_first": bool(cfg.get("schema_first")),
         "extras": bool(cfg.get("extras", True)) if mode in ("extract", "full") else None,
         "pack_pages": cfg["pack_pages"] if mode == "classify" else 0,
         "documents": len({s["case"] for s in specs if "case" in s}),
@@ -7858,38 +7895,88 @@ def stress_stream():
     return Response(generate(), mimetype="application/x-ndjson")
 
 
+class _HistoryMonitor:
+    """Collect History snapshots without pausing the benchmark's generator.
+
+    Start with one reading, then sample on a clock, skipping ticks missed by a
+    slow scrape. Stop freezes the completed samples without waiting for network
+    I/O or forcing a final scrape. A reading still in flight is discarded, so a
+    saved report cannot change after it has been emitted.
+    """
+
+    def __init__(self, configuration):
+        self._targets = []
+        if configuration.get("history_monitor"):
+            for role in ("reader", "extractor"):
+                info = configuration.get(role)
+                if (info and backends.serves_metrics(info)
+                        and not any(other["url"] == info["url"] for other in self._targets)):
+                    gpu_key = "gpu_extract_url" if role == "extractor" else "gpu_url"
+                    self._targets.append({**info, "role": role,
+                                          "gpu_url": configuration.get(gpu_key, "")})
+        self._every = max(1.0, float(configuration.get("metrics_every", 5)))
+        self._samples, self._total = deque(maxlen=300), 0
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        # _monitor_scrape also reads per-tab loop-guard settings.
+        self._thread = threading.Thread(target=workspace.bind(self._run), daemon=True,
+                                        name="history-monitor")
+
+    def start(self):
+        if self._targets:
+            self._thread.start()
+        return self
+
+    def _sample(self):
+        for target in self._targets:
+            if self._stop.is_set():
+                return
+            info = {k: v for k, v in target.items() if k != "gpu_url"}
+            try:
+                sample, _ = _monitor_scrape(info, target["url"], target["gpu_url"])
+            except Exception as err:
+                sample = {"error": str(err), "url": target["url"], "at": time.time()}
+            with self._lock:
+                if self._stop.is_set():
+                    return
+                self._samples.append({**sample, "role": target["role"]})
+                self._total += 1
+
+    def _run(self):
+        tick = time.monotonic()
+        while not self._stop.is_set():
+            self._sample()
+            now = time.monotonic()
+            while tick <= now:
+                tick += self._every
+            if self._stop.wait(max(0.0, tick - time.monotonic())):
+                return
+
+    def stop(self):
+        """Latest completed readings and total count; never join a slow scrape."""
+        self._stop.set()
+        with self._lock:
+            return list(self._samples), self._total
+
+
 def _history_stream(stream, kind, configuration):
     """Save on the server before emitting completion, including failed/closed streams."""
     run_id, storage_error, progress, finished = None, "", None, False
-    samples, sampled_at, samples_total, alerts = deque(maxlen=300), None, 0, []
-    monitor_infos = []
-    for role in ("reader", "extractor"):
-        info = configuration.get(role)
-        if (info and backends.serves_metrics(info)
-                and not any(other["url"] == info["url"] for other in monitor_infos)):
-            monitor_infos.append({**info, "role": role})
+    monitor_sampler, alerts = _HistoryMonitor(configuration), []
+
+    def saved_monitor():
+        samples, total = monitor_sampler.stop()
+        return {"monitor_samples": samples, "monitor_samples_total": total, "alerts": alerts}
+
     try:
         run_id = runhistory.start(kind, configuration)
     except Exception as err:
         storage_error = f"History could not be saved: {err}"
     try:
+        monitor_sampler.start()
         for line in stream:
             event = json.loads(line)
             stage = event.get("event")
-            if (monitor_infos and configuration.get("history_monitor")
-                    and stage in ("plan", "progress", "done")
-                    and (stage == "done" or sampled_at is None
-                         or time.monotonic() - sampled_at >= configuration.get("metrics_every", 5))):
-                for monitor_info in monitor_infos:
-                    gpu_key = "gpu_extract_url" if monitor_info["role"] == "extractor" else "gpu_url"
-                    try:
-                        sample, _ = _monitor_scrape(monitor_info, monitor_info["url"],
-                                                    configuration.get(gpu_key, ""))
-                    except Exception as err:
-                        sample = {"error": str(err), "url": monitor_info["url"], "at": time.time()}
-                    samples.append({**sample, "role": monitor_info["role"]})
-                    samples_total += 1
-                sampled_at = time.monotonic()
             if stage == "alert":
                 alerts.append(dict(event))
             if event.get("event") == "plan" and run_id:
@@ -7900,9 +7987,7 @@ def _history_stream(stream, kind, configuration):
             if event.get("event") == "progress":
                 progress = event
             if event.get("event") == "done":
-                event["monitor_samples"] = list(samples)
-                event["monitor_samples_total"] = samples_total
-                event["alerts"] = alerts
+                event.update(saved_monitor())
                 if run_id:
                     try:
                         report = event.get("report") or {}
@@ -7919,14 +8004,12 @@ def _history_stream(stream, kind, configuration):
                 event["history_error"] = storage_error
             yield json.dumps(event) + "\n"
         if run_id and not finished:
-            runhistory.finish(run_id, "interrupted", result={"monitor_samples": list(samples),
-                              "monitor_samples_total": samples_total, "alerts": alerts},
+            runhistory.finish(run_id, "interrupted", result=saved_monitor(),
                               progress=progress, error="The stream ended without a final report.")
     except GeneratorExit:
         if run_id and not finished:
             try:
-                runhistory.finish(run_id, "interrupted", result={"monitor_samples": list(samples),
-                                  "monitor_samples_total": samples_total, "alerts": alerts}, progress=progress,
+                runhistory.finish(run_id, "interrupted", result=saved_monitor(), progress=progress,
                                   error="The client disconnected before the report finished.")
             except Exception:
                 pass
@@ -7934,13 +8017,13 @@ def _history_stream(stream, kind, configuration):
     except Exception as err:
         if run_id and not finished:
             try:
-                runhistory.finish(run_id, "error", result={"monitor_samples": list(samples),
-                                  "monitor_samples_total": samples_total, "alerts": alerts}, progress=progress,
+                runhistory.finish(run_id, "error", result=saved_monitor(), progress=progress,
                                   error=f"{type(err).__name__}: {err}"[:1000])
             except Exception:
                 pass
         raise
     finally:
+        monitor_sampler.stop()
         stream.close()
 
 

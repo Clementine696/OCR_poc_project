@@ -620,6 +620,8 @@ COLUMNS = [
     # Whether pass 2 requested other_fields: 1 on, 0 off. Older rows have no
     # marker; the user confirmed those runs used Extra fields on.
     "extract_extras",
+    # Agentic schema on the first request. Missing on legacy rows means off.
+    "extract_schema_first",
 ]
 
 # servertime.FIELDS, spelled out: this module cannot import servertime (it
@@ -849,6 +851,7 @@ def _pct(value):
 FIX_COLUMNS = ("fix_moved", "fix_strays", "fix_stray_removals", "fix_removals",
                "fix_values_removed", "fix_cells_read", "fix_cells_agent", "fix_cells")
 EXTRACT_COLUMNS = ("extract_seconds", "extract_tokens", "extract_mode", "extract_extras",
+                   "extract_schema_first",
                    "extract_steps", "other_fields",
                    "grounded_pct", "ungrounded", "fields_missing",
                    "p1_present", "p1_absent", "p2_present", "p2_absent",
@@ -895,6 +898,7 @@ def _extract_cells(summary: dict) -> dict:
     cells = _extract_cells_of(summary, extracted)
     cells["extract_extras"] = (int(extracted["extras"])
                                if isinstance(extracted.get("extras"), bool) else "")
+    cells["extract_schema_first"] = int(extracted.get("schema_first") is True) if extracted else ""
     if extracted.get("extras") is False:
         # `other_fields` was not asked for, so its count is blank rather than
         # 0: nobody looked, which is not the same as finding none.
@@ -1882,6 +1886,8 @@ FILTER_FIELDS = {
     # does not offer an empty bucket and an include still excludes those rows.
     "ocr_engine": row_engine,
     "extract_mode": lambda r: r.get("extract_mode") or "",
+    "extract_schema_first": lambda r: "" if _pipeline(r) == "read" else
+                            ("on" if extract_schema_first_of(r) else "off"),
     # What each pass ran ON (2026-10-08). Same pass rule as the two model fields
     # above: the reading pair is blank on a row that read no page -- whose
     # `model_quant` is the EXTRACTOR's, the way its `model` is -- and the
@@ -2689,7 +2695,7 @@ OCR_SETTING = ("model", "backend", "detail", "ocr_profile")
 # The pass-2 knobs. `extract_mode` is in here rather than averaged over, because
 # single and agentic are not two samples of one setting -- they are two shapes
 # with different failure modes, and the measured gap between them is 2.5x.
-EXTRACT_SETTING = ("extract_on", "backend", "extract_mode")
+EXTRACT_SETTING = ("extract_on", "backend", "extract_mode", "extract_schema_first")
 
 
 
@@ -2971,7 +2977,8 @@ def by_extract(rows: list = None) -> list:
     # column repeating the reading model on every one-model row would be blank's
     # opposite problem, and two columns saying the same thing eventually
     # disagree.
-    rows = [{**r, "extract_on": (r.get("extract_model") or r.get("model") or "")}
+    rows = [{**r, "extract_on": (r.get("extract_model") or r.get("model") or ""),
+             "extract_schema_first": "1" if extract_schema_first_of(r) else "0"}
             for r in rows]
     # After `extract_on` exists, because it is part of the key this windows by.
     rows = recent_by(rows, _setting_key(EXTRACT_SETTING))
@@ -5111,6 +5118,12 @@ def extract_extras_of(row: dict) -> bool:
         "0", "false", "off")
 
 
+def extract_schema_first_of(row: dict) -> bool:
+    """Legacy runs are JSON first; single mode never uses this agentic option."""
+    return row.get("extract_mode") == "agentic" and str(
+        row.get("extract_schema_first", "")).strip().lower() in ("1", "true", "on")
+
+
 def _pres_points(rows: list, pass_: str) -> list:
     """One point per run of `pass_`, with the number, the clock and the knobs.
 
@@ -5171,6 +5184,7 @@ def _pres_points(rows: list, pass_: str) -> list:
             points.append({
                 "model": model, "case": case, "detail": "", "mode": mode,
                 "extras": extract_extras_of(row),
+                "schema_first": extract_schema_first_of(row),
                 "failed": failed,
                 "quant": row.get("extract_quant") or "",
                 "engine": row.get("extract_inference_engine") or "",
@@ -5319,15 +5333,15 @@ def presentation(rows: list = None, bias: bool = True,
     for pass_ in ("ocr", "extract"):
         points = _pres_points(rows, pass_)
         model_key = ((lambda p: p["model"]) if pass_ == "ocr" else
-                     (lambda p: (p["model"], p["extras"])))
+                     (lambda p: (p["model"], p["extras"], p["schema_first"])))
         if bias:
             # Grouped once unbiased to decide, then again below over what is
             # left. The first grouping is thrown away -- it exists only so the
             # rule sees the same figures the reader would have.
             weak[pass_] = _pres_weak(_pres_group(points, model_key))
             if pass_ == "extract":
-                for (model, extras), entry in weak[pass_].items():
-                    entry.update(model=model, extras=extras)
+                for (model, extras, schema_first), entry in weak[pass_].items():
+                    entry.update(model=model, extras=extras, schema_first=schema_first)
         if bias and weak[pass_]:
             # 2. Models the log disqualifies for THIS pass. Per pass, because
             # this project has a model that reads best and extracts second
@@ -5349,7 +5363,7 @@ def presentation(rows: list = None, bias: bool = True,
             # was in question.
             cell = ((lambda p: (p["model"], p["case"], p["detail"]))
                     if pass_ == "ocr" else
-                    (lambda p: (p["model"], p["case"], p["mode"], p["extras"])))
+                    (lambda p: (p["model"], p["case"], p["mode"], p["extras"], p["schema_first"])))
             marked = [dict(p) for p in points]
             flagged = _flag_time_outliers(marked, cell=cell)
             if flagged:
@@ -5369,10 +5383,11 @@ def presentation(rows: list = None, bias: bool = True,
         return out
 
     models = ranked(ocr, lambda p: p["model"])
-    ex_models = [{**e, "model": e["key"][0], "extras": e["key"][1]}
-                 for e in ranked(ext, lambda p: (p["model"], p["extras"]))]
-    shapes = [{**e, "model": e["key"][0], "mode": e["key"][1], "extras": e["key"][2]}
-              for e in ranked(ext, lambda p: (p["model"], p["mode"], p["extras"]))]
+    ex_models = [{**e, "model": e["key"][0], "extras": e["key"][1], "schema_first": e["key"][2]}
+                 for e in ranked(ext, lambda p: (p["model"], p["extras"], p["schema_first"]))]
+    shapes = [{**e, "model": e["key"][0], "mode": e["key"][1], "extras": e["key"][2],
+               "schema_first": e["key"][3]}
+              for e in ranked(ext, lambda p: (p["model"], p["mode"], p["extras"], p["schema_first"]))]
     for entry in models:
         entry["model"] = entry["key"]
     for entry in models + ex_models + shapes:
