@@ -108,7 +108,7 @@ class StallAlertTests(unittest.TestCase):
             return values, ["{}"], False, LINES, False
 
         def extract(text, mode=None, case_id=None, pages=None,
-                    truth_fed=False, extras=None, each=None):
+                    truth_fed=False, extras=None, each=None, schema_first=False):
             result = None
             for number in range(1, DOCUMENTS + 1):
                 state["document"] = number

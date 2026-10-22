@@ -1658,10 +1658,20 @@ The **Stress test** tab benchmarks the **server**: a queue of jobs worked by as 
 concurrent requests as you set, and one report at the end. It uses the reading and extraction
 models selected in the Workspace and never switches them.
 
-The setup shows **Mode**, **Concurrent**, **Queue (jobs)** and **Files to test** by default.
-Open **Advanced settings** for warm-up, time limit, extraction options, seed, cache,
-batching, metrics sampling and logging. Advanced settings start collapsed; closing the
-section keeps its selected values and still applies them to the next run.
+The setup shows **Mode**, **Concurrent**, **Queue (jobs)** and **Files to test**, followed by
+the run settings and cache/logging options. File presets are **1–20**, **21–23** and **All**;
+**Advanced** beside them opens individual file selection. The initial selection is 1–20.
+Monitor controls are in the global header.
+
+**JSON schema first** is an opt-in checkbox in **Fields only** and **Stress test**,
+available for agentic extraction. Off preserves the existing JSON-first request and
+schema fallback after a parse failure. On constrains each step to its own schema from
+the first request, including grounding re-asks; malformed or unsupported schema replies
+are reported without silently falling back to JSON first. Single extraction is unchanged.
+The option is captured per request and is off by default. Stress History records
+`schema_first`; Run log records `extract_schema_first` and offers an on/off filter.
+The extraction Summary and detailed extraction settings keep the two variants separate;
+older logs belong to JSON first. Existing CSVs gain the appended column when next written.
 
 The selected menu determines the results shown on the right. Switching to Workspace,
 OCR only or Fields only shows the document results; Random test and Stress test retain
@@ -1683,8 +1693,8 @@ Workspace uses **Clear workspace**, since it also removes the selected input fil
 | **Warm-up** | jobs run first at the same concurrency and left out of every figure |
 | **Time limit** | stop starting new jobs after this many seconds; `0` runs the whole queue |
 | **Detail** / **Extraction shape** / **Pages per file** | shown for the modes that use them |
-| **How documents are drawn**, **Seed**, **Lock document** | the same rules as the random test; the seed goes into the box so a run can be repeated |
-| **Files to test** | tick the benchmark files to use, with **Select all** and **Clear selection**. Warm-up and measured jobs draw only from this selection; classification builds its long files from these transcripts. A locked document must be selected |
+| **How documents are drawn**, **Seed** | the same draw strategies as the random test; the report records the seed so a run can be repeated |
+| **Files to test** | choose **1–20**, **21–23** or **All**, or open **Advanced** to tick individual files. Warm-up and measured jobs draw only from this selection; classification builds its long files from these transcripts. Select one file to run only that document |
 
 **Every new Stress test is saved to History.** Open **Stress test → History** to select a run
 and inspect its Concurrent, Queue, Warm-up, time limit, seed, document strategy,
@@ -1715,7 +1725,11 @@ The database is runtime data and is excluded from Git and deployment packages.
 
 **Save monitor snapshots to History** is on by default. On vLLM it saves KV cache,
 VRAM (when available), Running/Waiting, token rates and cache-hit readings at the selected
-sampling interval and at completion. The latest 300 snapshots of each run are kept;
+sampling interval on a background thread. Slow reads do not pause progress or add their
+wait to the benchmark wall clock; missed sampling ticks are skipped. At completion or
+Stop, the report saves the latest completed readings without waiting for an in-flight
+scrape or requesting a final one. A very short run may finish before its first reading.
+The latest 300 snapshots of each run are kept;
 choose any saved snapshot to inspect its tiles and sparklines. These are historical readings,
 not current server values. Disable the checkbox to avoid these additional monitor requests.
 On a full pipeline, both vLLM servers are retained separately; snapshot sparklines never
