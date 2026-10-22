@@ -7308,6 +7308,56 @@ def _stress_pages(case_id: str, detail: str, source: str = "benchmark") -> tuple
     return prepared, describe_source(name, data, origin)
 
 
+class _StressPages:
+    """realData pages for a stress run, prepared when a job first needs them and
+    dropped when the last job drawn for that file has finished.
+
+    The benchmark prepares every case up front, which is fine for 23 small
+    fixtures. realData can be hundreds of real scans: preparing all of them
+    before the first job held every page of every file -- the image and its PNG
+    -- for the whole run, and sent nothing down the stream while it did. At
+    concurrency 50 over 300 jobs that ran the process out of memory or let the
+    connection idle out, and the page saw a network error. Now at most the files
+    in flight are held, and the stream ticks from the start.
+
+    Fills `prepared["pages"]` and `prepared["sources"]`, which the job reads as
+    it always has.
+    """
+
+    def __init__(self, specs: list, detail: str, prepared: dict):
+        self.detail = detail
+        self.prepared = prepared
+        self.uses = {}
+        for spec in specs:
+            self.uses[spec["case"]] = self.uses.get(spec["case"], 0) + 1
+        self.lock = threading.Lock()
+        self.locks = {}
+
+    def take(self, case_id: str) -> float:
+        """Make sure `case_id` is prepared. Returns the seconds this call spent."""
+        started = time.perf_counter()
+        with self.lock:
+            lock = self.locks.setdefault(case_id, threading.Lock())
+        # One job prepares a file; the others drawn for it wait and share it.
+        with lock:
+            if case_id not in self.prepared["pages"]:
+                # Named before it is read, so a file that will not open is
+                # still saved as the failure it was.
+                self.prepared["sources"].setdefault(
+                    case_id, describe_source(case_id, b"", "realdata"))
+                pages, source = _stress_pages(case_id, self.detail, "realdata")
+                self.prepared["pages"][case_id] = pages
+                self.prepared["sources"][case_id] = source
+        return time.perf_counter() - started
+
+    def release(self, case_id: str) -> None:
+        """One job drawn for `case_id` is done; the last one frees its pages."""
+        with self.lock:
+            self.uses[case_id] = self.uses.get(case_id, 1) - 1
+            if self.uses[case_id] <= 0:
+                self.prepared["pages"].pop(case_id, None)
+
+
 def _stress_read(pages, cancel, rec: dict, live: _StressLive,
                  stats_out: list = None, job: int = 0, case: str = "") -> tuple:
     """Pass 1 over prepared pages. `(page_texts, looped, truncated)`.
@@ -7437,9 +7487,12 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
     """One job of the queue, start to finish. Returns its record; never raises."""
     rec = {"wait_s": round(time.perf_counter() - spec["submitted"], 3)}
     deadline = spec.get("deadline")
+    lazy = prepared.get("lazy")
     if cancel.is_set() or (deadline and time.perf_counter() > deadline):
         live.move("queued", None)
         rec["status"] = "cancelled" if cancel.is_set() else "skipped"
+        if lazy is not None:
+            lazy.release(spec["case"])
         return rec
     mode = cfg["mode"]
     stage = {"ocr": "ocr", "full": "ocr", "extract": "extract",
@@ -7475,6 +7528,12 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
             # A realData file has no case: nothing it reads or extracts is scored.
             real = cfg.get("source") == "realdata"
             case = None if real else scoring.cases_index()[case_id]
+            if lazy is not None:
+                # Prepared now rather than before the run (`_StressPages`). The
+                # time is kept out of the job's latency, which is the server's.
+                rec["prepare_s"] = round(lazy.take(case_id), 3)
+                began += rec["prepare_s"]
+                live.touch(job)
             texts, looped, truncated, truth = None, False, False, None
             if mode in ("ocr", "full"):
                 read_began = time.perf_counter()
@@ -7574,6 +7633,8 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
         rec.pop("alerted", None)
         live.move("classify" if mode == "classify" and "segment_s" in rec
                   else stage, None)
+        if lazy is not None:
+            lazy.release(spec["case"])
     rec["total_s"] = round(time.perf_counter() - began, 3)
     live.finish(rec["status"] == "error")
     return rec
@@ -7843,6 +7904,10 @@ def _stress_run(cfg: dict, cancel):
                 cfg["cases"], truths, docs_of, cfg["pack_pages"], rng))
             yield json.dumps({"event": "preparing", "done": i + 1,
                               "total": total}) + "\n"
+    elif cfg.get("source") == "realdata":
+        # Each file is prepared by the first job that draws it and freed after
+        # the last one (`_StressPages`), not all of them here.
+        prepared["lazy"] = _StressPages(specs, cfg["detail"], prepared)
     else:
         wanted = sorted({s["case"] for s in specs})
         for i, case_id in enumerate(wanted, 1):
@@ -7850,8 +7915,7 @@ def _stress_run(cfg: dict, cancel):
                 break
             if mode in ("ocr", "full"):
                 prepared["pages"][case_id], prepared["sources"][case_id] = \
-                    _stress_pages(case_id, cfg["detail"], *(
-                        ("realdata",) if cfg.get("source") == "realdata" else ()))
+                    _stress_pages(case_id, cfg["detail"])
             else:
                 path = index[case_id]["ground_truth"]
                 prepared["truths"][case_id] = path.read_text("utf-8")
