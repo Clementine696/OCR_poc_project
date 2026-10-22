@@ -99,6 +99,24 @@ class StressSelectionTests(unittest.TestCase):
             self.assertEqual(set(call.args[0]["cases"]), {"a", "c"})
         self.assertEqual(events[0]["cases"], ["a", "c"])
 
+    def test_sequential_restarts_after_warmup_and_is_saved_in_history(self):
+        with patch.object(app, "extract_fields", return_value={"tokens": 1}) as extract, \
+             patch.object(app.runlog, "case_counts") as counts:
+            response = self.client.post("/api/stress/stream", json={
+                "mode": "extract", "cases": ["b", "a"], "jobs": 5, "warmup": 3,
+                "concurrency": 1, "strategy": "sequential", "seed": 123,
+                "history_monitor": False})
+            self.assertEqual(response.status_code, 200)
+            events = [json.loads(line) for line in response.data.splitlines()]
+        self.assertEqual([call.args[2] for call in extract.call_args_list],
+                         ["a", "b", "a", "a", "b", "a", "b", "a"])
+        counts.assert_not_called()
+        self.assertEqual(events[0]["strategy"], "sequential")
+        self.assertEqual(events[-1]["report"]["completed"], 5)
+        saved = runhistory.get(events[-1]["history_id"])
+        self.assertEqual(saved["configuration"]["strategy"], "sequential")
+        self.assertEqual(saved["plan"]["strategy"], "sequential")
+
     def test_ocr_and_full_only_prepare_selected_files(self):
         for mode in ("ocr", "full"):
             with self.subTest(mode=mode):

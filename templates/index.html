@@ -2281,6 +2281,7 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             <select id="stStrategy">
               <option value="balanced">Balanced &mdash; the least-read document each time</option>
               <option value="uniform">Random &mdash; every document once before any twice</option>
+              <option value="sequential">Sequential &mdash; in file order, repeat after the last</option>
             </select>
           </label>
           <label class="field" style="flex:1;min-width:120px">
@@ -2298,6 +2299,10 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
         </label>
         <label class="st-option" id="stSaveLogRow">
           <input id="stSaveLog" type="checkbox"> Save each job
+        </label>
+        <label class="st-option" id="stDetailsField"
+               title="Download fields, expected values and raw replies automatically after the run. Details are not saved on the server.">
+          <input id="stSaveDetails" type="checkbox"> Save detail log
         </label>
         <label class="st-option">
           <input id="stHistoryMonitor" type="checkbox" checked> Save monitor snapshots
@@ -13365,6 +13370,47 @@ const stStop2 = stEl('stStop2'), stClear = stEl('stClear');
 const stOut = stEl('stOut'), stNote = stEl('stNote');
 let stAbort = null, stStopping = false;
 let stState = null;          // {plan, progress, report, metrics, draining, alerts}
+let stDetailLog = {parts: null, count: 0, url: '', name: '', summary: []};
+function stClearDetailLog() {
+  if (stDetailLog.url) URL.revokeObjectURL(stDetailLog.url);
+  stDetailLog = {parts: null, count: 0, url: '', name: '', summary: []};
+}
+function stDownloadDetailLog() {
+  if (!stDetailLog.url) return;
+  const link = document.createElement('a');
+  link.href = stDetailLog.url; link.download = stDetailLog.name;
+  document.body.appendChild(link);
+  try { link.click(); }
+  catch { /* The download link remains available if automatic download is blocked. */ }
+  finally { link.remove(); }
+}
+function stReceiveDetailLog(ev) {
+  if (ev.event === 'detail_log_start') {
+    const header = {format: 'ocr-extraction-detail-log', format_version: ev.format_version,
+      configuration: ev.configuration, plan: ev.plan, provenance: ev.provenance};
+    stDetailLog.parts = [JSON.stringify(header).slice(0, -1) + ',"jobs":['];
+  } else if (ev.event === 'detail_log_job' && stDetailLog.parts) {
+    stDetailLog.parts.push((stDetailLog.count ? ',' : '') + JSON.stringify(ev.job));
+    stDetailLog.count++;
+  } else if (ev.event === 'detail_log_end') {
+    stDetailLog.summary = ev.field_summary || [];
+  }
+}
+function stFinishDetailLog(ev) {
+  if (!stDetailLog.parts) return;
+  stDetailLog.parts.push('],"field_summary":' + JSON.stringify(stDetailLog.summary)
+    + ',"completion":' + JSON.stringify({received_jobs: stDetailLog.count,
+      finished: ev.event === 'done', stopped: !!ev.stopped,
+      history_id: ev.history_id || null, error: ev.error || null})
+    + ',"report":' + JSON.stringify(ev.report || null) + '}');
+  stDetailLog.url = URL.createObjectURL(new Blob(stDetailLog.parts, {type: 'application/json'}));
+  stDetailLog.name = 'extraction-details-' + ((stState?.plan?.run_id || new Date().toISOString())
+    .replace(/[^a-zA-Z0-9_-]/g, '-')) + '.json';
+  stDetailLog.parts = null;
+  stDetailLog.summary = [];
+  stState.detailDownload = {url: stDetailLog.url, name: stDetailLog.name, count: stDetailLog.count};
+  stDownloadDetailLog();
+}
 
 function stFileBoxes() {
   return [...stEl('stFiles').querySelectorAll('input')];
@@ -13554,6 +13600,8 @@ function stPaintMode() {
   stEl('stSchemaFirstField').style.display = ['extract', 'full'].includes(m) ? '' : 'none';
   stEl('stSchemaFirst').disabled = stRunning || !['extract', 'full'].includes(m)
     || stEl('stShape').value !== 'agentic';
+  stEl('stDetailsField').style.display = ['extract', 'full'].includes(m) ? '' : 'none';
+  stEl('stSaveDetails').disabled = stRunning || !['extract', 'full'].includes(m);
   stEl('stPagesField').style.display = m === 'classify' ? '' : 'none';
   stEl('stStrategyField').style.display = m === 'classify' ? 'none' : '';
   // Classification writes no row, so the box is not offered there.
@@ -13631,6 +13679,7 @@ function stBusy(on) {
   stEl('stSchemaFirst').disabled = on || !['extract', 'full'].includes(stMode.value)
     || stEl('stShape').value !== 'agentic';
   stEl('stSaveLog').disabled = on || stMode.value === 'classify';
+  stEl('stSaveDetails').disabled = on || !['extract', 'full'].includes(stMode.value);
   stPaintBatch();
   stStop.disabled = stStop2.disabled = !on || stStopping;
   if (rtRun) rtRun.disabled = on;
@@ -13872,6 +13921,11 @@ function stWireChatContext(host, report) {
 
 function stReportHtml(s, snapshot, host) {
   let html = '';
+  if (s.detailDownload) {
+    html += '<p class="note"><a class="ghost-sm" href="' + esc(s.detailDownload.url)
+      + '" download="' + esc(s.detailDownload.name) + '">Download detail log</a> · '
+      + s.detailDownload.count + ' job(s) · kept in this browser tab only</p>';
+  }
   if (s.monitor_samples && s.monitor_samples.length) {
     html += historyMonitorHtml(s.monitor_samples, s.monitor_samples_total);
   }
@@ -14064,6 +14118,7 @@ function stBody() {
     no_cache: stEl('stNoCache').checked,
     vllm_batch: stBatchOn && !stEl('stBatch').disabled,
     save_log: stEl('stSaveLog').checked && stMode.value !== 'classify',
+    save_details: stEl('stSaveDetails').checked && ['extract', 'full'].includes(stMode.value),
     history_monitor: stEl('stHistoryMonitor').checked && !stEl('stHistoryMonitor').disabled,
     gpu_url: stEl('monGpu').value.trim(),
     gpu_extract_url: stEl('monGpuExtract').value.trim(),
@@ -14079,6 +14134,7 @@ async function stStart() {
     stNote.classList.add('err');
     return;
   }
+  stClearDetailLog();
   stState = { draining: 0, alerts: [] };
   stNote.textContent = 'Preparing…';
   stNote.classList.remove('err');
@@ -14106,6 +14162,11 @@ async function stStart() {
       for (const line of lines) {
         if (!line.trim()) continue;
         const ev = JSON.parse(line);
+        if (['detail_log_start', 'detail_log_job', 'detail_log_end'].includes(ev.event)) {
+          stReceiveDetailLog(ev);
+          stNote.textContent = 'Preparing detail log — ' + stDetailLog.count + ' job(s)';
+          continue;
+        }
         if (ev.history_id) stState.historyId = ev.history_id;
         if (ev.history_error) stState.historyError = ev.history_error;
         if (ev.event === 'plan') {
@@ -14121,6 +14182,7 @@ async function stStart() {
           stNote.textContent = (ev.phase === 'warmup' ? 'Warming up — ' : 'Running — ')
             + ev.done + '/' + ev.total;
         } else if (ev.event === 'done') {
+          stFinishDetailLog(ev);
           setTestStatus('st', ev.stopped ? 'stopped' : 'completed');
           stState.report = ev.report;
           stState.monitor_samples = ev.monitor_samples;
@@ -14144,6 +14206,7 @@ async function stStart() {
       if (now - lastPaint > 300) { lastPaint = now; stPaint(); }
     }
   } catch (err) {
+    stFinishDetailLog({event: 'error', error: err.message});
     setTestStatus('st', 'failed');
     stNote.textContent = err.name === 'AbortError'
       ? 'Hung up on the test; the server may still be running it.' : err.message;
@@ -14213,6 +14276,7 @@ if (stRun) {
   stStop2.addEventListener('click', stop);
   stClear.addEventListener('click', () => {
     if (stAbort) return;
+    stClearDetailLog();
     stState = null; stNote.textContent = '';
     stNote.classList.remove('err');
     setTestStatus('st', 'ready');
@@ -14615,6 +14679,7 @@ function historyRender(item) {
     ['Extraction GPU exporter', cfg.gpu_extract_url || 'Default / local'],
     ['Bypass prompt cache', cfg.no_cache], ['Batch requests (vLLM /batch)', cfg.vllm_batch ?? false],
     ['Save per-job accuracy rows', cfg.save_log],
+    ['Detail log destination', cfg.save_details ? 'Browser download only; not stored here' : 'Off'],
     ['Workspace', cfg.workspace || 'Default'],
     ['Started', historyDate(item.started_at)], ['Finished', historyDate(item.finished_at)]
   ];

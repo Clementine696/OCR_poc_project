@@ -88,7 +88,7 @@ def draw_cases(count: int, cases: list, strategy: str, rng, history=None,
                lock: str = "") -> list:
     """Which document each job reads, `count` of them.
 
-    **The same two rules the random test offers** (`randomtest.STRATEGIES`),
+    **The same draw strategies the random test offers** (`randomtest.STRATEGIES`),
     because the user asked for the dataset to be set the same way:
 
     * `balanced` -- the least-read document each time, counting the run log's
@@ -97,6 +97,8 @@ def draw_cases(count: int, cases: list, strategy: str, rng, history=None,
       once before any is used twice. Models, Detail and shape are fixed for the
       whole stress run, so the document IS the scenario, and this is the random
       test's *no scenario twice* rule with the only axis left.
+    * `sequential` -- sorted passes over the selected files, wrapping back to
+      the first file after the last, independent of the seed and past runs.
 
     A lock pins every job to one document.
     """
@@ -104,6 +106,9 @@ def draw_cases(count: int, cases: list, strategy: str, rng, history=None,
         return [lock] * count
     if not cases:
         return []
+    if strategy == "sequential":
+        pool = sorted(cases)
+        return [pool[i % len(pool)] for i in range(count)]
     if strategy == "uniform":
         out, pool = [], sorted(cases)
         while len(out) < count:

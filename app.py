@@ -38,6 +38,7 @@ import settings
 import blame
 import config
 import fieldscore
+import extractionlog
 import fixscore
 import grounding
 import machine
@@ -7226,9 +7227,12 @@ def _stress_config(body: dict) -> dict:
     if shape not in ("single", "agentic"):
         raise ValueError("extract_mode must be 'single' or 'agentic'.")
     schema_first = _requested_schema_first(body) and shape == "agentic" and mode in ("extract", "full")
+    save_details = body.get("save_details", False)
+    if not isinstance(save_details, bool):
+        raise ValueError("save_details must be true or false.")
     strategy = (body.get("strategy") or randomtest.DEFAULT_STRATEGY).strip().lower()
-    if strategy not in ("balanced", "uniform"):
-        raise ValueError("strategy must be 'balanced' or 'uniform'.")
+    if strategy not in ("balanced", "uniform", "sequential"):
+        raise ValueError("strategy must be 'balanced', 'uniform' or 'sequential'.")
     # `realdata`: the files in realData/, which have no ground truth -- so only
     # the modes that start from a read, and nothing they produce is scored.
     source = (body.get("source") or "benchmark").strip().lower()
@@ -7305,6 +7309,7 @@ def _stress_config(body: dict) -> dict:
         # Classification has no row shape: a glued pack is no benchmark case and
         # its score is a grouping, so nothing is written for it.
         "save_log": bool(body.get("save_log")) and mode != "classify",
+        "save_details": save_details and mode in ("extract", "full"),
         "history_monitor": bool(body.get("history_monitor", True)),
         "gpu_url": str(body.get("gpu_url") or "").strip() or MONITOR_GPU_URL,
         "gpu_extract_url": str(body.get("gpu_extract_url") or "").strip() or MONITOR_GPU_URL,
@@ -7608,6 +7613,9 @@ def _stress_job(spec: dict, cfg: dict, prepared: dict, cancel,
                     schema_first=cfg.get("schema_first", False),
                     each=lambda event: live.extract_event(job, event))
                 rec["extract_s"] = round(time.perf_counter() - started, 3)
+                if spec.get("detail"):
+                    # Hold the existing result; format and send it after timing ends.
+                    rec["_extraction_result"] = result
                 rec["extract_tokens"] = result.get("tokens") or 0
                 # Every pass-2 request of this file: classify, segment, steps or
                 # the single request, table agents (servertime's tally).
@@ -7818,6 +7826,7 @@ def _stress_phase(specs: list, cfg: dict, prepared: dict, cancel, phase: str,
         spec["submitted"], spec["deadline"] = started, deadline
         # Warm-up jobs are thrown away from the report, and from the log too.
         spec["log"] = bool(cfg.get("save_log")) and phase == "run"
+        spec["detail"] = bool(cfg.get("save_details")) and phase == "run"
     job = workspace.bind(_stress_job)
     futures = [pool.submit(job, spec, cfg, prepared, cancel, live)
                for spec in specs]
@@ -7886,6 +7895,9 @@ def _stress_run(cfg: dict, cancel):
     mode = cfg["mode"]
     cfg["run_id"] = f"{time.strftime('%Y-%m-%dT%H:%M:%S')}-{seed}"
     total = cfg["warmup"] + cfg["jobs"]
+    detail_identity = (extractionlog.provenance(prompts.__file__, __file__, {
+        "AGENTIC_RETRIES": AGENTIC_RETRIES, "EXTRACT_SCHEMA": EXTRACT_SCHEMA})
+        if cfg.get("save_details") else None)
     reader = llama_status() if mode in ("ocr", "full") else None
     extractor = backends.extract_status() if mode != "ocr" else None
     info = reader or extractor
@@ -7900,8 +7912,15 @@ def _stress_run(cfg: dict, cancel):
         # balances over this run's own draws.
         history = (runlog.case_counts() if cfg["strategy"] == "balanced"
                    and cfg.get("source") != "realdata" else {})
-        for spec, case_id in zip(specs, stress.draw_cases(
-                total, cfg["cases"], cfg["strategy"], rng, history, cfg["lock"])):
+        if cfg["strategy"] == "sequential":
+            # Measured jobs start at the first selected file even after warm-up.
+            drawn = [case_id for count in (cfg["warmup"], cfg["jobs"])
+                     for case_id in stress.draw_cases(
+                         count, cfg["cases"], cfg["strategy"], rng, history, cfg["lock"])]
+        else:
+            drawn = stress.draw_cases(
+                total, cfg["cases"], cfg["strategy"], rng, history, cfg["lock"])
+        for spec, case_id in zip(specs, drawn):
             spec["case"] = case_id
 
     yield json.dumps({
@@ -7925,6 +7944,7 @@ def _stress_run(cfg: dict, cancel):
         # Which server kinds took the bypass and how; a server that has no
         # per-request switch is named rather than counted as uncached.
         "save_log": bool(cfg.get("save_log")),
+        "save_details": bool(cfg.get("save_details")),
         "run_id": cfg["run_id"] if cfg.get("save_log") else "",
         "no_cache": bool(cfg.get("no_cache")),
         "no_cache_effect": ({s["kind"]: backends.cache_bypass_effect(s["kind"])
@@ -8010,6 +8030,13 @@ def _stress_run(cfg: dict, cancel):
         if views:
             report["servers_metrics"] = views
             report["server_metrics"] = views[0]["view"]
+    if cfg.get("save_details"):
+        for event in extractionlog.events(records, specs[cfg["warmup"]:],
+                                           prepared["sources"], cfg["warmup"], detail_identity):
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+        # A stopped run may still drain requests; release exported results now.
+        for record in records:
+            record.pop("_extraction_result", None)
     yield json.dumps({"event": "done", "seed": seed, "stopped": cancel.is_set(),
                       "draining": len(draining), "report": report}) + "\n"
     # After a Stop: the report is out, and what is left is requests the server
@@ -8142,7 +8169,7 @@ class _HistoryMonitor:
 
 def _history_stream(stream, kind, configuration):
     """Save on the server before emitting completion, including failed/closed streams."""
-    run_id, storage_error, progress, finished = None, "", None, False
+    run_id, storage_error, progress, finished, plan = None, "", None, False, None
     monitor_sampler, alerts = _HistoryMonitor(configuration), []
 
     def saved_monitor():
@@ -8158,13 +8185,22 @@ def _history_stream(stream, kind, configuration):
         for line in stream:
             event = json.loads(line)
             stage = event.get("event")
+            if stage in ("detail_log_start", "detail_log_job", "detail_log_end"):
+                # Download-only payloads never enter History, CSV, or progress.
+                if stage == "detail_log_start":
+                    event["configuration"] = configuration
+                    event["plan"] = plan
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+                continue
             if stage == "alert":
                 alerts.append(dict(event))
-            if event.get("event") == "plan" and run_id:
-                try:
-                    runhistory.save_plan(run_id, event)
-                except Exception as err:
-                    storage_error = f"History could not be saved: {err}"
+            if event.get("event") == "plan":
+                plan = dict(event)
+                if run_id:
+                    try:
+                        runhistory.save_plan(run_id, event)
+                    except Exception as err:
+                        storage_error = f"History could not be saved: {err}"
             if event.get("event") == "progress":
                 progress = event
             if event.get("event") == "done":
