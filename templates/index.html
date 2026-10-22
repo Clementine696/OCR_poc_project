@@ -1815,6 +1815,14 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
       <p class="note warn" id="prepTrunc" hidden></p>
       <div id="filechip"><strong>📄</strong><span id="filechipname"></span></div>
       <div id="mapchip"></div>
+      <!-- Files in realData/ (no solution), loaded as if dropped. Hidden while
+           the folder is empty. -->
+      <div class="row" id="realPickRow" hidden>
+        <label class="field" style="flex:1;min-width:200px">
+          Or read a file from realData/
+          <select id="realPick"><option value="">&mdash; pick a realData file &mdash;</option></select>
+        </label>
+      </div>
 
 
         <div class="row">
@@ -2173,6 +2181,36 @@ follows your desktop; Light is the one to pick for projecting or screenshotting.
             Queue (jobs)
             <input id="stJobs" type="number" min="1" max="5000" value="20">
           </label>
+        </div>
+        <div class="rt-ex" id="stSourceField">
+          <span class="rt-ex-label">Document source</span>
+          <div class="st-file-sets seg" id="stSource" role="group" aria-label="Document source">
+            <button type="button" data-st-source="benchmark" aria-pressed="true" class="on"
+              title="mockOcr/ documents with a solution: every read and form is scored">Benchmark (scored)</button>
+            <button type="button" data-st-source="realdata" aria-pressed="false"
+              title="files in realData/ with no solution: read and extracted, never scored">realData (no solution)</button>
+          </div>
+        </div>
+        <!-- realData/ (2026-10-22): real files with no solution. Each job draws a
+             file at random from the ticked types, or only from the files ticked
+             under "Choose files". OCR only and Full pipeline -- the other modes
+             start from a ground-truth transcript, which these files do not have. -->
+        <div class="rt-ex" id="stRealField" hidden>
+          <span class="rt-ex-label">realData files</span>
+          <div class="st-file-controls">
+            <div class="st-file-sets seg" id="stRealPick" role="group" aria-label="How realData files are picked">
+              <button type="button" data-st-real-pick="random" aria-pressed="true" class="on"
+                title="every job draws a file at random from the ticked types">Random</button>
+              <button type="button" data-st-real-pick="choose" aria-pressed="false"
+                title="every job draws from the files ticked below">Choose files</button>
+            </div>
+            <button type="button" class="ghost-sm" id="stRealRefresh"
+              title="list the realData folder again">Refresh</button>
+          </div>
+          <span class="rt-ex-label" style="margin-top:10px">File types</span>
+          <div class="rt-chips" id="stRealTypes"></div>
+          <span class="note" id="stRealCount" aria-live="polite"></span>
+          <div class="rt-files" id="stRealFiles" hidden></div>
         </div>
         <div class="rt-ex" id="stFilesField">
           <span class="rt-ex-label">Files to test</span>
@@ -12605,6 +12643,9 @@ function paintRun() {
 
 drop.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', e => { addFiles(e.target.files); fileInput.value = ''; });
+document.getElementById('realPick').addEventListener('change', e => {
+  if (e.target.value) realPickLoad(e.target.value);
+});
 ['dragenter', 'dragover'].forEach(ev =>
   drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave', 'drop'].forEach(ev =>
@@ -13340,8 +13381,148 @@ function stFileInSet(box, name) {
   const number = Number(/^sol(\d+)$/.exec(box.value)?.[1]);
   return name === '1-20' ? number >= 1 && number <= 20 : number >= 21 && number <= 23;
 }
+/* realData/: files with no solution. `stReal` is the folder listing
+   ({folder, files: [{name, type, size_mb}], types}); the Source pane's picker
+   reads it too. Random draws from every file of a ticked type; Choose files
+   draws only from the ticked files of a ticked type. */
+var stSource = 'benchmark', stRealPick = 'random', stReal = null;
+const REAL_MODES = ['ocr', 'full'];
+function stRealTypes() {
+  return [...stEl('stRealTypes').querySelectorAll('input:checked')].map(box => box.value);
+}
+function stRealPool() {
+  const types = new Set(stRealTypes());
+  return ((stReal && stReal.files) || []).filter(f => types.has(f.type)).map(f => f.name);
+}
+function stRealSelected() {
+  if (stRealPick === 'random') return stRealPool();
+  const types = new Set(stRealTypes());
+  return [...stEl('stRealFiles').querySelectorAll('input:checked')]
+    .filter(box => types.has(box.dataset.type)).map(box => box.value);
+}
+function stSelectedCount() {
+  return stSource === 'realdata' ? stRealSelected().length : stSelectedCases().length;
+}
+async function stLoadReal() {
+  // Ticks survive a Refresh; a type or file new to the listing starts ticked.
+  const offTypes = new Set([...stEl('stRealTypes').querySelectorAll('input:not(:checked)')].map(b => b.value));
+  const offFiles = new Set([...stEl('stRealFiles').querySelectorAll('input:not(:checked)')].map(b => b.value));
+  stEl('stRealCount').textContent = 'Listing realData…';
+  try {
+    const res = await fetch(API + '/realdata');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    stReal = data;
+  } catch (err) {
+    stReal = { folder: '', files: [], types: [], error: err.message };
+  }
+  const chip = (value, label, title, off, type) => {
+    const box = Object.assign(document.createElement('input'), { type: 'checkbox', value, checked: !off });
+    if (type) box.dataset.type = type;
+    const span = document.createElement('span');
+    span.textContent = label;
+    const el = document.createElement('label');
+    el.className = 'rt-chip';
+    el.title = title;
+    el.append(box, span);
+    return el;
+  };
+  const count = type => stReal.files.filter(f => f.type === type).length;
+  stEl('stRealTypes').replaceChildren(...stReal.types.map(t =>
+    chip(t, t.toUpperCase() + ' · ' + count(t), count(t) + ' ' + t + ' file(s)', offTypes.has(t))));
+  stEl('stRealFiles').replaceChildren(...stReal.files.map(f =>
+    chip(f.name, f.name + ' · ' + f.size_mb + ' MB', f.name, offFiles.has(f.name), f.type)));
+  stPaintFiles();
+  realPickPaint();
+}
+function stPaintReal(busy) {
+  const types = new Set(stRealTypes());
+  for (const box of stEl('stRealTypes').querySelectorAll('input')) {
+    box.disabled = busy;
+    box.parentElement.classList.toggle('off', !box.checked);
+  }
+  for (const box of stEl('stRealFiles').querySelectorAll('input')) {
+    box.disabled = busy;
+    box.parentElement.style.display = types.has(box.dataset.type) ? '' : 'none';
+    box.parentElement.classList.toggle('off', !box.checked);
+  }
+  for (const button of stEl('stRealPick').querySelectorAll('button')) {
+    const on = button.dataset.stRealPick === stRealPick;
+    button.disabled = busy;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-pressed', String(on));
+  }
+  stEl('stRealRefresh').disabled = busy;
+  stEl('stRealFiles').hidden = stRealPick !== 'choose';
+  const pool = stRealPool(), selected = stRealSelected();
+  stEl('stRealCount').textContent = !stReal ? 'Listing realData…'
+    : stReal.error ? 'Could not list realData: ' + stReal.error
+    : !stReal.files.length ? 'realData/ is empty — put PDFs or images in ' + (stReal.folder || 'realData/') + ' and press Refresh.'
+    : !pool.length ? 'Tick at least one file type.'
+    : stRealPick === 'random'
+      ? 'Random — every job draws one of ' + pool.length + ' file(s). Nothing is scored.'
+      : selected.length + ' / ' + pool.length + ' files selected'
+        + (selected.length ? '. Nothing is scored.' : ' — select at least one file');
+  stMode.disabled = busy;
+  stRun.disabled = busy || !selected.length || !REAL_MODES.includes(stMode.value);
+}
+function stSetSource(source) {
+  stSource = source;
+  for (const button of stEl('stSource').querySelectorAll('button')) {
+    const on = button.dataset.stSource === source;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-pressed', String(on));
+  }
+  const real = source === 'realdata';
+  stEl('stRealField').hidden = !real;
+  stEl('stFilesField').hidden = real;
+  // realData has no transcript truth, so the modes that start from one go.
+  for (const option of stMode.options) option.disabled = real && !REAL_MODES.includes(option.value);
+  if (real && !REAL_MODES.includes(stMode.value)) stMode.value = 'ocr';
+  if (real && !stReal) stLoadReal();
+  stPaintMode();
+}
+
+/* The Source pane's realData picker: a chosen file is fetched and handed to
+   addFiles, so it is read exactly as a dropped file would be. */
+function realPickPaint() {
+  const sel = document.getElementById('realPick');
+  if (!sel || !stReal) return;
+  document.getElementById('realPickRow').hidden = !stReal.files.length;
+  const groups = stReal.types.map(type => {
+    const group = document.createElement('optgroup');
+    group.label = type.toUpperCase();
+    for (const f of stReal.files.filter(f => f.type === type)) {
+      group.append(new Option(f.name + ' · ' + f.size_mb + ' MB', f.name));
+    }
+    return group;
+  });
+  sel.replaceChildren(new Option('— pick a realData file —', ''), ...groups);
+}
+async function realPickLoad(name) {
+  const sel = document.getElementById('realPick');
+  sel.disabled = true;
+  runNote.textContent = 'Loading ' + name + ' from realData…';
+  try {
+    const res = await fetch(API + '/realdata/file?name=' + encodeURIComponent(name));
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || ('HTTP ' + res.status));
+    }
+    const blob = await res.blob();
+    addFiles([new File([blob], name.split('/').pop(), { type: blob.type })]);
+  } catch (err) {
+    runNote.textContent = 'Could not load ' + name + ': ' + err.message;
+  } finally {
+    sel.disabled = false;
+    sel.value = '';
+  }
+}
+
 function stPaintFiles() {
   const busy = !!stAbort || rtRunning;
+  for (const button of stEl('stSource').querySelectorAll('button')) button.disabled = busy;
+  if (stSource === 'realdata') { stPaintReal(busy); return; }
   const boxes = stFileBoxes();
   const eligible = boxes.filter(stEligibleFile);
   const selected = new Set(stSelectedCases());
@@ -13873,7 +14054,12 @@ function stBody() {
       && val('stShape') === 'agentic',
     pack_pages: Number(val('stPages')) || 100,
     strategy: val('stStrategy'), seed: val('stSeed').trim() || null,
-    cases: stSelectedCases(),
+    source: stSource,
+    // realData: Random sends only the types, so every file of them is drawn
+    // from; Choose files sends the files as well.
+    types: stSource === 'realdata' ? stRealTypes() : undefined,
+    cases: stSource !== 'realdata' ? stSelectedCases()
+      : stRealPick === 'choose' ? stRealSelected() : undefined,
     metrics: false,
     no_cache: stEl('stNoCache').checked,
     vllm_batch: stBatchOn && !stEl('stBatch').disabled,
@@ -13888,7 +14074,7 @@ function stBody() {
 async function stStart() {
   // Read the form before busy disables the snapshot option.
   const body = stBody();
-  if (!body.cases.length) {
+  if (!stSelectedCount()) {
     stNote.textContent = 'Select at least one file to stress test.';
     stNote.classList.add('err');
     return;
@@ -13996,6 +14182,19 @@ if (stRun) {
   });
   stMode.addEventListener('change', stPaintMode);
   stEl('stShape').addEventListener('change', stPaintMode);
+  stEl('stSource').addEventListener('click', event => {
+    const button = event.target.closest('button[data-st-source]');
+    if (button && !button.disabled && !stRunning) stSetSource(button.dataset.stSource);
+  });
+  stEl('stRealPick').addEventListener('click', event => {
+    const button = event.target.closest('button[data-st-real-pick]');
+    if (!button || button.disabled) return;
+    stRealPick = button.dataset.stRealPick;
+    stPaintFiles();
+  });
+  stEl('stRealTypes').addEventListener('change', stPaintFiles);
+  stEl('stRealFiles').addEventListener('change', stPaintFiles);
+  stEl('stRealRefresh').addEventListener('click', () => stLoadReal());
   stEl('stBatch').addEventListener('click', () => { stBatchOn = !stBatchOn; stPaintBatch(); });
   stEl('stConc').addEventListener('input', stPaintBatch);
   stRun.addEventListener('click', () => stStart());
@@ -14020,6 +14219,7 @@ if (stRun) {
     stPaint();
   });
   stPaintMode();
+  stLoadReal();     // also fills the Source pane's realData picker
   stPaintServer();
 }
 
@@ -14404,6 +14604,7 @@ function historyRender(item) {
     ['Seed', plan.seed ?? cfg.seed],
     ['Pages per file', cfg.pack_pages], ['Draw strategy', cfg.strategy],
     ['Lock document', cfg.lock || 'None'],
+    ['Document source', cfg.source === 'realdata' ? 'realData (no solution)' : 'Benchmark'],
     ['Files selected', cfg.cases ? cfg.cases.join(', ') : undefined],
     ['OCR model', read.model], ['OCR server', read.url],
     ['Extraction model', extract.model], ['Extraction server', extract.url],

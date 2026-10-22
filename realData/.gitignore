@@ -1,0 +1,4 @@
+# Real documents for OCR and extraction -- no ground truth, never scored.
+# Drop files (or subfolders) here; the contents stay out of git.
+*
+!.gitignore
