@@ -147,6 +147,9 @@ def env_path(name: str, default: Path) -> Path:
 # the folder picker.
 MOCK_DIR = env_path("OCR_MOCK_DIR", BASE_DIR / "mockOcr")
 SOLUTION_DIR = env_path("OCR_SOLUTION_DIR", BASE_DIR / "solution")
+# Real documents for OCR and extraction, with NO ground truth: read and extracted,
+# never scored. Any depth of subfolders; also optional.
+REAL_DIR = env_path("OCR_REAL_DIR", BASE_DIR / "realData")
 
 # The one directory the app must be able to write to. Split out so the
 # application directory can be mounted read-only.
